@@ -667,8 +667,6 @@ void Player2Module::TickPlayer1(void* player1_controller)
 	CoopNetGame::Instance().BeginLocalInputCapture();
 	m_original_update(player1_controller);
 	CoopNetGame::Instance().PublishLocalPlayerTransform(GetGPigEntity(1));
-	CoopNetGame::Instance().PublishLocalFlyTransform(GetFlyEntity(),
-		IsFlyControlled());
 	// P1's 0x5BCF30 and 0x5BB1D0 have just finished driving the single shared
 	// camera, so this is the only frame point where 0x52AD20 reports P1's own yaw.
 	// The remote machine cannot read its P2's camera because P2 owns none there —
@@ -747,10 +745,18 @@ void Player2Module::UpdateController(void* controller)
 			TickPlayer1(controller);
 		else if (controller == GetController(GetFlyEntity()))
 		{
+			void* fly = GetFlyEntity();
 			m_original_update(controller);
-			// Mooch's own controller has just settled its local frame.  Only the
-			// remote owner may correct the one shared fly afterwards.
-			CoopNetGame::Instance().ApplyRemoteFlyTransform(GetFlyEntity());
+			const bool local_fly_controlled = IsFlyControlled();
+			// This is the only correct capture point: Mooch's own controller has
+			// just applied its motor input, so the packet carries the resulting
+			// position instead of the stale position P1 saw earlier in the frame.
+			CoopNetGame::Instance().PublishLocalFlyTransform(fly,
+				local_fly_controlled);
+			// A local owner is authoritative.  Every other process leaves Mooch's
+			// stock tick intact, then applies the remote owner's final position.
+			if (!local_fly_controlled)
+				CoopNetGame::Instance().ApplyRemoteFlyTransform(fly);
 		}
 		else
 			m_original_update(controller);
