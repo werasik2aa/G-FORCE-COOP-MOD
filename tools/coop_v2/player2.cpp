@@ -746,11 +746,17 @@ void Player2Module::UpdateController(void* controller)
 		else if (controller == GetController(GetFlyEntity()))
 		{
 			void* fly = GetFlyEntity();
-			m_original_update(controller);
+			// XController_Fly consumes its active state during its own stock update:
+			// immediately afterwards it can already report idle even though this was
+			// the frame where the local player drove Mooch.  Keep the ownership
+			// decision from before that update, but capture the position afterwards
+			// when the Mooch motor has written its final transform.
 			const bool local_fly_controlled = IsFlyControlled();
+			m_original_update(controller);
 			// This is the only correct capture point: Mooch's own controller has
 			// just applied its motor input, so the packet carries the resulting
 			// position instead of the stale position P1 saw earlier in the frame.
+			// The ownership flag above deliberately remains the pre-update value.
 			CoopNetGame::Instance().PublishLocalFlyTransform(fly,
 				local_fly_controlled);
 			// A local owner is authoritative.  Every other process leaves Mooch's
