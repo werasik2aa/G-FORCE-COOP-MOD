@@ -1,0 +1,222 @@
+Microsoft (R) COFF/PE Dumper Version 14.51.36252.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+
+Dump of file C:\WINDOWS\SysWOW64\winmm.dll
+
+File Type: DLL
+
+  Section contains the following exports for WINMM.dll
+
+    00000000 characteristics
+    14CEAE77 time date stamp
+        0.00 version
+           2 ordinal base
+         193 number of functions
+         192 number of names
+
+    ordinal hint RVA      name
+
+          4    0 00015E50 CloseDriver
+          5    1 00015E70 DefDriverProc
+          6    2 00015E90 DriverCallback
+          7    3 00015EC0 DrvGetModuleHandle
+          8    4 00015EE0 GetDriverModuleHandle
+          9    5 000110F0 NotifyCallbackData
+         10    6 00015F20 OpenDriver
+         11    7 00015F00 PlaySound
+         12    8 00020B70 PlaySoundA
+         13    9 000048D0 PlaySoundW
+         14    A 00015F40 SendDriverMessage
+         15    B 00011B70 WOW32DriverCallback
+         16    C 00011CC0 WOW32ResolveMultiMediaHandle
+         17    D 000211A0 WOWAppExit
+         18    E 00011E00 aux32Message
+         19    F 00015F60 auxGetDevCapsA
+         20   10 00015F80 auxGetDevCapsW
+         21   11 00015FA0 auxGetNumDevs
+         22   12 00015FB0 auxGetVolume
+         23   13 00015FD0 auxOutMessage
+         24   14 00015FF0 auxSetVolume
+         25   15 00011FB0 joy32Message
+         26   16 0000F4B0 joyConfigChanged
+         27   17 0000F500 joyGetDevCapsA
+         28   18 0000F780 joyGetDevCapsW
+         29   19 0000B910 joyGetNumDevs
+         30   1A 0000F850 joyGetPos
+         31   1B 0000F8B0 joyGetPosEx
+         32   1C 0000FDE0 joyGetThreshold
+         33   1D 00010BB0 joyReleaseCapture
+         34   1E 00010C40 joySetCapture
+         35   1F 00010E70 joySetThreshold
+         36   20 00015C20 mci32Message
+         37   21 0001BE30 mciDriverNotify
+         38   22 0001BE60 mciDriverYield
+          3   23 00017640 mciExecute
+         39   24 0001A140 mciFreeCommandResource
+         40   25 0001C210 mciGetCreatorTask
+         41   26 0001C260 mciGetDeviceIDA
+         42   27 0001C2B0 mciGetDeviceIDFromElementIDA
+         43   28 0001C2F0 mciGetDeviceIDFromElementIDW
+         44   29 0001C3B0 mciGetDeviceIDW
+         45   2A 0001C3D0 mciGetDriverData
+         46   2B 00018740 mciGetErrorStringA
+         47   2C 00018810 mciGetErrorStringW
+         48   2D 0001C450 mciGetYieldProc
+         49   2E 0001A2D0 mciLoadCommandResource
+         50   2F 00018A70 mciSendCommandA
+         51   30 00019280 mciSendCommandW
+         52   31 00019390 mciSendStringA
+         53   32 00019520 mciSendStringW
+         54   33 0001C970 mciSetDriverData
+         55   34 0001C9F0 mciSetYieldProc
+         56   35 000121A0 mid32Message
+         57   36 00016010 midiConnect
+         58   37 00016030 midiDisconnect
+         59   38 00016050 midiInAddBuffer
+         60   39 00016070 midiInClose
+         61   3A 00016090 midiInGetDevCapsA
+         62   3B 000160B0 midiInGetDevCapsW
+         63   3C 000160D0 midiInGetErrorTextA
+         64   3D 000160F0 midiInGetErrorTextW
+         65   3E 00016110 midiInGetID
+         66   3F 00016130 midiInGetNumDevs
+         67   40 00016140 midiInMessage
+         68   41 00016160 midiInOpen
+         69   42 00016180 midiInPrepareHeader
+         70   43 000161A0 midiInReset
+         71   44 000161C0 midiInStart
+         72   45 000161E0 midiInStop
+         73   46 00016200 midiInUnprepareHeader
+         74   47 00016220 midiOutCacheDrumPatches
+         75   48 00016240 midiOutCachePatches
+         76   49 00016260 midiOutClose
+         77   4A 00016280 midiOutGetDevCapsA
+         78   4B 000162A0 midiOutGetDevCapsW
+         79   4C 000162C0 midiOutGetErrorTextA
+         80   4D 000162E0 midiOutGetErrorTextW
+         81   4E 00016300 midiOutGetID
+         82   4F 00016320 midiOutGetNumDevs
+         83   50 00016330 midiOutGetVolume
+         84   51 00016350 midiOutLongMsg
+         85   52 00016370 midiOutMessage
+         86   53 00016390 midiOutOpen
+         87   54 000163B0 midiOutPrepareHeader
+         88   55 000163D0 midiOutReset
+         89   56 000163F0 midiOutSetVolume
+         90   57 00016410 midiOutShortMsg
+         91   58 00016430 midiOutUnprepareHeader
+         92   59 00016450 midiStreamClose
+         93   5A 00016470 midiStreamOpen
+         94   5B 00016490 midiStreamOut
+         95   5C 000164B0 midiStreamPause
+         96   5D 000164D0 midiStreamPosition
+         97   5E 000164F0 midiStreamProperty
+         98   5F 00016510 midiStreamRestart
+         99   60 00016530 midiStreamStop
+        100   61 00016550 mixerClose
+        101   62 00016570 mixerGetControlDetailsA
+        102   63 00016590 mixerGetControlDetailsW
+        103   64 000165B0 mixerGetDevCapsA
+        104   65 000165D0 mixerGetDevCapsW
+        105   66 000165F0 mixerGetID
+        106   67 00016610 mixerGetLineControlsA
+        107   68 00016630 mixerGetLineControlsW
+        108   69 00016650 mixerGetLineInfoA
+        109   6A 00016670 mixerGetLineInfoW
+        110   6B 00016690 mixerGetNumDevs
+        111   6C 000166A0 mixerMessage
+        112   6D 000166C0 mixerOpen
+        113   6E 000166E0 mixerSetControlDetails
+        114   6F 00016700 mmDrvInstall
+        115   70 00016720 mmGetCurrentTask
+        116   71 00016730 mmTaskBlock
+        117   72 00016740 mmTaskCreate
+        118   73 00016760 mmTaskSignal
+        119   74 00016780 mmTaskYield
+        120   75 00016790 mmioAdvance
+        121   76 000167B0 mmioAscend
+        122   77 000167D0 mmioClose
+        123   78 000167F0 mmioCreateChunk
+        124   79 00016810 mmioDescend
+        125   7A 00016830 mmioFlush
+        126   7B 00016850 mmioGetInfo
+        127   7C 00016870 mmioInstallIOProcA
+        128   7D 00016890 mmioInstallIOProcW
+        129   7E 000168B0 mmioOpenA
+        130   7F 000168D0 mmioOpenW
+        131   80 000168F0 mmioRead
+        132   81 00016910 mmioRenameA
+        133   82 00016930 mmioRenameW
+        134   83 00016950 mmioSeek
+        135   84 00016970 mmioSendMessage
+        136   85 00016990 mmioSetBuffer
+        137   86 000169B0 mmioSetInfo
+        138   87 000169D0 mmioStringToFOURCCA
+        139   88 000169F0 mmioStringToFOURCCW
+        140   89 00016A10 mmioWrite
+        141   8A 00021420 mmsystemGetVersion
+        142   8B 00012350 mod32Message
+        143   8C 000125C0 mxd32Message
+        144   8D 00020EA0 sndPlaySoundA
+        145   8E 00020EC0 sndPlaySoundW
+        146   8F 000129F0 tid32Message
+        147   90 00008C10 timeBeginPeriod
+        148   91 00008C30 timeEndPeriod
+        149   92 00016A30 timeGetDevCaps
+        150   93 00016A50 timeGetSystemTime
+        151   94 00007860 timeGetTime
+        152   95 00007780 timeKillEvent
+        153   96 00007450 timeSetEvent
+        154   97 00016A70 waveInAddBuffer
+        155   98 00016A90 waveInClose
+        156   99 00016AB0 waveInGetDevCapsA
+        157   9A 00016AD0 waveInGetDevCapsW
+        158   9B 00016AF0 waveInGetErrorTextA
+        159   9C 00016B10 waveInGetErrorTextW
+        160   9D 00016B30 waveInGetID
+        161   9E 00016B50 waveInGetNumDevs
+        162   9F 00016B60 waveInGetPosition
+        163   A0 00016B80 waveInMessage
+        164   A1 00016BA0 waveInOpen
+        165   A2 00016BC0 waveInPrepareHeader
+        166   A3 00016BE0 waveInReset
+        167   A4 00016C00 waveInStart
+        168   A5 00016C20 waveInStop
+        169   A6 00016C40 waveInUnprepareHeader
+        170   A7 00016C60 waveOutBreakLoop
+        171   A8 00016C80 waveOutClose
+        172   A9 00016CA0 waveOutGetDevCapsA
+        173   AA 00016CC0 waveOutGetDevCapsW
+        174   AB 00016CE0 waveOutGetErrorTextA
+        175   AC 00016D00 waveOutGetErrorTextW
+        176   AD 00016D20 waveOutGetID
+        177   AE 00016D40 waveOutGetNumDevs
+        178   AF 00016D50 waveOutGetPitch
+        179   B0 00016D70 waveOutGetPlaybackRate
+        180   B1 00016D90 waveOutGetPosition
+        181   B2 00016DB0 waveOutGetVolume
+        182   B3 00016DD0 waveOutMessage
+        183   B4 00016DF0 waveOutOpen
+        184   B5 00016E10 waveOutPause
+        185   B6 00016E30 waveOutPrepareHeader
+        186   B7 00016E50 waveOutReset
+        187   B8 00016E70 waveOutRestart
+        188   B9 00016E90 waveOutSetPitch
+        189   BA 00016EB0 waveOutSetPlaybackRate
+        190   BB 00016ED0 waveOutSetVolume
+        191   BC 00016EF0 waveOutUnprepareHeader
+        192   BD 00016F10 waveOutWrite
+        193   BE 00012BF0 wid32Message
+        194   BF 00012F00 wod32Message
+          2      00015F00 [NONAME]
+
+  Summary
+
+        2000 .data
+        1000 .didat
+        1000 .guids
+        2000 .idata
+        3000 .reloc
+        5000 .rsrc
+       24000 .text

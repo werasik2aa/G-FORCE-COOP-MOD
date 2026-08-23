@@ -1,0 +1,4 @@
+LIBRARY coop_dll
+EXPORTS
+    CoopInitialize=_CoopInitialize@0
+    CoopShutdown=_CoopShutdown@0
