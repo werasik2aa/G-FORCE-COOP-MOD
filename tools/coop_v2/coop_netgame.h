@@ -124,12 +124,6 @@ private:
 	// the fly (Q).  Both consume a resource that belongs to the local player, so
 	// replaying the sender's key on the receiver drained one pool twice.
 	bool IsMirrorSuppressedAction(std::uint32_t action) const;
-	// One-shot, never per-frame: writes P1's live binding table to the log so the
-	// semantic action index behind every key is known, instead of matching the
-	// physical scan code (which a rebind would break).
-	void DumpActionBindingsOnce();
-	std::uint32_t GetActionBindingProfile(const void* pad) const;
-	const char* DescribeScanCode(std::uint32_t scan_code) const;
 	bool GetActiveRemoteCameraYaw(float& yaw) const;
 	void SendLocalInput();
 	bool GetRemoteInput(CoopInput& input) const;
@@ -198,7 +192,6 @@ private:
 	volatile LONG m_logged_spawn;
 	volatile LONG m_remote_input_active;
 	volatile LONG m_defer_remote_player_tick;
-	volatile LONG m_logged_action_bindings;
 	bool m_keyboard_state_swapped;
 	bool m_logged_keyboard_state_swap;
 	bool m_input_hooked;
@@ -285,9 +278,5 @@ private:
 	bool m_remote_action_held[kCoopActionCount];
 	std::uint32_t m_local_press_recorded[3];
 	std::uint32_t m_local_release_recorded[3];
-	// One bit per action index, never cleared: "this index has already been logged
-	// once".  Turns a single key press into one log line naming the semantic index,
-	// which is what the mirror-suppression list is pinned to.
-	std::uint32_t m_logged_local_press[3];
 };
 }

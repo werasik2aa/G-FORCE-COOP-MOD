@@ -122,7 +122,6 @@ constexpr uint32_t kCameraAimStateId = 0x4411000Cu;
 constexpr size_t kKeyboardStateBytesOffset = 0x04u;
 constexpr size_t kKeyboardStateSecondaryBytesOffset = 0x204u;
 constexpr size_t kKeyboardStateBytes = 256u;
-constexpr size_t kInputActionBindingOffset = 0x2668u;
 constexpr size_t kInputAimOriginOffset = 0x2774u;
 constexpr size_t kInputAimDirectionOffset = 0x2780u;
 constexpr size_t kXGamePadSize = 0x27ACu;
@@ -147,17 +146,6 @@ constexpr uint32_t kFirstKeyboardActionId = 0x10000000u;
 constexpr uint32_t kKeyboardActionCount = 0x43u;
 constexpr uint32_t kFireActionId = 0x10000007u;
 
-// 0x488A70 resolves a logical action to its binding through
-// [XGamePad + kInputActionBindingOffset + index*4] and then dispatches on the
-// binding's high bits: 0x40000000 selects the mask namespace at [0x99B6B0 + 4],
-// the sign bit selects the DirectInput keyboard buffer ([0xAA6580] + 4 indexed by
-// the low byte = DIK scan code), and anything else is a device button mask
-// ([pad + device*8 + 4]).  So the low byte of a sign-flagged binding is exactly
-// the DIK code the player has to press.
-constexpr uint32_t kActionBindingMaskNamespace = 0x40000000u;
-constexpr uint32_t kActionBindingKeyboardFlag = 0x80000000u;
-constexpr uint32_t kDikTab = 0x0Fu;
-constexpr uint32_t kDikQ = 0x10u;
 // Actions that must never be driven by the remote snapshot, pinned by INDEX so a
 // rebind cannot reopen them.  The live table dumped from the shipped build
 // (profile 1) is the ground truth here:
@@ -172,12 +160,6 @@ constexpr uint32_t kDikQ = 0x10u;
 // and HandleGetAsyncKeyState.  Nothing to pin there, and nothing to rebind.
 constexpr uint32_t kMoochActionIndex = 0x0Eu;
 constexpr uint32_t kFlySummonActionIndex = 0x09u;
-// [XGamePad + 0x278C] is the profile selector 0x48A3A5 branches on: 0 keeps the
-// pad-mask defaults from 0x48A627, 1 and 2 install the two developer keyboard sets
-// (0x48A509 / 0x48A3EB).  The shipped build runs profile 1, but the live table has
-// far more entries than 0x48A509 writes (fire n=0x07 arrives later as the mouse
-// mask 0x40000001), so the real layout still only exists at runtime.
-constexpr size_t kActionBindingProfileOffset = 0x278Cu;
 
 constexpr uint8_t kExpectedSha256[32] = {
 	0xBF, 0xDB, 0x49, 0x30, 0x33, 0x14, 0xCA, 0x8F,

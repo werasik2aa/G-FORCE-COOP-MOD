@@ -125,7 +125,6 @@ CoopNetGame::CoopNetGame() :
 	m_logged_spawn(0),
 	m_remote_input_active(0),
 	m_defer_remote_player_tick(0),
-	m_logged_action_bindings(0),
 	m_keyboard_state_buffer(NULL),
 	m_keyboard_state_secondary_buffer(NULL),
 	m_keyboard_state_swapped(false),
@@ -225,7 +224,6 @@ CoopNetGame::CoopNetGame() :
 	ZeroMemory(m_remote_action_held, sizeof(m_remote_action_held));
 	ZeroMemory(m_local_press_recorded, sizeof(m_local_press_recorded));
 	ZeroMemory(m_local_release_recorded, sizeof(m_local_release_recorded));
-	ZeroMemory(m_logged_local_press, sizeof(m_logged_local_press));
 }
 
 void CoopNetGame::SetModeHost()
@@ -578,7 +576,6 @@ void CoopNetGame::CaptureLocalPress(std::uint32_t action)
 	if (action_index == kFlySummonActionIndex ||
 		action_index == kMoochActionIndex)
 		RequestRemotePlayerTickDeferral();
-	bool first_press = false;
 	AcquireSRWLockExclusive(&m_input_lock);
 	if ((m_local_press_recorded[word] & (1u << bit)) == 0)
 	{
@@ -586,21 +583,7 @@ void CoopNetGame::CaptureLocalPress(std::uint32_t action)
 		m_local_input.action_press_seq[action_index]++;
 		m_local_input.action_down[word] |= 1u << bit;
 	}
-	if ((m_logged_local_press[word] & (1u << bit)) == 0)
-	{
-		m_logged_local_press[word] |= 1u << bit;
-		first_press = true;
-	}
 	ReleaseSRWLockExclusive(&m_input_lock);
-	// One line per action index for the whole process, so pressing a key once tells
-	// which semantic index it drives without matching scan codes.  68 indices exist,
-	// so this can never turn into a per-frame cost.
-	if (first_press)
-	{
-		CoopRuntime::Instance().Log(
-			"[press] first local press n=%02X action=%08X\r\n",
-			action_index, action);
-	}
 }
 
 void CoopNetGame::CaptureLocalRelease(std::uint32_t action)
@@ -750,179 +733,6 @@ void CoopNetGame::GameTick()
 	{
 		CoopRuntime::Instance().Log(
 			"[netgame] network P2 is ready on this process\r\n");
-	}
-	DumpActionBindingsOnce();
-}
-
-// One-shot diagnostic, never repeated and never per-frame: dump the live binding
-// table of P1's registered pad so the semantic action index of every key is known
-// for certain.  The default-binding initializer 0x48A3A5 only holds developer
-// profiles (Z / A-S-D / K-L-;) and leaves fire unbound in the keyboard ones, and
-// GForce.ini carries no bindings, so the shipped layout cannot be read statically.
-// With this table the suppression below can move from "binding decodes to DIK TAB
-// or Q" to a fixed action index, which is what survives a rebind.
-void CoopNetGame::DumpActionBindingsOnce()
-{
-	if (InterlockedCompareExchange(&m_logged_action_bindings, 1, 0) != 0)
-		return;
-	void* pad = NULL;
-	uint32_t binding[kKeyboardActionCount] = {};
-	__try
-	{
-		pad = *reinterpret_cast<void**>(kPrimaryGamePad);
-		if (pad)
-		{
-			const uint8_t* table = reinterpret_cast<const uint8_t*>(pad) +
-				kInputActionBindingOffset;
-			for (uint32_t i = 0; i < kKeyboardActionCount; ++i)
-			{
-				binding[i] = *reinterpret_cast<const uint32_t*>(
-					table + i * 4u);
-			}
-		}
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		pad = NULL;
-	}
-	if (!pad)
-	{
-		// Retry on a later tick; the pad is registered by 0x487F10.
-		InterlockedExchange(&m_logged_action_bindings, 0);
-		return;
-	}
-	CoopRuntime::Instance().Log(
-		"[bindings] pad=%p profile=%u  (kind: KEY=DirectInput scan code, "
-		"MASKNS=0x40000000 namespace, PAD=device button mask)\r\n",
-		pad, GetActionBindingProfile(pad));
-	for (uint32_t i = 0; i < kKeyboardActionCount; ++i)
-	{
-		const uint32_t value = binding[i];
-		if (value == 0)
-			continue;
-		if ((value & kActionBindingMaskNamespace) != 0)
-		{
-			CoopRuntime::Instance().Log(
-				"[bindings] n=0x%02X MASKNS %08X\r\n", i, value);
-		}
-		else if ((value & kActionBindingKeyboardFlag) != 0)
-		{
-			const uint32_t scan_code = value & 0xFFu;
-			CoopRuntime::Instance().Log(
-				"[bindings] n=0x%02X KEY %02X %s  (%08X)\r\n",
-				i, scan_code, DescribeScanCode(scan_code), value);
-		}
-		else
-		{
-			CoopRuntime::Instance().Log(
-				"[bindings] n=0x%02X PAD %08X\r\n", i, value);
-		}
-	}
-	CoopRuntime::Instance().Log("[bindings] end of table\r\n");
-}
-
-// [pad + 0x278C] is the selector 0x48A3A5 branches on: 0 = pad masks,
-// 1 and 2 = the two developer keyboard sets.
-uint32_t CoopNetGame::GetActionBindingProfile(const void* pad) const
-{
-	uint32_t profile = 0xFFFFFFFFu;
-	__try
-	{
-		profile = *reinterpret_cast<const uint32_t*>(
-			static_cast<const uint8_t*>(pad) + kActionBindingProfileOffset);
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		profile = 0xFFFFFFFFu;
-	}
-	return profile;
-}
-
-const char* CoopNetGame::DescribeScanCode(uint32_t scan_code) const
-{
-	switch (scan_code)
-	{
-	case 0x01: return "ESCAPE";
-	case 0x02: return "1";
-	case 0x03: return "2";
-	case 0x04: return "3";
-	case 0x05: return "4";
-	case 0x06: return "5";
-	case 0x07: return "6";
-	case 0x08: return "7";
-	case 0x09: return "8";
-	case 0x0A: return "9";
-	case 0x0B: return "0";
-	case 0x0C: return "MINUS";
-	case 0x0D: return "EQUALS";
-	case 0x0E: return "BACKSPACE";
-	case 0x0F: return "TAB";
-	case 0x10: return "Q";
-	case 0x11: return "W";
-	case 0x12: return "E";
-	case 0x13: return "R";
-	case 0x14: return "T";
-	case 0x15: return "Y";
-	case 0x16: return "U";
-	case 0x17: return "I";
-	case 0x18: return "O";
-	case 0x19: return "P";
-	case 0x1A: return "LBRACKET";
-	case 0x1B: return "RBRACKET";
-	case 0x1C: return "RETURN";
-	case 0x1D: return "LCONTROL";
-	case 0x1E: return "A";
-	case 0x1F: return "S";
-	case 0x20: return "D";
-	case 0x21: return "F";
-	case 0x22: return "G";
-	case 0x23: return "H";
-	case 0x24: return "J";
-	case 0x25: return "K";
-	case 0x26: return "L";
-	case 0x27: return "SEMICOLON";
-	case 0x28: return "APOSTROPHE";
-	case 0x29: return "GRAVE";
-	case 0x2A: return "LSHIFT";
-	case 0x2B: return "BACKSLASH";
-	case 0x2C: return "Z";
-	case 0x2D: return "X";
-	case 0x2E: return "C";
-	case 0x2F: return "V";
-	case 0x30: return "B";
-	case 0x31: return "N";
-	case 0x32: return "M";
-	case 0x33: return "COMMA";
-	case 0x34: return "PERIOD";
-	case 0x35: return "SLASH";
-	case 0x36: return "RSHIFT";
-	case 0x37: return "NUMPADSTAR";
-	case 0x38: return "LMENU";
-	case 0x39: return "SPACE";
-	case 0x3A: return "CAPITAL";
-	case 0x47: return "NUMPAD7";
-	case 0x48: return "NUMPAD8";
-	case 0x49: return "NUMPAD9";
-	case 0x4B: return "NUMPAD4";
-	case 0x4C: return "NUMPAD5";
-	case 0x4D: return "NUMPAD6";
-	case 0x4F: return "NUMPAD1";
-	case 0x50: return "NUMPAD2";
-	case 0x51: return "NUMPAD3";
-	case 0x52: return "NUMPAD0";
-	case 0x9D: return "RCONTROL";
-	case 0xB8: return "RMENU";
-	case 0xC7: return "HOME";
-	case 0xC8: return "UP";
-	case 0xC9: return "PRIOR";
-	case 0xCB: return "LEFT";
-	case 0xCD: return "RIGHT";
-	case 0xCF: return "END";
-	case 0xD0: return "DOWN";
-	case 0xD1: return "NEXT";
-	case 0xD2: return "INSERT";
-	case 0xD3: return "DELETE";
-	default: return "?";
 	}
 }
 
