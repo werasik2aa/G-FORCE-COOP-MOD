@@ -85,9 +85,16 @@ struct CoopInput
 	// instead of it.
 	float camera_yaw;
 	std::uint32_t camera_yaw_valid;
+	// Mooch exists exactly once in the game world.  While its owner controls it,
+	// send its live position separately from the owner's Darwin transform.  The
+	// receiver applies this after Mooch's own stock tick, so it is presentation
+	// only and cannot give the other player control of the shared fly.
+	float fly_position[4];
+	std::uint32_t fly_transform_sequence;
+	std::uint32_t fly_controlled;
 };
 
-static_assert(sizeof(CoopInput) == 264,
+static_assert(sizeof(CoopInput) == 288,
 	"CoopInput is the authoritative remote-player state; host and client "
 	"builds must share this exact layout");
 

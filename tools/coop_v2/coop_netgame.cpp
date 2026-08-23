@@ -155,6 +155,7 @@ CoopNetGame::CoopNetGame() :
 	m_fire_handler_hooked(false),
 	m_remote_input_thread_id(0),
 	m_local_transform_sequence(0),
+	m_local_fly_transform_sequence(0),
 	m_local_weapon_sequence(0),
 	m_last_local_weapon_type(0xFFFFFFFFu),
 	m_logged_remote_transform(false)
@@ -658,6 +659,13 @@ bool CoopNetGame::IsMirrorSuppressedAction(std::uint32_t action) const
 		action_index == kFlySummonActionIndex;
 }
 
+bool CoopNetGame::IsRemoteFlyControlled() const
+{
+	CoopInput remote = {};
+	return GetRemoteInput(remote) && remote.fly_controlled != 0 &&
+		remote.fly_transform_sequence != 0;
+}
+
 // Answer the native "held for >= threshold seconds" queries (0x488DC0 threshold,
 // 0x488E50 hold-duration) for the remote player.  m_remote_hold_start_tick /
 // m_remote_action_held are refreshed once per P2 frame in BeginRemoteInput from
@@ -970,6 +978,41 @@ void CoopNetGame::PublishLocalPlayerTransform(const void* player)
 	ReleaseSRWLockExclusive(&m_input_lock);
 }
 
+void CoopNetGame::PublishLocalFlyTransform(const void* fly, bool controlled)
+{
+	float position[4] = {};
+	if (controlled)
+	{
+		if (!fly)
+			controlled = false;
+		else
+		{
+			__try
+			{
+				memcpy(position, static_cast<const BYTE*>(fly) +
+					kEntityPositionOffset, sizeof(position));
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				controlled = false;
+			}
+		}
+	}
+
+	AcquireSRWLockExclusive(&m_input_lock);
+	m_local_input.fly_controlled = controlled ? 1u : 0u;
+	if (controlled)
+	{
+		memcpy(m_local_input.fly_position, position, sizeof(position));
+		m_local_input.fly_transform_sequence = ++m_local_fly_transform_sequence;
+	}
+	else
+	{
+		m_local_input.fly_transform_sequence = 0;
+	}
+	ReleaseSRWLockExclusive(&m_input_lock);
+}
+
 void CoopNetGame::PublishLocalCameraYaw(float yaw, bool valid)
 {
 	if (valid && !(yaw > -1000.0f && yaw < 1000.0f))
@@ -1038,6 +1081,30 @@ bool CoopNetGame::ApplyRemotePlayerTransform(void* player2)
 	{
 		CoopRuntime::Instance().Log(
 			"[net-transform-error] could not apply remote P1 transform to P2\r\n");
+		return false;
+	}
+}
+
+bool CoopNetGame::ApplyRemoteFlyTransform(void* fly)
+{
+	if (!fly)
+		return false;
+	CoopInput remote = {};
+	if (!GetRemoteInput(remote) || remote.fly_controlled == 0 ||
+		remote.fly_transform_sequence == 0)
+	{
+		return false;
+	}
+	__try
+	{
+		memcpy(static_cast<BYTE*>(fly) + kEntityPositionOffset,
+			remote.fly_position, sizeof(remote.fly_position));
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		CoopRuntime::Instance().Log(
+			"[fly-sync-error] could not apply remote Mooch position\r\n");
 		return false;
 	}
 }
@@ -1236,6 +1303,12 @@ void CoopNetGame::RestoreKeyboardState()
 
 SHORT CoopNetGame::HandleGetAsyncKeyState(int virtual_key)
 {
+	if (!IsRemoteInputActiveOnThisThread() &&
+		(virtual_key == 'Q' || virtual_key == 'T') &&
+		IsRemoteFlyControlled())
+	{
+		return 0;
+	}
 	if (IsRemoteInputActiveOnThisThread() &&
 		virtual_key >= 0 && virtual_key < 256)
 	{
@@ -1267,6 +1340,11 @@ bool __fastcall CoopNetGame::HandleInputActionQuery(void* input_manager,
 	// dedicated edge hooks (0x488CE0 / 0x488C00) instead.
 	if (is_remote_thread && is_keyboard_action)
 		return GetActiveRemoteAction(action);
+	if (is_keyboard_action && IsMirrorSuppressedAction(action) &&
+		IsRemoteFlyControlled())
+	{
+		return false;
+	}
 
 	const bool result = m_original_input_action_query(input_manager, device,
 		action, flags);
@@ -1289,6 +1367,11 @@ bool __fastcall CoopNetGame::HandleInputActionUpQuery(void* input_manager,
 		// state here made P2 simultaneously see remote "move down" and local
 		// "move up", leaving the motor in idle while transform correction slid it.
 		return !GetActiveRemoteAction(action);
+	}
+	if (is_keyboard_action && IsMirrorSuppressedAction(action) &&
+		IsRemoteFlyControlled())
+	{
+		return true;
 	}
 
 	return m_original_input_action_up_query(input_manager, device, action,
@@ -1329,6 +1412,11 @@ bool __fastcall CoopNetGame::HandleInputPressedQuery(void* input_manager,
 		}
 		return edge;
 	}
+	if (is_keyboard_action && IsMirrorSuppressedAction(action) &&
+		IsRemoteFlyControlled())
+	{
+		return false;
+	}
 
 	const bool result = m_original_input_pressed_query(input_manager, device,
 		action, flags);
@@ -1355,6 +1443,11 @@ bool __fastcall CoopNetGame::HandleInputReleasedQuery(void* input_manager,
 			return false;
 		const uint32_t action_index = action - kFirstKeyboardActionId;
 		return m_remote_release_edge[action_index];
+	}
+	if (is_keyboard_action && IsMirrorSuppressedAction(action) &&
+		IsRemoteFlyControlled())
+	{
+		return false;
 	}
 
 	const bool result = m_original_input_released_query(input_manager, device,

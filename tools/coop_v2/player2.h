@@ -45,6 +45,7 @@ private:
 	Player2Module& operator=(const Player2Module&) = delete;
 
 	void* GetGPigEntity(int slot);
+	void* GetFlyEntity();
 	void* GetController(void* entity);
 	uint32_t GetModeId(void* controller);
 	int FindGPigSlot(void* controller);

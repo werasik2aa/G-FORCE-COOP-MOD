@@ -53,6 +53,18 @@ void* Player2Module::GetGPigEntity(int slot)
 	}
 }
 
+void* Player2Module::GetFlyEntity()
+{
+	__try
+	{
+		return *reinterpret_cast<void**>(kFlyEntity);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		return NULL;
+	}
+}
+
 void Player2Module::PublishDefaultModeActiveEntity(void* entity)
 {
 	if (entity == GetGPigEntity(2))
@@ -597,12 +609,11 @@ bool Player2Module::IsFlyControlled()
 	// unconditionally selects 0x6100003B again - so P1's controller sits in Default
 	// mode for the whole flight.  The fly's own controller mode and the
 	// process-global active entity are what actually say who the player drives.
-	void* fly = NULL;
+	void* fly = GetFlyEntity();
 	void* active_a = NULL;
 	void* active_b = NULL;
 	__try
 	{
-		fly = *reinterpret_cast<void**>(kFlyEntity);
 		active_a = *reinterpret_cast<void**>(kActiveEntityA);
 		active_b = *reinterpret_cast<void**>(kActiveEntityB);
 	}
@@ -656,6 +667,8 @@ void Player2Module::TickPlayer1(void* player1_controller)
 	CoopNetGame::Instance().BeginLocalInputCapture();
 	m_original_update(player1_controller);
 	CoopNetGame::Instance().PublishLocalPlayerTransform(GetGPigEntity(1));
+	CoopNetGame::Instance().PublishLocalFlyTransform(GetFlyEntity(),
+		IsFlyControlled());
 	// P1's 0x5BCF30 and 0x5BB1D0 have just finished driving the single shared
 	// camera, so this is the only frame point where 0x52AD20 reports P1's own yaw.
 	// The remote machine cannot read its P2's camera because P2 owns none there —
@@ -732,6 +745,13 @@ void Player2Module::UpdateController(void* controller)
 		// slot 4 (0x9128E8) and not a guinea pig - gets the stock tick untouched.
 		if (slot == 1)
 			TickPlayer1(controller);
+		else if (controller == GetController(GetFlyEntity()))
+		{
+			m_original_update(controller);
+			// Mooch's own controller has just settled its local frame.  Only the
+			// remote owner may correct the one shared fly afterwards.
+			CoopNetGame::Instance().ApplyRemoteFlyTransform(GetFlyEntity());
+		}
 		else
 			m_original_update(controller);
 		// Edge-triggered on the key itself, so polling it from whichever controller

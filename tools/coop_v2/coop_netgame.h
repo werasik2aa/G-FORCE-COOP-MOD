@@ -38,11 +38,13 @@ public:
 	void BeginLocalInputCapture();
 	SHORT HandleGetAsyncKeyState(int virtual_key);
 	void PublishLocalPlayerTransform(const void* player);
+	void PublishLocalFlyTransform(const void* fly, bool controlled);
 	// Publishes the local camera yaw read from 0x52AD20 right after P1's own
 	// controller tick, which is the frame point where P1's 0x5BCF30 has just
 	// finished driving the shared camera.
 	void PublishLocalCameraYaw(float yaw, bool valid);
 	bool ApplyRemotePlayerTransform(void* player2);
+	bool ApplyRemoteFlyTransform(void* fly);
 	bool GetActiveRemoteWeaponType(std::uint32_t& weapon_type) const;
 	bool __fastcall HandleInputActionQuery(void* input_manager,
 		void*, std::uint32_t device, std::uint32_t action,
@@ -117,6 +119,7 @@ private:
 		void* mode_context);
 	bool GetActiveRemoteAction(std::uint32_t action) const;
 	bool GetActiveRemoteHold(std::uint32_t action, float threshold) const;
+	bool IsRemoteFlyControlled() const;
 	// True for actions that must never be mirrored to P2: night vision (TAB) and
 	// the fly (Q).  Both consume a resource that belongs to the local player, so
 	// replaying the sender's key on the receiver drained one pool twice.
@@ -188,6 +191,7 @@ private:
 	DWORD m_last_remote_transform_apply_tick;
 	DWORD m_remote_input_thread_id;
 	std::uint32_t m_local_transform_sequence;
+	std::uint32_t m_local_fly_transform_sequence;
 	std::uint32_t m_local_weapon_sequence;
 	std::uint32_t m_last_local_weapon_type;
 	volatile LONG m_peer_connected_tick;
