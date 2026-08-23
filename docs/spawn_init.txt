@@ -1,0 +1,192 @@
+
+===== function containing 0x67825a starts at 0x677d95 =====
+float *__cdecl sub_677D95(char a1, int a2, int a3, float *a4, float *a5, int a6, int a7, int a8)
+{
+  int v8; // ecx
+  double v9; // st7
+  float v10; // ecx
+  double v11; // st7
+  double v12; // st6
+  double v13; // st7
+  float *result; // eax
+  float v15; // [esp+4h] [ebp-8h]
+  float v16; // [esp+8h] [ebp-4h]
+  int savedregs; // [esp+Ch] [ebp+0h]
+  float savedregsa; // [esp+Ch] [ebp+0h]
+  float savedregsb; // [esp+Ch] [ebp+0h]
+  float retaddr; // [esp+10h] [ebp+4h]
+  float v21; // [esp+14h] [ebp+8h]
+  float v22; // [esp+14h] [ebp+8h]
+  float v23; // [esp+14h] [ebp+8h]
+  float v24; // [esp+14h] [ebp+8h]
+
+  if ( a1 == 1 )
+  {
+    v11 = 0.0;
+    if ( a2 <= a6 )
+    {
+      if ( a2 >= -a6 )
+      {
+        *a4 = 0.0;
+LABEL_17:
+        if ( a3 <= a6 )
+        {
+          if ( a3 >= -a6 )
+            goto LABEL_22;
+          v13 = (double)(a6 + a3);
+        }
+        else
+        {
+          v13 = (double)(a3 - a6);
+        }
+        v11 = v13 / (double)a7;
+        goto LABEL_22;
+      }
+      v12 = (double)(a6 + a2);
+    }
+    else
+    {
+      v12 = (double)(a2 - a6);
+    }
+    *a4 = v12 / (double)a7;
+    goto LABEL_17;
+  }
+  if ( a1 == 2 )
+  {
+    v24 = (float)a8;
+    *a4 = (double)a2 / v24;
+    v11 = (double)a3 / v24;
+  }
+  else
+  {
+    v16 = (float)a2;
+    v15 = (float)a3;
+    v21 = v15 * v15 + v16 * v16;
+    if ( (double)(a6 * a6) >= v21 )
+    {
+      v11 = 0.0;
+      *a4 = 0.0;
+    }
+    else
+    {
+      savedregs = v8;
+      retaddr = (float)a3;
+      ((double (*)(void))unk_4033E0)();
+      v9 = 0.0;
+      v10 = retaddr;
+      if ( v16 >= 0.0 )
+      {
+        savedregsa = retaddr;
+        v9 = ((double (*)(void))unk_403400)();
+        v10 = (float)a2;
+      }
+      v22 = v9;
+      v23 = (v22 - (double)a6) / (double)a7;
+      if ( v23 > 1.0 )
+        v23 = 1.0;
+      savedregsb = v10;
+      *a4 = ((double (*)(void))unk_412960)() * v23;
+      v11 = ((double (*)(void))unk_412980)() * v23;
+    }
+  }
+LABEL_22:
+  result = a5;
+  *a5 = v11;
+  return result;
+}
+
+
+===== function containing 0x67a9de starts at 0x67a9de =====
+// positive sp value has been detected, the output may be wrong!
+int __thiscall sub_67A9DE(unsigned __int8 *this)
+{
+  int result; // eax
+  int v3; // edi
+  int v4; // eax
+  int v5; // ecx
+  int v6; // edx
+  int v7; // eax
+  int v8; // edx
+  int v9; // eax
+  int *i; // [esp+8h] [ebp-8h]
+  int v11; // [esp+Ch] [ebp-4h]
+
+  result = ((int (__thiscall *)(void *))unk_677F3F)(&unk_AA75E0);
+  v11 = 0;
+  if ( this[7852] )
+  {
+    result = (int)(this + 7820);
+    for ( i = (int *)(this + 7820); ; ++i )
+    {
+      v3 = *(_DWORD *)(result - 4360);
+      if ( v3 )
+        break;
+      if ( *(_DWORD *)(result - 4200) == 14 )
+      {
+        ((void (__thiscall *)(unsigned __int8 *))unk_61AF5C)(this);
+        if ( !(unsigned __int8)sub_67A4C3(i) )
+        {
+          v5 = (unsigned __int8)v11;
+          v8 = 0;
+          do
+          {
+            v9 = (unsigned __int8)v8++ + 2 * (unsigned __int8)v11;
+            *(_DWORD *)&this[4 * v9 + 4] = 0;
+            *(_DWORD *)&this[4 * v9 + 68] = 0;
+            *(_DWORD *)&this[4 * v9 + 132] = 0;
+            *(_DWORD *)&this[4 * v9 + 196] = 0;
+          }
+          while ( v8 < 2 );
+          goto LABEL_19;
+        }
+        goto LABEL_16;
+      }
+LABEL_22:
+      ++v11;
+      result = (int)(i + 1);
+      if ( v11 >= this[7852] )
+        return result;
+    }
+    ((void (__thiscall *)(unsigned __int8 *))unk_61AF5C)(this);
+    v4 = (*(int (**)(void))(*(_DWORD *)v3 + 100))();
+    if ( v4 == -2147024866 || v4 == -2147024884 )
+    {
+      v4 = (*(int (**)(void))(*(_DWORD *)v3 + 28))();
+      if ( v4 )
+        goto LABEL_9;
+      v4 = (*(int (**)(void))(*(_DWORD *)v3 + 100))();
+    }
+    if ( !v4 )
+    {
+LABEL_13:
+      ((void (__thiscall *)(unsigned __int8 *))unk_67A919)(this);
+LABEL_16:
+      this[(unsigned __int8)v11 + 3444] = 1;
+      *i = 30;
+      goto LABEL_22;
+    }
+LABEL_9:
+    if ( v4 != 1 )
+    {
+      v5 = (unsigned __int8)v11;
+      v6 = 0;
+      do
+      {
+        v7 = (unsigned __int8)v6++ + 2 * (unsigned __int8)v11;
+        *(_DWORD *)&this[4 * v7 + 4] = 0;
+        *(_DWORD *)&this[4 * v7 + 68] = 0;
+        *(_DWORD *)&this[4 * v7 + 132] = 0;
+        *(_DWORD *)&this[4 * v7 + 196] = 0;
+      }
+      while ( v6 < 2 );
+LABEL_19:
+      if ( *i >= 0 )
+        --*i;
+      else
+        this[v5 + 3444] = 0;
+      goto LABEL_22;
+    }
+    goto LABEL_13;
+  }
+  return result;
+}
