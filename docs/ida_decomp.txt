@@ -1,0 +1,674 @@
+# HAVE_HEXRAYS=True
+
+================ func 004671b0  name=sub_4671B0  ================
+func range 004671b0 - 0046761f
+----- HEX-RAYS DECOMPILATION -----
+int __userpurge sub_4671B0@<eax>(
+        int a1,
+        int a2,
+        int a3,
+        float a4,
+        unsigned int a5,
+        int a6,
+        int a7,
+        int a8,
+        int a9,
+        int a10,
+        int a11,
+        int a12,
+        int a13,
+        int a14,
+        int a15,
+        int a16,
+        int a17,
+        int a18,
+        int a19,
+        int a20,
+        int a21,
+        int a22,
+        int a23,
+        int a24,
+        int a25,
+        int a26,
+        int a27,
+        __int64 a28,
+        int a29,
+        int a30,
+        float a31,
+        float a32,
+        float a33,
+        float a34,
+        float a35,
+        float a36,
+        float a37,
+        float a38,
+        float a39,
+        float a40,
+        float a41,
+        float a42,
+        float a43,
+        float a44,
+        float a45,
+        float a46,
+        float a47,
+        float a48,
+        int a49,
+        float a50,
+        float a51,
+        int a52,
+        int a53,
+        int a54,
+        int a55)
+{
+  int v56; // edi
+  int result; // eax
+  float v58; // xmm2_4
+  float v59; // xmm0_4
+  int *v60; // ebx
+  int *i; // esi
+  float v62; // xmm2_4
+  double v63; // xmm6_8
+  double v64; // xmm3_8
+  double v65; // xmm4_8
+  double v66; // xmm5_8
+  float v67; // xmm0_4
+  float v68; // xmm2_4
+  float v69; // xmm0_4
+  float v70; // xmm0_4
+  float v71; // xmm0_4
+  float v72; // xmm0_4
+  float v73; // xmm0_4
+  float v74; // xmm0_4
+  double v75; // xmm2_8
+  float v76; // xmm0_4
+  float v77; // xmm0_4
+  bool v78; // zf
+  int *savedregsa; // [esp+0h] [ebp+0h]
+  float v81; // [esp+10h] [ebp+10h]
+  int v82; // [esp+10h] [ebp+10h]
+  float v83; // [esp+14h] [ebp+14h]
+  float v84; // [esp+1Ch] [ebp+1Ch]
+  float v85; // [esp+20h] [ebp+20h]
+  float v86; // [esp+24h] [ebp+24h]
+  float v87; // [esp+28h] [ebp+28h]
+  float v88; // [esp+2Ch] [ebp+2Ch]
+  float v89; // [esp+30h] [ebp+30h]
+  float v90; // [esp+34h] [ebp+34h]
+  float v91; // [esp+38h] [ebp+38h]
+  float v92; // [esp+3Ch] [ebp+3Ch]
+  float v93; // [esp+40h] [ebp+40h]
+  float v94; // [esp+44h] [ebp+44h]
+  float v95; // [esp+48h] [ebp+48h]
+  float v96; // [esp+4Ch] [ebp+4Ch]
+  float v97; // [esp+54h] [ebp+54h]
+  float v98; // [esp+58h] [ebp+58h]
+  float v99; // [esp+5Ch] [ebp+5Ch]
+  float v100; // [esp+68h] [ebp+68h]
+  __int64 v101; // [esp+6Ch] [ebp+6Ch]
+
+  ((void (*)(void))unk_6B9E60)();
+  if ( a5 <= 0x14 )
+  {
+    v56 = a5;
+  }
+  else
+  {
+    v56 = 20;
+    a5 = 20;
+  }
+  result = v56 - 1;
+  v81 = (float)(unsigned int)(v56 - 1);
+  v58 = -0.0 - a4;
+  v83 = -0.0 - a4;
+  v90 = v81 * 2.0 / v81;
+  v85 = 2.0 * v83 / v81;
+  if ( v56 )
+  {
+    v59 = -0.0 - v81;
+    v60 = &a55;
+    v91 = v59;
+    v82 = v56;
+    v84 = v59;
+    for ( i = &a55; ; i = v60 )
+    {
+      while ( 1 )
+      {
+        savedregsa = &a30;
+        a31 = v58;
+        a32 = v59;
+        a33 = 0.0;
+        a34 = 0.0;
+        result = ((int (__thiscall *)(float *))unk_623894)(&a35);
+        v62 = a45;
+        v63 = a41;
+        *i = a2;
+        v64 = a46;
+        v65 = a47;
+        v66 = a48;
+        *(i - 2) = 0;
+        *(i - 1) = 0;
+        i[1] = 0;
+        *(float *)&v63 = v63 * *(float *)i;
+        v92 = *(float *)&v63;
+        *(float *)&v63 = a42 * *(float *)i;
+        v93 = *(float *)&v63;
+        *(float *)&v63 = a43 * *(float *)i;
+        v94 = *(float *)&v63;
+        v67 = a44 * *(float *)i;
+        v95 = v67;
+        *(float *)&v63 = a37 * 0.0;
+        v86 = *(float *)&v63;
+        *(float *)&v63 = a38 * 0.0;
+        v87 = *(float *)&v63;
+        *(float *)&v63 = a39 * 0.0;
+        v88 = *(float *)&v63;
+        v68 = v62 * 0.0;
+        v69 = a40 * 0.0;
+        v89 = v69;
+        *(float *)&v63 = a33 * 0.0;
+        v99 = *(float *)&v63;
+        *(float *)&v63 = a34 * 0.0;
+        v70 = a36 * 0.0;
+        v100 = v70;
+        v71 = v99 + v86;
+        v96 = v71;
+        v97 = (float)(a35 * 0.0) + v88;
+        v72 = *(float *)&v63 + v87;
+        v98 = v100 + v89;
+        v73 = v72 + v93;
+        a50 = v73;
+        *(float *)&v101 = (float)(v96 + v92) + v68;
+        v74 = v97 + v94;
+        a51 = v74;
+        *((float *)&v101 + 1) = a50 + (float)(v64 * 0.0);
+        v75 = v74 + (float)(v65 * 0.0);
+        v76 = v98 + v95;
+        *(float *)&a28 = v75;
+        v77 = v76 + (float)(v66 * 0.0);
+        *((float *)&a28 + 1) = v77;
+        *((_QWORD *)i - 1) = v101;
+        *(_QWORD *)i = a28;
+        i += 4;
+        --v56;
+        v59 = v84 + v90;
+        v84 = v59;
+        if ( !v56 )
+          break;
+        v58 = v83;
+      }
+      v60 += 80;
+      v78 = v82-- == 1;
+      v58 = v83 + v85;
+      v83 = v58;
+      if ( v78 )
+        break;
+      v59 = v91;
+      v56 = a5;
+      v84 = v91;
+    }
+  }
+  return result;
+}
+
+
+================ func 006677df  name=sub_6677DF  ================
+func range 006677df - 0066781e
+----- HEX-RAYS DECOMPILATION -----
+double __thiscall sub_6677DF(int this)
+{
+  double result; // st7
+  int v2; // eax
+  float *v3; // ecx
+  int v4; // edx
+  int savedregs; // [esp+0h] [ebp+0h]
+
+  savedregs = this;
+  result = 0.0;
+  if ( *(_BYTE *)(this + 93) )
+  {
+    v2 = *(_DWORD *)(this + 156);
+    *((float *)&savedregs - 1) = 0.0;
+    if ( v2 )
+    {
+      v3 = *(float **)(this + 136);
+      v4 = v2;
+      do
+      {
+        if ( *((float *)&savedregs - 1) < (double)*v3 )
+          *(&savedregs - 1) = *(int *)v3;
+        ++v3;
+        --v4;
+      }
+      while ( v4 );
+    }
+    return *((float *)&savedregs - 1);
+  }
+  return result;
+}
+
+
+================ func 00677d95  name=sub_677D95  ================
+func range 00677d95 - 00677ee5
+----- HEX-RAYS DECOMPILATION -----
+float *__cdecl sub_677D95(char a1, int a2, int a3, float *a4, float *a5, int a6, int a7, int a8)
+{
+  int v8; // ecx
+  double v9; // st7
+  float v10; // ecx
+  double v11; // st7
+  double v12; // st6
+  double v13; // st7
+  float *result; // eax
+  float v15; // [esp+4h] [ebp-8h]
+  float v16; // [esp+8h] [ebp-4h]
+  int savedregs; // [esp+Ch] [ebp+0h]
+  float savedregsa; // [esp+Ch] [ebp+0h]
+  float savedregsb; // [esp+Ch] [ebp+0h]
+  float retaddr; // [esp+10h] [ebp+4h]
+  float v21; // [esp+14h] [ebp+8h]
+  float v22; // [esp+14h] [ebp+8h]
+  float v23; // [esp+14h] [ebp+8h]
+  float v24; // [esp+14h] [ebp+8h]
+
+  if ( a1 == 1 )
+  {
+    v11 = 0.0;
+    if ( a2 <= a6 )
+    {
+      if ( a2 >= -a6 )
+      {
+        *a4 = 0.0;
+LABEL_17:
+        if ( a3 <= a6 )
+        {
+          if ( a3 >= -a6 )
+            goto LABEL_22;
+          v13 = (double)(a6 + a3);
+        }
+        else
+        {
+          v13 = (double)(a3 - a6);
+        }
+        v11 = v13 / (double)a7;
+        goto LABEL_22;
+      }
+      v12 = (double)(a6 + a2);
+    }
+    else
+    {
+      v12 = (double)(a2 - a6);
+    }
+    *a4 = v12 / (double)a7;
+    goto LABEL_17;
+  }
+  if ( a1 == 2 )
+  {
+    v24 = (float)a8;
+    *a4 = (double)a2 / v24;
+    v11 = (double)a3 / v24;
+  }
+  else
+  {
+    v16 = (float)a2;
+    v15 = (float)a3;
+    v21 = v15 * v15 + v16 * v16;
+    if ( (double)(a6 * a6) >= v21 )
+    {
+      v11 = 0.0;
+      *a4 = 0.0;
+    }
+    else
+    {
+      savedregs = v8;
+      retaddr = (float)a3;
+      ((double (*)(void))unk_4033E0)();
+      v9 = 0.0;
+      v10 = retaddr;
+      if ( v16 >= 0.0 )
+      {
+        savedregsa = retaddr;
+        v9 = ((double (*)(void))unk_403400)();
+        v10 = (float)a2;
+      }
+      v22 = v9;
+      v23 = (v22 - (double)a6) / (double)a7;
+      if ( v23 > 1.0 )
+        v23 = 1.0;
+      savedregsb = v10;
+      *a4 = ((double (*)(void))unk_412960)() * v23;
+      v11 = ((double (*)(void))unk_412980)() * v23;
+    }
+  }
+LABEL_22:
+  result = a5;
+  *a5 = v11;
+  return result;
+}
+
+
+================ func 0067a4c3  name=sub_67A4C3  ================
+func range 0067a4c3 - 0067a760
+----- HEX-RAYS DECOMPILATION -----
+None
+
+================ func 0067a77c  name=sub_67A77C  ================
+func range 0067a77c - 0067a919
+----- HEX-RAYS DECOMPILATION -----
+// positive sp value has been detected, the output may be wrong!
+char __thiscall sub_67A77C(_BYTE *this)
+{
+  int v1; // eax
+  _DWORD *v4; // ebx
+  int v5; // esi
+  int v6; // [esp+4h] [ebp-Ch]
+  _BYTE *v7; // [esp+8h] [ebp-8h]
+  int v8; // [esp+Ch] [ebp-4h]
+
+  v1 = *(_DWORD *)(dword_99033C + 120);
+  this[7852] = 0;
+  this[7853] = 0;
+  v6 = v1;
+  if ( (*(int (**)(void))(*(_DWORD *)v1 + 16))() )
+    return 0;
+  v8 = 0;
+  if ( this[7852] )
+  {
+    v7 = this + 3492;
+    v4 = this + 3460;
+    do
+    {
+      ((void (*)(void))unk_677808)();
+      if ( v4[40] != 14 )
+      {
+        if ( !(*(int (**)(void))(*(_DWORD *)v6 + 12))() )
+        {
+          v5 = *v4;
+          if ( (*(int (**)(void))(*(_DWORD *)*v4 + 52))() )
+            ((void (*)(void))unk_466F40)();
+          if ( (*(int (**)(void))(*(_DWORD *)v5 + 44))() )
+            ((void (*)(void))unk_466F40)();
+          (*(void (**)(void))(*(_DWORD *)v5 + 16))();
+          byte_AA65D8 = 0;
+          if ( (*(int (**)(void))(*(_DWORD *)v5 + 76))() )
+            ((void (*)(void))unk_466F40)();
+          this[v8 + 7812] = byte_AA65D8;
+          if ( (*(int (**)(void))(*(_DWORD *)v5 + 28))() )
+            ((void (*)(void))unk_466F40)();
+          if ( this[v8 + 7812] == 1 )
+            ((void (__thiscall *)(_BYTE *))unk_67A414)(this);
+          goto LABEL_19;
+        }
+        ((void (*)(void))unk_466F40)();
+      }
+      *v4 = 0;
+LABEL_19:
+      ++v8;
+      v7 += 16;
+      ++v4;
+    }
+    while ( v8 < (unsigned __int8)this[7852] );
+  }
+  return 1;
+}
+
+
+================ func 0063919b  name=sub_63919B  ================
+func range 0063919b - 00639282
+----- HEX-RAYS DECOMPILATION -----
+// positive sp value has been detected, the output may be wrong!
+int __thiscall sub_63919B(int this)
+{
+  int result; // eax
+  int v2; // edx
+  int v3; // esi
+  unsigned __int8 v4; // bl
+  _DWORD *v5; // esi
+  int v6; // edi
+  int v7; // edi
+  int v8; // edi
+  int v9; // [esp+Ch] [ebp-54h]
+  _DWORD v10[19]; // [esp+10h] [ebp-50h] BYREF
+  unsigned int v11; // [esp+5Ch] [ebp-4h]
+
+  result = this;
+  v10[0] = v9;
+  v10[1] = v9;
+  v10[2] = v9;
+  v2 = v9;
+  v3 = v9;
+  v10[3] = v9;
+  v10[5] = v9;
+  v10[12] = v9;
+  v10[14] = v9;
+  v10[15] = v9;
+  v10[17] = v9;
+  *(_DWORD *)(this + 100) = 0;
+  *(_DWORD *)(this + 104) = 0;
+  *(_DWORD *)(this + 108) = 0;
+  *(_DWORD *)(this + 112) = 0;
+  v4 = *(_BYTE *)(this + 98);
+  v10[4] = 35;
+  v10[6] = 37;
+  v10[7] = v2;
+  v10[8] = v2;
+  v10[9] = v2;
+  v10[10] = v2;
+  v10[11] = v3;
+  v10[13] = v3;
+  v10[16] = 56;
+  v10[18] = 48;
+  if ( !v4 )
+    v4 = 1;
+  v11 = 0;
+  v5 = v10;
+  do
+  {
+    if ( ((1 << v11) & v4) != 0 )
+    {
+      v6 = *(v5 - 1);
+      if ( *(_DWORD *)(this + 100) < v6 )
+        *(_DWORD *)(this + 100) = v6;
+      if ( *(_DWORD *)(this + 104) < *v5 )
+        *(_DWORD *)(this + 104) = *v5;
+      v7 = v5[1];
+      if ( *(_DWORD *)(this + 108) < v7 )
+        *(_DWORD *)(this + 108) = v7;
+      v8 = v5[2];
+      if ( *(_DWORD *)(this + 112) < v8 )
+        *(_DWORD *)(this + 112) = v8;
+    }
+    ++v11;
+    v5 = (_DWORD *)((char *)v5 + v2);
+  }
+  while ( v11 < 5 );
+  *(_DWORD *)(this + 108) = *(unsigned __int16 *)(this + 10) - *(_DWORD *)(this + 108) - *(_DWORD *)(this + 100);
+  *(_DWORD *)(this + 112) = *(unsigned __int16 *)(this + 12) - *(_DWORD *)(this + 104) - *(_DWORD *)(this + 112);
+  return result;
+}
+
+
+================ func 006b0057  name=sub_6B0057  ================
+func range 006b0057 - 006b01ba
+----- HEX-RAYS DECOMPILATION -----
+// positive sp value has been detected, the output may be wrong!
+bool __thiscall sub_6B0057(int this, char a2)
+{
+  int v2; // esi
+  int v4; // edi
+  unsigned int v6; // eax
+  __int16 v7; // cx
+  int v8; // edi
+  int v10; // [esp+10h] [ebp-1Ch]
+  unsigned int i; // [esp+14h] [ebp-18h]
+  int v12; // [esp+14h] [ebp-18h]
+  __int16 v13; // [esp+18h] [ebp-14h]
+  int v14; // [esp+18h] [ebp-14h]
+  _WORD v15[8]; // [esp+1Ch] [ebp-10h]
+
+  v2 = dword_99B6C8;
+  *(_BYTE *)(this + 32) = a2;
+  (*(void (**)(void))(*(_DWORD *)v2 + 104))();
+  ((void (*)(void))unk_66239F)();
+  v4 = this + 48;
+  (*(void (**)(void))(*(_DWORD *)v2 + 108))();
+  ((void (*)(void))unk_66239F)();
+  if ( (*(int (**)(void))(**(_DWORD **)v4 + 44))() )
+  {
+    ((void (*)(void))unk_66239F)();
+    (*(void (**)(void))(**(_DWORD **)v4 + 8))();
+    *(_DWORD *)v4 = 0;
+    return 0;
+  }
+  else
+  {
+    v15[0] = 0;
+    v15[1] = 2;
+    v15[2] = 1;
+    v15[3] = 2;
+    v15[4] = 3;
+    v15[5] = 1;
+    v13 = 0;
+    v6 = 0;
+    do
+    {
+      for ( i = 0; i < 6; ++i )
+      {
+        v7 = v13 + v15[i];
+        *(_WORD *)(v6 + v10) = v7;
+        v6 += 2;
+      }
+      v13 += 4;
+    }
+    while ( v6 < 0x15F90 );
+    v12 = (*(int (**)(void))(**(_DWORD **)v4 + 48))();
+    ((void (*)(void))unk_66239F)();
+    if ( !byte_99B6B9 && !*(_DWORD *)(this + 52) )
+    {
+      v8 = this + 52;
+      v14 = 16;
+      do
+      {
+        (*(void (**)(void))(*(_DWORD *)v2 + 104))();
+        ((void (*)(void))unk_66239F)();
+        v8 += 4;
+        --v14;
+      }
+      while ( v14 );
+    }
+    return v12 == 0;
+  }
+}
+
+
+================ func 006b96e0  name=sub_6B96E0  ================
+func range 006b96e0 - 006b9878
+----- HEX-RAYS DECOMPILATION -----
+// positive sp value has been detected, the output may be wrong!
+int __cdecl sub_6B96E0(unsigned int *a1)
+{
+  int v3; // eax
+  unsigned int v4; // edx
+  unsigned int v5; // eax
+  unsigned int v6; // ecx
+  _BYTE *v7; // edx
+  unsigned int v8; // edx
+  int v9; // esi
+  _BYTE *v10; // eax
+  _BYTE *v11; // ecx
+  bool v12; // zf
+  int v13; // eax
+  unsigned int v14; // ecx
+  unsigned int v15; // [esp+8h] [ebp-Ch]
+  int v16; // [esp+Ch] [ebp-8h]
+  int v17; // [esp+10h] [ebp-4h]
+  unsigned int v18; // [esp+1Ch] [ebp+8h]
+
+  if ( !a1 )
+  {
+    *(_DWORD *)((int (*)(void))unk_6C26FF)() = 22;
+    ((void (*)(void))unk_6C26A0)();
+    return -1;
+  }
+  v17 = ((int (*)(void))unk_6C23BA)();
+  if ( (a1[1] & 0x80000000) != 0 )
+    a1[1] = 0;
+  v3 = ((int (*)(void))unk_6C33EF)();
+  v16 = v3;
+  if ( v3 < 0 )
+    return -1;
+  v4 = a1[3];
+  if ( (v4 & 0x108) == 0 )
+    return v3 - a1[1];
+  v5 = *a1;
+  v6 = a1[2];
+  v15 = *a1 - v6;
+  if ( (v4 & 3) != 0 )
+  {
+    if ( *(char *)(dword_AAF980[v17 >> 5] + 56 * (v17 & 0x1F) + 4) < 0 )
+    {
+      v7 = (_BYTE *)a1[2];
+      if ( v6 < v5 )
+      {
+        do
+        {
+          if ( *v7 == 10 )
+            ++v15;
+          ++v7;
+        }
+        while ( (unsigned int)v7 < v5 );
+      }
+    }
+  }
+  else if ( (v4 & 0x80u) == 0 )
+  {
+    *(_DWORD *)((int (*)(void))unk_6C26FF)() = 22;
+    return -1;
+  }
+  if ( !v16 )
+    return v15;
+  if ( (a1[3] & 1) == 0 )
+    return v16 + v15;
+  v8 = a1[1];
+  if ( v8 )
+  {
+    v9 = 56 * (v17 & 0x1F);
+    v18 = v8 + v5 - v6;
+    if ( *(char *)(dword_AAF980[v17 >> 5] + v9 + 4) >= 0 )
+    {
+LABEL_39:
+      v16 -= v18;
+      return v16 + v15;
+    }
+    if ( ((int (*)(void))unk_6C33EF)() == v16 )
+    {
+      v10 = (_BYTE *)a1[2];
+      v11 = &v10[v18];
+      while ( v10 < v11 )
+      {
+        if ( *v10 == 10 )
+          ++v18;
+        ++v10;
+      }
+      v12 = (a1[3] & 0x2000) == 0;
+LABEL_37:
+      if ( !v12 )
+        ++v18;
+      goto LABEL_39;
+    }
+    if ( ((int (*)(void))unk_6C33EF)() >= 0 )
+    {
+      v13 = 512;
+      if ( v18 > 0x200 || (v14 = a1[3], (v14 & 8) == 0) || (v14 & 0x400) != 0 )
+        v13 = a1[6];
+      v18 = v13;
+      v12 = (*(_BYTE *)(dword_AAF980[v17 >> 5] + v9 + 4) & 4) == 0;
+      goto LABEL_37;
+    }
+    return -1;
+  }
+  v15 = 0;
+  return v16 + v15;
+}
+
+
+# done
