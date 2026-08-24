@@ -160,6 +160,8 @@ CoopNetGame::CoopNetGame() :
 	m_local_transform_sequence(0),
 	m_local_fly_transform_sequence(0),
 	m_local_fly_active_seen(false),
+	m_local_mooch_exit_key_down(false),
+	m_logged_fly_active_entity_repair(false),
 	m_local_weapon_sequence(0),
 	m_last_local_weapon_type(0xFFFFFFFFu),
 	m_logged_remote_transform(false)
@@ -437,6 +439,43 @@ void* CoopNetGame::GetRemoteGamePad()
 	return m_remote_gamepad;
 }
 
+bool CoopNetGame::BeginRemoteGamePadScope(void*& primary_gamepad)
+{
+	primary_gamepad = NULL;
+	void* const remote_gamepad = GetRemoteGamePad();
+	if (!remote_gamepad)
+		return false;
+
+	__try
+	{
+		void** const primary_gamepad_slot =
+			reinterpret_cast<void**>(kPrimaryGamePad);
+		primary_gamepad = *primary_gamepad_slot;
+		*primary_gamepad_slot = remote_gamepad;
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		primary_gamepad = NULL;
+		CoopRuntime::Instance().Log(
+			"[p2-gamepad] unable to scope the primary XGamePad\r\n");
+		return false;
+	}
+}
+
+void CoopNetGame::EndRemoteGamePadScope(void* primary_gamepad)
+{
+	__try
+	{
+		*reinterpret_cast<void**>(kPrimaryGamePad) = primary_gamepad;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		CoopRuntime::Instance().Log(
+			"[p2-gamepad] unable to restore the primary XGamePad\r\n");
+	}
+}
+
 bool CoopNetGame::ApplyActiveRemoteAimRay(void* input_manager,
 	float saved_ray[6]) const
 {
@@ -565,8 +604,20 @@ void CoopNetGame::CaptureLocalAction(std::uint32_t action, bool is_down)
 	const uint32_t word = action_index / 32;
 	const uint32_t bit = action_index % 32;
 	const bool was_down = (m_prev_local_action_down[word] & (1u << bit)) != 0;
-	if (action_index == kMoochActionIndex && is_down && !was_down)
+	if (action_index == kMoochActionIndex && is_down && !was_down &&
+		!ConsumeLocalMoochFlyExit())
+	{
 		RequestRemotePlayerTickDeferral();
+	}
+	if (action_index == kMoochActionIndex && !is_down)
+	{
+		// The level path can observe the key-up before the released-edge hook.
+		// Clear the duplicate-edge guard here as well so the next physical press
+		// is allowed to perform the normal fly exit.
+		AcquireSRWLockExclusive(&m_input_lock);
+		m_local_mooch_exit_key_down = false;
+		ReleaseSRWLockExclusive(&m_input_lock);
+	}
 	if (is_down)
 		m_prev_local_action_down[word] |= 1u << bit;
 	else
@@ -596,8 +647,11 @@ void CoopNetGame::CaptureLocalPress(std::uint32_t action)
 	// level query. Request the one-frame P2 hand-off gap here as well; otherwise
 	// BeginRemoteInput is still active when the EXE transfers the active entity
 	// from Darwin to the fly and the first Mooch press is consumed by P2's context.
-	if (action_index == kMoochActionIndex)
+	if (action_index == kMoochActionIndex &&
+		!ConsumeLocalMoochFlyExit())
+	{
 		RequestRemotePlayerTickDeferral();
+	}
 	AcquireSRWLockExclusive(&m_input_lock);
 	if ((m_local_press_recorded[word] & (1u << bit)) == 0)
 	{
@@ -619,6 +673,8 @@ void CoopNetGame::CaptureLocalRelease(std::uint32_t action)
 	const uint32_t word = action_index / 32;
 	const uint32_t bit = action_index % 32;
 	AcquireSRWLockExclusive(&m_input_lock);
+	if (action_index == kMoochActionIndex)
+		m_local_mooch_exit_key_down = false;
 	if ((m_local_release_recorded[word] & (1u << bit)) == 0)
 	{
 		m_local_release_recorded[word] |= 1u << bit;
@@ -645,6 +701,36 @@ bool CoopNetGame::GetActiveRemoteAction(std::uint32_t action) const
 bool CoopNetGame::IsMoochAction(std::uint32_t action) const
 {
 	return action == kFirstKeyboardActionId + kMoochActionIndex;
+}
+
+bool CoopNetGame::ConsumeLocalMoochFlyExit()
+{
+	bool released = false;
+	AcquireSRWLockExclusive(&m_input_lock);
+	if (m_local_mooch_exit_key_down)
+	{
+		// The level and pressed-edge hooks can both observe one physical press.
+		// Treat the second observation as the same exit rather than arming a new
+		// Darwin-to-Mooch hand-off.
+		ReleaseSRWLockExclusive(&m_input_lock);
+		return true;
+	}
+	if (m_local_input.fly_controlled != 0)
+	{
+		m_local_input.fly_controlled = 0;
+		m_local_input.fly_transform_sequence = 0;
+		m_local_fly_active_seen = false;
+		m_local_mooch_exit_key_down = true;
+		m_logged_fly_active_entity_repair = false;
+		released = true;
+	}
+	ReleaseSRWLockExclusive(&m_input_lock);
+	if (released)
+	{
+		CoopRuntime::Instance().Log(
+			"[fly] local Mooch exit action observed; local authority released\r\n");
+	}
+	return released;
 }
 
 // Mooch changes process-global ownership and the map is UI local to one game
@@ -677,6 +763,32 @@ bool CoopNetGame::IsLocalFlyControlled() const
 	return controlled;
 }
 
+void CoopNetGame::MaintainLocalFlyActiveEntity(void* fly)
+{
+	if (!fly || !IsLocalFlyControlled())
+		return;
+
+	__try
+	{
+		void** const active_a = reinterpret_cast<void**>(kActiveEntityA);
+		void** const active_b = reinterpret_cast<void**>(kActiveEntityB);
+		const bool repaired = *active_a != fly || *active_b != fly;
+		*active_a = fly;
+		*active_b = fly;
+		if (repaired && !m_logged_fly_active_entity_repair)
+		{
+			m_logged_fly_active_entity_repair = true;
+			CoopRuntime::Instance().Log(
+				"[fly] restored native active entity to Mooch after fly tick\r\n");
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		CoopRuntime::Instance().Log(
+			"[fly] unable to restore active Mooch entity\r\n");
+	}
+}
+
 void CoopNetGame::ConfirmLocalFlyControl()
 {
 	bool became_owner = false;
@@ -689,6 +801,11 @@ void CoopNetGame::ConfirmLocalFlyControl()
 		m_local_input.fly_controlled = 1;
 		m_local_input.fly_transform_sequence = 0;
 		m_local_fly_active_seen = false;
+		// Confirm happens after the same physical Mooch press has selected
+		// 0x61000065.  The pressed-edge path can still observe that entry press
+		// on the following tick, so keep it consumed until the key is released.
+		m_local_mooch_exit_key_down = true;
+		m_logged_fly_active_entity_repair = false;
 		became_owner = true;
 	}
 	ReleaseSRWLockExclusive(&m_input_lock);
@@ -706,29 +823,28 @@ void CoopNetGame::ConfirmLocalFlyControl()
 	}
 }
 
-void CoopNetGame::ObserveLocalFlyMode(std::uint32_t mode_id)
+void CoopNetGame::ObserveLocalFlyMode(std::uint32_t mode_before,
+	std::uint32_t mode_after)
 {
-	bool released = false;
+	bool active_seen = false;
 	AcquireSRWLockExclusive(&m_input_lock);
 	if (m_local_input.fly_controlled != 0)
 	{
-		if (mode_id == kFlyControlledModeId)
+		// The mode can be 0x34 at the beginning of its first tick and 0x33 at
+		// the end of that same tick.  Observing either side catches the real
+		// entry without treating the subsequent idle/follow state as an exit.
+		if (mode_before == kFlyControlledModeId ||
+			mode_after == kFlyControlledModeId)
 		{
+			active_seen = !m_local_fly_active_seen;
 			m_local_fly_active_seen = true;
-		}
-		else if (m_local_fly_active_seen && mode_id == kFlyIdleModeId)
-		{
-			m_local_input.fly_controlled = 0;
-			m_local_input.fly_transform_sequence = 0;
-			m_local_fly_active_seen = false;
-			released = true;
 		}
 	}
 	ReleaseSRWLockExclusive(&m_input_lock);
-	if (released)
+	if (active_seen)
 	{
 		CoopRuntime::Instance().Log(
-			"[fly] native Mooch exit observed; local authority released\r\n");
+			"[fly] Fly_Active observed; local ownership latched\r\n");
 	}
 }
 
@@ -1530,13 +1646,14 @@ void __fastcall CoopNetGame::HandleGPigCameraUpdate(void* mode, void*)
 	if (!m_original_gpig_camera_update)
 		return;
 	// 0x5BCF30 is the camera update of the ticking GPig.  There is one camera
-	// handler in the process and it belongs to the local P1, so running this for
-	// P2 re-targeted it, transitioned its state machine from the remote aim bits
-	// (0x5BD33C/0x5BD36C read the global pad 0x9905CC) and left follow state
-	// behind — which is exactly what pinned P1's body while it held RMB.
-	if (IsRemoteInputActiveOnThisThread())
+	// handler in the process.  P2 must never drive it, and after P1 has handed
+	// control to Mooch its Default mode must not re-centre the same handler on
+	// Darwin every frame.  Mooch owns its own stock camera path; no fly yaw or
+	// position is manufactured here.
+	if (IsRemoteInputActiveOnThisThread() || IsLocalFlyControlled())
 	{
-		if (!m_logged_camera_update_skip)
+		if (IsRemoteInputActiveOnThisThread() &&
+			!m_logged_camera_update_skip)
 		{
 			m_logged_camera_update_skip = true;
 			CoopRuntime::Instance().Log(

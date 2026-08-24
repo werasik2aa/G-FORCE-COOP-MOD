@@ -753,11 +753,14 @@ void Player2Module::UpdateController(void* controller)
 		else if (controller == GetController(GetFlyEntity()))
 		{
 			void* fly = GetFlyEntity();
+			const uint32_t fly_mode_before = GetModeId(controller);
 			m_original_update(controller);
 			// Capture after Mooch's native motor has produced this frame's final
 			// position.  The owner state itself was confirmed from P1's native
 			// Darwin-to-Mooch hand-off and is not inferred here.
-			CoopNetGame::Instance().ObserveLocalFlyMode(GetModeId(controller));
+			CoopNetGame::Instance().ObserveLocalFlyMode(fly_mode_before,
+				GetModeId(controller));
+			CoopNetGame::Instance().MaintainLocalFlyActiveEntity(fly);
 			CoopNetGame::Instance().PublishLocalFlyTransform(fly);
 			if (!CoopNetGame::Instance().IsLocalFlyControlled())
 				CoopNetGame::Instance().ApplyRemoteFlyTransform(fly);
@@ -788,6 +791,16 @@ void Player2Module::UpdateController(void* controller)
 
 	void* player2 = GetGPigEntity(2);
 	bool remote_input_active = false;
+	bool remote_gamepad_active = false;
+	void* primary_gamepad = NULL;
+	// P2 Default's 0x5BB1D0 writes the one shared aim/crosshair handler even
+	// though its camera update is skipped.  During local fly control preserve
+	// the state produced by the fly/P1 path around P2's otherwise-normal stock
+	// update; P2 still consumes its packet, advances animation and fires.
+	SharedCameraAimState saved_fly_camera_state = {};
+	const bool preserve_fly_camera =
+		CoopNetGame::Instance().IsLocalFlyControlled();
+	bool fly_camera_state_saved = false;
 
 	__try
 	{
@@ -797,6 +810,15 @@ void Player2Module::UpdateController(void* controller)
 		// BuildRemoteScanCodeState reports every key up and no edge is forged.
 		CoopNetGame::Instance().BeginRemoteInput();
 		remote_input_active = true;
+		// GPig_Default::main Update does not consistently honour the pad passed to
+		// its inner calls: it reloads [0x9905CC] for 0x5B92A0, 0x5BB1D0 and other
+		// state machines.  Leaving that pointer on P1 lets P2 reset the physical
+		// pad state which Fly_Active reads for its movable turn crosshair.  The
+		// private pad already exists for P2; expose it only for this synchronous
+		// P2 tick, then restore P1 before the next controller (including the fly)
+		// is updated.
+		remote_gamepad_active =
+			CoopNetGame::Instance().BeginRemoteGamePadScope(primary_gamepad);
 		// Default is the P2 controller's native input/animation state.  Its Enter
 		// routine reads the pad immediately, so selecting it outside this bracket
 		// incorrectly consumes P1's physical key edge.  This mod-side guard is
@@ -829,10 +851,23 @@ void Player2Module::UpdateController(void* controller)
 		uint32_t remote_weapon_type = 0xFFFFFFFFu;
 		if (CoopNetGame::Instance().GetActiveRemoteWeaponType(remote_weapon_type))
 			ApplyPlayer2WeaponSelection(player2, remote_weapon_type, "remote P1");
+		if (preserve_fly_camera)
+			fly_camera_state_saved =
+				SaveSharedCameraAimState(saved_fly_camera_state);
 		m_original_update(controller);
+		if (fly_camera_state_saved)
+		{
+			RestoreSharedCameraAimState(saved_fly_camera_state);
+			fly_camera_state_saved = false;
+		}
 		// Set the position.  A correction toward the sender's own transform, and a
 		// no-op until a packet with a non-zero sequence has arrived.
 		CoopNetGame::Instance().ApplyRemotePlayerTransform(player2);
+		if (remote_gamepad_active)
+		{
+			CoopNetGame::Instance().EndRemoteGamePadScope(primary_gamepad);
+			remote_gamepad_active = false;
+		}
 		CoopNetGame::Instance().EndRemoteInput();
 		remote_input_active = false;
 
@@ -845,6 +880,10 @@ void Player2Module::UpdateController(void* controller)
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
+		if (fly_camera_state_saved)
+			RestoreSharedCameraAimState(saved_fly_camera_state);
+		if (remote_gamepad_active)
+			CoopNetGame::Instance().EndRemoteGamePadScope(primary_gamepad);
 		if (remote_input_active)
 			CoopNetGame::Instance().EndRemoteInput();
 		CoopRuntime::Instance().Log("[error] exception in player 2 controller update\r\n");

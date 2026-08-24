@@ -31,6 +31,11 @@ public:
 	void RemoveInputHook();
 	void BeginRemoteInput();
 	void EndRemoteInput();
+	// The stock P2 mode reloads [0x9905CC] instead of using its explicit pad
+	// argument. Scope that global to P2's private XGamePad for one synchronous
+	// controller tick, then restore the physical P1 pad before Fly_Active runs.
+	bool BeginRemoteGamePadScope(void*& primary_gamepad);
+	void EndRemoteGamePadScope(void* primary_gamepad);
 	// The confirmed Darwin-to-Mooch hand-off must settle before P2 enters its
 	// next packet-driven stock tick.
 	void RequestRemotePlayerTickDeferral();
@@ -42,11 +47,16 @@ public:
 	// one-frame switch mode.  The active-entity globals are transient during
 	// that hand-off and must not decide who publishes the shared fly.
 	void ConfirmLocalFlyControl();
-	// The fly controller itself confirms a sustained flight with 0x61000034 and
-	// returns to 0x61000033 on exit.  This observes that native lifecycle; it
-	// does not manufacture either transition.
-	void ObserveLocalFlyMode(std::uint32_t mode_id);
+	// 0x61000034 is a short native entry signal.  Read both sides of the fly's
+	// tick so the hand-off latch cannot miss it when the same tick ends in 0x33.
+	void ObserveLocalFlyMode(std::uint32_t mode_before,
+		std::uint32_t mode_after);
 	bool IsLocalFlyControlled() const;
+	// Fly_Active::Enter normally publishes Mooch as both active entities, but
+	// P1's still-ticking Default controller later overwrites those globals.  Keep
+	// the native fly ownership published after its own tick; never manufacture
+	// its transform or rotation.
+	void MaintainLocalFlyActiveEntity(void* fly);
 	void PublishLocalFlyTransform(const void* fly);
 	// Publishes the local camera yaw read from 0x52AD20 right after P1's own
 	// controller tick, which is the frame point where P1's 0x5BCF30 has just
@@ -130,6 +140,10 @@ private:
 	bool GetActiveRemoteHold(std::uint32_t action, float threshold) const;
 	bool IsRemoteFlyControlled() const;
 	bool IsMoochAction(std::uint32_t action) const;
+	// The same logical Mooch action that enters the fly returns from it.  Once a
+	// native entry is confirmed, the next local edge releases only our ownership
+	// latch; the stock fly controller still performs its own normal exit.
+	bool ConsumeLocalMoochFlyExit();
 	// True for actions that P2 must never replay.  Mooch changes process-global
 	// ownership; the map is a local UI action.  Neither belongs in a remote tick.
 	bool IsMirrorSuppressedAction(std::uint32_t action) const;
@@ -197,6 +211,8 @@ private:
 	std::uint32_t m_local_transform_sequence;
 	std::uint32_t m_local_fly_transform_sequence;
 	bool m_local_fly_active_seen;
+	bool m_local_mooch_exit_key_down;
+	bool m_logged_fly_active_entity_repair;
 	std::uint32_t m_local_weapon_sequence;
 	std::uint32_t m_last_local_weapon_type;
 	volatile LONG m_peer_connected_tick;
