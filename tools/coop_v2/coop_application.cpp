@@ -58,7 +58,7 @@ BOOL CoopApplication::Initialize()
 		runtime.Log("[network-warning] remote XInput injection is unavailable\r\n");
 
 	InterlockedExchange(&m_init_state, 2);
-	runtime.Log("[ready] F6=spawn P2, loaded save=IP+Steam host, F8=connect localhost\r\n");
+	runtime.Log("[ready] F6=spawn P2, loaded save=IP+Steam host, F8=IP connect dialog\r\n");
 	return TRUE;
 }
 

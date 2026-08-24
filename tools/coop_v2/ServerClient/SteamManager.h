@@ -29,6 +29,9 @@ public:
 	// Called from P1's native controller tick, never from the menu.  It merely
 	// queues the host listeners for the network worker.
 	void NotifyGameWorldReady();
+	// May be called from the game UI thread.  The dialog itself remains on the
+	// network worker, which owns all socket role transitions.
+	void RequestIpConnectionPrompt();
 
 	bool InitializeSteam();
 	bool IsSteamInitialized() const;
@@ -40,7 +43,8 @@ private:
 	void PollHotkeys();
 	bool IsGameForeground() const;
 	void StartLoadedWorldServers();
-	void ConnectLocalhost();
+	void PromptForIpConnection();
+	void ConnectToIpAddress(const char* address);
 	void StopServersForClient();
 	void ProcessAutomaticHostRequest();
 	void WarmUpRelayNetwork();
@@ -59,7 +63,9 @@ private:
 	HANDLE m_worker_thread;
 	volatile LONG m_game_world_ready;
 	volatile LONG m_automatic_host_attempted;
+	volatile LONG m_ip_prompt_requested;
 	bool m_f8_was_down;
+	char m_last_ip_address[64];
 };
 
 // Human-readable Steam Datagram Relay availability, for the one question a

@@ -109,6 +109,7 @@ copy /Y "$(GnsRuntimeRoot)\abseil_dll.dll" "$(OutDir)abseil_dll.dll"</Command>
     <ClCompile Include="coop_dll.cpp" />
     <ClCompile Include="coop_netgame.cpp" />
     <ClCompile Include="coop_runtime.cpp" />
+	<ClCompile Include="ip_connect_dialog.cpp" />
     <ClCompile Include="player2.cpp" />
 	<ClCompile Include="save_sync.cpp" />
     <ClCompile Include="ServerClient\MClient.cpp" />
@@ -124,6 +125,7 @@ copy /Y "$(GnsRuntimeRoot)\abseil_dll.dll" "$(OutDir)abseil_dll.dll"</Command>
     <ClInclude Include="coop_application.h" />
     <ClInclude Include="coop_netgame.h" />
     <ClInclude Include="coop_runtime.h" />
+	<ClInclude Include="ip_connect_dialog.h" />
     <ClInclude Include="gforce_constants.h" />
     <ClInclude Include="player2.h" />
 	<ClInclude Include="save_sync.h" />

@@ -6,8 +6,10 @@
 #include "MServerONLINE.h"
 #include "MStandalone.h"
 #include "../coop_netgame.h"
+#include "../ip_connect_dialog.h"
 
 #include <new>
+#include <string.h>
 
 namespace
 {
@@ -31,8 +33,11 @@ CSteamManager::CSteamManager() :
 	m_worker_thread(NULL),
 	m_game_world_ready(0),
 	m_automatic_host_attempted(0),
+	m_ip_prompt_requested(0),
 	m_f8_was_down(false)
 {
+	lstrcpynA(m_last_ip_address, "127.0.0.1:44139",
+		static_cast<int>(_countof(m_last_ip_address)));
 }
 
 CSteamManager::~CSteamManager()
@@ -228,6 +233,11 @@ void CSteamManager::NotifyGameWorldReady()
 	InterlockedExchange(&m_game_world_ready, 1);
 }
 
+void CSteamManager::RequestIpConnectionPrompt()
+{
+	InterlockedExchange(&m_ip_prompt_requested, 1);
+}
+
 DWORD WINAPI CSteamManager::WorkerThread(LPVOID context)
 {
 	static_cast<CSteamManager*>(context)->WorkerLoop();
@@ -282,8 +292,11 @@ void CSteamManager::PollHotkeys()
 	const bool f8_down = IsGameForeground() &&
 		(GetAsyncKeyState(VK_F8) & 0x8000) != 0;
 	if (f8_down && !m_f8_was_down)
-		ConnectLocalhost();
+		RequestIpConnectionPrompt();
 	m_f8_was_down = f8_down;
+
+	if (InterlockedExchange(&m_ip_prompt_requested, 0) != 0)
+		PromptForIpConnection();
 }
 
 void CSteamManager::ProcessAutomaticHostRequest()
@@ -319,7 +332,7 @@ void CSteamManager::StartLoadedWorldServers()
 		coop::CoopNetGame::Instance().SetModeHost();
 }
 
-void CSteamManager::ConnectLocalhost()
+void CSteamManager::PromptForIpConnection()
 {
 	if (!SteamLClient)
 		return;
@@ -329,16 +342,56 @@ void CSteamManager::ConnectLocalhost()
 		return;
 	}
 
-	// F8 is explicit LAN-client intent.  A process can already have opened its
-	// own listener after loading a save, so close it before connecting to the
-	// other local host rather than leaving both roles active.
+	char address[sizeof(m_last_ip_address)] = {};
+	IpConnectDialog dialog;
+	if (!dialog.Prompt(GetForegroundWindow(), m_last_ip_address, address,
+		sizeof(address)))
+	{
+		Msg("[network-client] IP connect cancelled");
+		return;
+	}
+	ConnectToIpAddress(address);
+}
+
+void CSteamManager::ConnectToIpAddress(const char* address)
+{
+	if (!SteamLClient || !address || !address[0])
+		return;
+
+	// The UI is intentionally an IP field, not a separate port editor.  Keep
+	// the familiar standalone port when a LAN user enters only an IPv4 address.
+	char connection_address[sizeof(m_last_ip_address)] = {};
+	if (strchr(address, ':'))
+	{
+		lstrcpynA(connection_address, address,
+			static_cast<int>(_countof(connection_address)));
+	}
+	else
+	{
+		_snprintf_s(connection_address, sizeof(connection_address), _TRUNCATE,
+			"%s:44139", address);
+	}
+
+	SteamNetworkingIPAddr parsed_address;
+	if (!parsed_address.ParseString(connection_address))
+	{
+		Msg("[network-error] invalid server address: %s", connection_address);
+		return;
+	}
+
+	// Explicit IP input is client intent.  A process can already have opened its
+	// own listener after loading a save, so close it only after validation rather
+	// than leaving both roles active or losing host state on a typo.
 	coop::CoopNetGame::Instance().SetModeClient();
 	if (SteamOClient && SteamOClient != SteamLClient)
 		SteamOClient->Disconnect();
 	StopServersForClient();
 	SteamOClient = SteamLClient;
-	const bool started = SteamOClient->CreateConnection("127.0.0.1:44139");
-	Msg("[network-client] F8 localhost connect=%s",
+	const bool started = SteamOClient->CreateConnection(connection_address);
+	if (started)
+		lstrcpynA(m_last_ip_address, connection_address,
+			static_cast<int>(_countof(m_last_ip_address)));
+	Msg("[network-client] IP connect address=%s started=%s", connection_address,
 		started ? "started" : "failed");
 }
 
