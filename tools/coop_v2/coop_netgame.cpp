@@ -19,7 +19,6 @@ constexpr DWORD kNetworkSpawnDelayMs = 1000;
 constexpr LONG kDeferRemotePlayerOneTick = 1;
 constexpr LONG kDeferRemotePlayerUntilFlyActive = 2;
 constexpr DWORD kFlyHandoffTimeoutMs = 1500;
-constexpr std::size_t kUnknownAmmoWordOffset = static_cast<std::size_t>(-1);
 
 const std::uint32_t kFlyRawActionIds[kCoopFlyRawActionCount] = {
 	0x40080046u,
@@ -198,6 +197,9 @@ CoopNetGame::CoopNetGame() :
 	m_fire_handler_trampoline(NULL),
 	m_original_fire_handler(NULL),
 	m_fire_handler_hooked(false),
+	m_weapon_ammo_consume_trampoline(NULL),
+	m_original_weapon_ammo_consume(NULL),
+	m_weapon_ammo_consume_hooked(false),
 	m_remote_input_thread_id(0),
 	m_local_transform_sequence(0),
 	m_local_fly_transform_sequence(0),
@@ -254,6 +256,8 @@ CoopNetGame::CoopNetGame() :
 		sizeof(m_original_default_mode_update_bytes));
 	ZeroMemory(m_original_fire_handler_bytes,
 		sizeof(m_original_fire_handler_bytes));
+	ZeroMemory(m_original_weapon_ammo_consume_bytes,
+		sizeof(m_original_weapon_ammo_consume_bytes));
 	ZeroMemory(m_original_input_pressed_query_bytes,
 		sizeof(m_original_input_pressed_query_bytes));
 	ZeroMemory(m_original_input_released_query_bytes,
@@ -283,11 +287,8 @@ CoopNetGame::CoopNetGame() :
 	ZeroMemory(m_remote_action_held, sizeof(m_remote_action_held));
 	ZeroMemory(m_local_press_recorded, sizeof(m_local_press_recorded));
 	ZeroMemory(m_local_release_recorded, sizeof(m_local_release_recorded));
-	m_remote_p2_ammo_item = NULL;
-	m_remote_p2_ammo_guard_active = false;
-	m_logged_remote_p2_ammo_counter = false;
-	m_remote_p2_ammo_word_offset = kUnknownAmmoWordOffset;
-	ZeroMemory(m_remote_p2_ammo_snapshot, sizeof(m_remote_p2_ammo_snapshot));
+	m_logged_remote_p2_ammo_restore = false;
+	m_remote_p2_weapon_record = NULL;
 	m_input_raw_pressed_trampoline = NULL;
 	m_original_input_raw_pressed_query = NULL;
 	m_input_raw_released_trampoline = NULL;
@@ -1258,109 +1259,84 @@ bool CoopNetGame::ApplyRemoteFlyTransform(void* fly)
 	}
 }
 
-bool CoopNetGame::BeginRemoteP2AmmoGuard(void* player2)
+void __fastcall CoopNetGame::HookWeaponAmmoConsume(void* weapon_record,
+	void*)
 {
-	m_remote_p2_ammo_guard_active = false;
-	if (!player2 || !IsRemoteInputActiveOnThisThread() ||
-		!GetActiveRemoteAction(kFireActionId))
-	{
-		return false;
-	}
-
-	__try
-	{
-		BYTE* const handler = *reinterpret_cast<BYTE**>(
-			reinterpret_cast<BYTE*>(player2) + kEntityHandlerOffset);
-		if (!handler)
-			return false;
-		GetCurrentWeaponIdFn get_current_weapon_id =
-			reinterpret_cast<GetCurrentWeaponIdFn>(kGetCurrentWeaponId);
-		const std::uint32_t item_id = get_current_weapon_id(handler);
-		if (item_id == 0xFFFFFFFFu)
-			return false;
-		ResolveItemByIdFn resolve_item =
-			reinterpret_cast<ResolveItemByIdFn>(kResolveItemById);
-		void* const item = resolve_item(item_id);
-		if (!item)
-			return false;
-
-		if (m_remote_p2_ammo_item != item)
-		{
-			m_remote_p2_ammo_item = item;
-			m_remote_p2_ammo_word_offset = kUnknownAmmoWordOffset;
-			m_logged_remote_p2_ammo_counter = false;
-		}
-		memcpy(m_remote_p2_ammo_snapshot, item,
-			sizeof(m_remote_p2_ammo_snapshot));
-		m_remote_p2_ammo_guard_active = true;
-		return true;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		m_remote_p2_ammo_item = NULL;
-		m_remote_p2_ammo_word_offset = kUnknownAmmoWordOffset;
-		return false;
-	}
+	Instance().HandleWeaponAmmoConsume(weapon_record);
 }
 
-void CoopNetGame::EndRemoteP2AmmoGuard()
+void CoopNetGame::HandleWeaponAmmoConsume(void* weapon_record)
 {
-	if (!m_remote_p2_ammo_guard_active || !m_remote_p2_ammo_item)
+	if (!m_original_weapon_ammo_consume)
 		return;
 
+	// 0x59F650 is the stock write that first reduces a weapon record's local
+	// count (+0x67C), then mirrors that new value into the shared HUD pool.  The
+	// P2 inventory record is armed during P2's tick, so P1's record remains a
+	// normal stock write even when both players use the same weapon type.
+	if (!weapon_record || weapon_record != m_remote_p2_weapon_record)
+	{
+		m_original_weapon_ammo_consume(weapon_record);
+		return;
+	}
+
+	std::uint32_t p2_rounds_before = 0;
+	std::uint32_t p1_pool_before = 0;
+	std::uint32_t ammo_id = 0xFFFFFFFFu;
+	void* ammo_entry = NULL;
 	__try
 	{
-		std::uint32_t* const current =
-			reinterpret_cast<std::uint32_t*>(m_remote_p2_ammo_item);
-		if (m_remote_p2_ammo_word_offset != kUnknownAmmoWordOffset)
+		BYTE* const record = static_cast<BYTE*>(weapon_record);
+		p2_rounds_before = *reinterpret_cast<std::uint32_t*>(
+			record + kWeaponRecordRoundCountOffset);
+		ammo_id = *reinterpret_cast<std::uint32_t*>(
+			record + kWeaponRecordAmmoIdOffset);
+		if (ammo_id != 0xFFFFFFFFu)
 		{
-			// The learned field is a stock count belonging to P2's selected weapon
-			// instance.  Restoring only this dword preserves the weapon's firing
-			// state, cooldown, animation and P1's unrelated inventory state.
-			current[m_remote_p2_ammo_word_offset] =
-				m_remote_p2_ammo_snapshot[m_remote_p2_ammo_word_offset];
-			m_remote_p2_ammo_guard_active = false;
-			return;
-		}
-
-		std::size_t candidate = kUnknownAmmoWordOffset;
-		std::uint32_t candidates = 0;
-		for (std::size_t index = 0; index < kRemoteAmmoSnapshotWords; ++index)
-		{
-			const std::uint32_t before = m_remote_p2_ammo_snapshot[index];
-			if (before > 0 && before <= 999 && current[index] == before - 1)
+			ResolveAmmoEntryFn resolve_ammo_entry =
+				reinterpret_cast<ResolveAmmoEntryFn>(kResolveAmmoEntry);
+			ammo_entry = resolve_ammo_entry(
+				reinterpret_cast<void*>(kAmmoPool), ammo_id);
+			if (ammo_entry)
 			{
-				candidate = index;
-				++candidates;
+				p1_pool_before = *reinterpret_cast<std::uint32_t*>(
+					static_cast<BYTE*>(ammo_entry) + kAmmoEntryCurrentOffset);
 			}
-		}
-		if (candidates == 1)
-		{
-			m_remote_p2_ammo_word_offset = candidate;
-			current[candidate] = m_remote_p2_ammo_snapshot[candidate];
-			if (!m_logged_remote_p2_ammo_counter)
-			{
-				CoopRuntime::Instance().Log(
-					"[p2-ammo] protected shared weapon counter item=%p offset=0x%X\r\n",
-					m_remote_p2_ammo_item,
-					static_cast<unsigned>(candidate * sizeof(std::uint32_t)));
-				m_logged_remote_p2_ammo_counter = true;
-			}
-		}
-		else if (candidates > 1 && !m_logged_remote_p2_ammo_counter)
-		{
-			CoopRuntime::Instance().Log(
-				"[p2-ammo] ambiguous shared weapon decrements (%u); counter not patched\r\n",
-				static_cast<unsigned>(candidates));
-			m_logged_remote_p2_ammo_counter = true;
 		}
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
-		m_remote_p2_ammo_item = NULL;
-		m_remote_p2_ammo_word_offset = kUnknownAmmoWordOffset;
+		ammo_entry = NULL;
 	}
-	m_remote_p2_ammo_guard_active = false;
+
+	m_original_weapon_ammo_consume(weapon_record);
+
+	__try
+	{
+		// P2 is deliberately infinite: restore its own stock counter so its next
+		// shot does not depend on the number visible to P1.  If this call had no
+		// recognised ammo-pool entry (for example an energy-only weapon), this is
+		// still the correct local P2 behaviour.
+		*reinterpret_cast<std::uint32_t*>(static_cast<BYTE*>(weapon_record) +
+			kWeaponRecordRoundCountOffset) = p2_rounds_before;
+		if (ammo_entry)
+		{
+			*reinterpret_cast<std::uint32_t*>(static_cast<BYTE*>(ammo_entry) +
+				kAmmoEntryCurrentOffset) = p1_pool_before;
+			if (!m_logged_remote_p2_ammo_restore)
+			{
+				CoopRuntime::Instance().Log(
+					"[p2-ammo] stock consume restored P2=%u; P1 pool ammo=0x%X current=%u\r\n",
+					p2_rounds_before, ammo_id, p1_pool_before);
+				m_logged_remote_p2_ammo_restore = true;
+			}
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		CoopRuntime::Instance().Log(
+			"[p2-ammo-error] unable to restore post-shot ammunition\r\n");
+	}
 }
 
 bool CoopNetGame::GetActiveRemoteWeaponType(uint32_t& weapon_type) const
@@ -1440,6 +1416,53 @@ void CoopNetGame::EndRemoteInput()
 	RestoreKeyboardState();
 	ZeroMemory(&m_active_remote_input, sizeof(m_active_remote_input));
 	ZeroMemory(m_active_remote_scan_codes, sizeof(m_active_remote_scan_codes));
+}
+
+void CoopNetGame::ArmRemoteP2AmmoOwner(void* player2)
+{
+	m_remote_p2_weapon_record = NULL;
+	if (!player2 || !IsRemoteInputActiveOnThisThread())
+		return;
+
+	__try
+	{
+		BYTE* const handler = *reinterpret_cast<BYTE**>(
+			reinterpret_cast<BYTE*>(player2) + kEntityHandlerOffset);
+		if (!handler)
+			return;
+		// The inventory is a pointer stored in the handler.  0x5D60EF performs
+		// `mov edi, [handler+0x514]` before calling 0x5933E0; passing the address
+		// of that field makes the resolver see an empty, unrelated structure.
+		void* const inventory = *reinterpret_cast<void**>(
+			handler + kHandlerInventoryOffset);
+		if (!inventory)
+			return;
+		GetCurrentWeaponIdFn get_current_weapon_id =
+			reinterpret_cast<GetCurrentWeaponIdFn>(kGetCurrentWeaponId);
+		ResolveWeaponRecordFn resolve_weapon_record =
+			reinterpret_cast<ResolveWeaponRecordFn>(kResolveWeaponRecord);
+		std::uint32_t item_id = get_current_weapon_id(handler);
+		void* weapon_record = item_id == 0xFFFFFFFFu ? NULL :
+			resolve_weapon_record(inventory, item_id);
+		if (!weapon_record)
+		{
+			// During draw the native current-item getter still reports melee, while
+			// handler+0x26E0 already names the selected gun.  Use the same type ->
+			// item mapping as the stock ammo HUD, then resolve it in P2's inventory.
+			const std::uint32_t weapon_type = *reinterpret_cast<std::uint32_t*>(
+				handler + kHandlerSelectedWeaponTypeOffset);
+			WeaponTypeToItemIdFn weapon_type_to_item_id =
+				reinterpret_cast<WeaponTypeToItemIdFn>(kWeaponTypeToItemId);
+			item_id = weapon_type_to_item_id(weapon_type);
+			if (item_id != 0xFFFFFFFFu)
+				weapon_record = resolve_weapon_record(inventory, item_id);
+		}
+		if (weapon_record)
+			m_remote_p2_weapon_record = weapon_record;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+	}
 }
 
 
@@ -1619,7 +1642,14 @@ bool __fastcall CoopNetGame::HandleInputActionQuery(void* input_manager,
 	// straight from the packet; rising/falling transitions are served by the
 	// dedicated edge hooks (0x488CE0 / 0x488C00) instead.
 	if (is_remote_thread && is_keyboard_action)
+	{
+		// The same Fire action drives both Darwin weapons and Mooch.  While the
+		// sender owns Mooch, reserve Fire for Fly_Scan's explicit call-site below;
+		// feeding it into P2 here makes the remote Darwin attack at the same time.
+		if (action == kFireActionId && IsRemoteFlyControlled())
+			return false;
 		return GetActiveRemoteAction(action);
+	}
 	if (!is_remote_thread && action == kFireActionId &&
 		reinterpret_cast<std::uintptr_t>(_ReturnAddress()) ==
 			kFlyScanFireActionQueryReturn && IsRemoteFlyControlled())
@@ -1654,7 +1684,8 @@ bool __fastcall CoopNetGame::HandleInputActionUpQuery(void* input_manager,
 		// 0x488B70 is the inverse level query: returning P1's physical key
 		// state here made P2 simultaneously see remote "move down" and local
 		// "move up", leaving the motor in idle while transform correction slid it.
-		return !GetActiveRemoteAction(action);
+		return action == kFireActionId && IsRemoteFlyControlled() ? true :
+			!GetActiveRemoteAction(action);
 	}
 	if (is_keyboard_action && IsMoochAction(action) &&
 		IsRemoteFlyControlled())
@@ -1681,6 +1712,8 @@ bool __fastcall CoopNetGame::HandleInputPressedQuery(void* input_manager,
 	// remote press fires exactly once.
 	if (is_remote_thread && is_keyboard_action)
 	{
+		if (action == kFireActionId && IsRemoteFlyControlled())
+			return false;
 		if (IsMirrorSuppressedAction(action))
 			return false;
 		const uint32_t action_index = action - kFirstKeyboardActionId;
@@ -1727,6 +1760,8 @@ bool __fastcall CoopNetGame::HandleInputReleasedQuery(void* input_manager,
 	// use it to re-arm the trigger, so P2 must see the remote release exactly once.
 	if (is_remote_thread && is_keyboard_action)
 	{
+		if (action == kFireActionId && IsRemoteFlyControlled())
+			return false;
 		if (IsMirrorSuppressedAction(action))
 			return false;
 		const uint32_t action_index = action - kFirstKeyboardActionId;
@@ -1761,7 +1796,11 @@ bool __fastcall CoopNetGame::HandleInputHoldDurationQuery(void* input_manager,
 	// a remote tap does not read as an instantly-completed charge (which made the
 	// melee whip's special fire the moment remote fire went down and keep firing).
 	if (is_remote_thread && is_keyboard_action)
+	{
+		if (action == kFireActionId && IsRemoteFlyControlled())
+			return false;
 		return GetActiveRemoteHold(action, threshold);
+	}
 
 	const bool result = m_original_input_hold_duration_query(input_manager,
 		device, action, threshold, flags);
@@ -1788,6 +1827,8 @@ bool __fastcall CoopNetGame::HandleInputAimHoldQuery(void* input_manager,
 		action >= kFirstKeyboardActionId &&
 		action < kFirstKeyboardActionId + kKeyboardActionCount)
 	{
+		if (action == kFireActionId && IsRemoteFlyControlled())
+			return false;
 		return GetActiveRemoteHold(action, threshold);
 	}
 
@@ -1802,7 +1843,6 @@ bool __fastcall CoopNetGame::HandleInputRawPressedQuery(void* input_manager,
 		return false;
 	if (FindFlyRawActionIndex(action) >= 0 && IsRemoteFlyControlled())
 		return ConsumeRemoteFlyRawEdge(action, true);
-
 	const bool result = m_original_input_raw_pressed_query(input_manager,
 		device, action, flags, record);
 	if (result)
@@ -1852,6 +1892,8 @@ bool __fastcall CoopNetGame::HandleInputThresholdQuery(void* input_manager,
 		action >= kFirstKeyboardActionId &&
 		action < kFirstKeyboardActionId + kKeyboardActionCount)
 	{
+		if (action == kFireActionId && IsRemoteFlyControlled())
+			return false;
 		return GetActiveRemoteHold(action, threshold);
 	}
 
@@ -2594,6 +2636,35 @@ void CoopNetGame::RemoveFireHandlerHook()
 	m_fire_handler_hooked = false;
 }
 
+bool CoopNetGame::InstallWeaponAmmoConsumeHook()
+{
+	if (m_weapon_ammo_consume_hooked)
+		return true;
+	if (!InstallJmpHookRaw(kWeaponAmmoConsume, kExpectedWeaponAmmoConsume,
+		sizeof(kExpectedWeaponAmmoConsume),
+		reinterpret_cast<void*>(&HookWeaponAmmoConsume),
+		m_original_weapon_ammo_consume_bytes,
+		&m_weapon_ammo_consume_trampoline, "P2 ammo ownership"))
+	{
+		return false;
+	}
+	m_original_weapon_ammo_consume = reinterpret_cast<WeaponAmmoConsumeFn>(
+		m_weapon_ammo_consume_trampoline);
+	m_weapon_ammo_consume_hooked = true;
+	return true;
+}
+
+void CoopNetGame::RemoveWeaponAmmoConsumeHook()
+{
+	if (!m_weapon_ammo_consume_hooked)
+		return;
+	RemoveJmpHookRaw(kWeaponAmmoConsume, m_original_weapon_ammo_consume_bytes,
+		sizeof(m_original_weapon_ammo_consume_bytes),
+		&m_weapon_ammo_consume_trampoline);
+	m_original_weapon_ammo_consume = NULL;
+	m_weapon_ammo_consume_hooked = false;
+}
+
 bool CoopNetGame::InstallInputHook()
 {
 	if (m_input_hooked)
@@ -2664,7 +2735,8 @@ bool CoopNetGame::InstallInputHook()
 				InstallRawReleasedQueryHook() && InstallRawHeldQueryHook() &&
 				InstallCameraYawHook() &&
 				InstallGPigCameraUpdateHook() &&
-				InstallDefaultModeUpdateHook() && InstallFireHandlerHook();
+				InstallDefaultModeUpdateHook() && InstallFireHandlerHook() &&
+				InstallWeaponAmmoConsumeHook();
 		}
 	}
 	CoopRuntime::Instance().Log(
@@ -2674,6 +2746,7 @@ bool CoopNetGame::InstallInputHook()
 
 void CoopNetGame::RemoveInputHook()
 {
+	RemoveWeaponAmmoConsumeHook();
 	RemoveFireHandlerHook();
 	RemoveDefaultModeUpdateHook();
 	RemoveGPigCameraUpdateHook();

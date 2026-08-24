@@ -50,6 +50,11 @@ constexpr uintptr_t kInputRawHeldQuery = 0x0048AF90u;
 constexpr uintptr_t kDefaultModeUpdate = 0x005BEA00u;
 // Copies XGamePad +0x2774/+0x2780 into the native projectile command.
 constexpr uintptr_t kFireHandler = 0x005B8760u;
+// WeaponAmmoItem's per-shot timer.  Once it consumes the weapon record's
+// +0x67C round counter, it mirrors that value into the shared HUD ammo pool.
+// Hooking here is later than the controller update and is therefore the only
+// point that can preserve P1's pool without racing the stock write.
+constexpr uintptr_t kWeaponAmmoConsume = 0x0059F650u;
 constexpr uintptr_t kXGamePadCtor = 0x0048B290u;
 
 constexpr uintptr_t kGamePointer = 0x00912784u;
@@ -91,10 +96,22 @@ constexpr uintptr_t kGetCurrentWeaponId = 0x00544A30u;
 constexpr uintptr_t kSetSelectedWeaponType = 0x005434E0u;
 constexpr uintptr_t kWeaponTypeToItemId = 0x00543520u;
 constexpr uintptr_t kResolveItemById = 0x00472B00u;
+// Ammo HUD at 0x5D616F resolves the active weapon through this shared pool and
+// formats [entry+0x0C] / [entry+0x10] as current/max ammunition.
+constexpr uintptr_t kAmmoPool = 0x00915458u;
+constexpr uintptr_t kResolveWeaponRecord = 0x005933E0u;
+constexpr uintptr_t kResolveAmmoEntry = 0x0049D050u;
+constexpr size_t kWeaponRecordAmmoIdOffset = 0x6C8u;
+constexpr size_t kWeaponRecordRoundCountOffset = 0x67Cu;
+constexpr size_t kAmmoEntryCurrentOffset = 0x0Cu;
 
 constexpr size_t kEntityHandlerOffset = 0x144u;
 constexpr size_t kEntityRotationOffset = 0xC8u;
 constexpr size_t kEntityPositionOffset = 0xE8u;
+// 0x5933E0 walks an inventory list, not the GPig handler itself.  The ammo HUD
+// obtains this exact container through `[handler + 0x514]` at 0x5D60EF before
+// resolving the selected weapon's WeaponAmmoItem record.
+constexpr size_t kHandlerInventoryOffset = 0x514u;
 constexpr size_t kHandlerControllerOffset = 0x510u;
 constexpr size_t kHandlerSelectedWeaponTypeOffset = 0x26E0u;
 constexpr size_t kControllerOwnerOffset = 0x18u;
@@ -224,6 +241,11 @@ constexpr uint8_t kExpectedDefaultModeUpdate[7] =
 	{0x6A, 0xFF, 0x68, 0x5B, 0x74, 0x6E, 0x00};
 constexpr uint8_t kExpectedFireHandler[7] =
 	{0x6A, 0xFF, 0x68, 0x0B, 0x71, 0x6E, 0x00};
+// `sub esp,8` followed by its complete seven-byte global flag test.  The
+// trampoline must copy both instructions: relocating five bytes would split
+// the `cmp byte ptr [0x912541], 0` instruction.
+constexpr uint8_t kExpectedWeaponAmmoConsume[10] =
+	{0x83, 0xEC, 0x08, 0x80, 0x3D, 0x41, 0x25, 0x91, 0x00, 0x00};
 // 0x5BCF30: sub esp,20h + fldz is exactly five bytes and has no relative
 // operand.  The fldz is balanced by the fstp at 0x5BCF3D, so the trampoline may
 // hold it; the skip path never executes either.

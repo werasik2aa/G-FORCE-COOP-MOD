@@ -792,12 +792,10 @@ void Player2Module::UpdateController(void* controller)
 	void* player2 = GetGPigEntity(2);
 	bool remote_input_active = false;
 	bool remote_gamepad_active = false;
-	bool remote_p2_ammo_guard_active = false;
 	void* primary_gamepad = NULL;
-	// P2 Default's 0x5BB1D0 writes the one shared aim/crosshair handler even
-	// though its camera update is skipped.  During local fly control preserve
-	// the state produced by the fly/P1 path around P2's otherwise-normal stock
-	// update; P2 still consumes its packet, advances animation and fires.
+	// P2 Default still writes the one shared aim/crosshair handler even though
+	// its camera update is skipped.  Preserve only the fly-owned state around
+	// the otherwise normal P2 tick; P2 still consumes its packet and animates.
 	SharedCameraAimState saved_fly_camera_state = {};
 	const bool preserve_fly_camera =
 		CoopNetGame::Instance().IsLocalFlyControlled();
@@ -852,17 +850,11 @@ void Player2Module::UpdateController(void* controller)
 		uint32_t remote_weapon_type = 0xFFFFFFFFu;
 		if (CoopNetGame::Instance().GetActiveRemoteWeaponType(remote_weapon_type))
 			ApplyPlayer2WeaponSelection(player2, remote_weapon_type, "remote P1");
+		CoopNetGame::Instance().ArmRemoteP2AmmoOwner(player2);
 		if (preserve_fly_camera)
 			fly_camera_state_saved =
 				SaveSharedCameraAimState(saved_fly_camera_state);
-		remote_p2_ammo_guard_active =
-			CoopNetGame::Instance().BeginRemoteP2AmmoGuard(player2);
 		m_original_update(controller);
-		if (remote_p2_ammo_guard_active)
-		{
-			CoopNetGame::Instance().EndRemoteP2AmmoGuard();
-			remote_p2_ammo_guard_active = false;
-		}
 		if (fly_camera_state_saved)
 		{
 			RestoreSharedCameraAimState(saved_fly_camera_state);
@@ -888,8 +880,6 @@ void Player2Module::UpdateController(void* controller)
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
-		if (remote_p2_ammo_guard_active)
-			CoopNetGame::Instance().EndRemoteP2AmmoGuard();
 		if (fly_camera_state_saved)
 			RestoreSharedCameraAimState(saved_fly_camera_state);
 		if (remote_gamepad_active)

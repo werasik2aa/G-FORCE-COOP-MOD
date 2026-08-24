@@ -31,10 +31,10 @@ public:
 	void RemoveInputHook();
 	void BeginRemoteInput();
 	void EndRemoteInput();
-	// P2 currently uses the stock shared weapon instance.  Protect just that
-	// instance's discovered ammunition counter during a remote fire tick.
-	bool BeginRemoteP2AmmoGuard(void* player2);
-	void EndRemoteP2AmmoGuard();
+	// The stock ammo-consume callback may run after P2's controller scope has
+	// returned.  Record P2's concrete WeaponAmmoItem pointer while that scope is
+	// active, so P1 can never be protected merely because it fired nearby in time.
+	void ArmRemoteP2AmmoOwner(void* player2);
 	// The stock P2 mode reloads [0x9905CC] instead of using its explicit pad
 	// argument. Scope that global to P2's private XGamePad for one synchronous
 	// controller tick, then restore the physical P1 pad before Fly_Active runs.
@@ -121,10 +121,12 @@ private:
 	typedef void (__thiscall* GPigCameraUpdateFn)(void*);
 	typedef void (__thiscall* DefaultModeUpdateFn)(void*, void*, void*);
 	typedef void (__thiscall* FireHandlerFn)(void*, void*, void*);
+	typedef void (__thiscall* WeaponAmmoConsumeFn)(void*);
 	typedef void* (__thiscall* XGamePadCtorFn)(void*);
 	typedef std::uint32_t (__thiscall* GetCurrentWeaponIdFn)(void*);
-	typedef void* (__cdecl* ResolveItemByIdFn)(std::uint32_t);
-	static constexpr std::size_t kRemoteAmmoSnapshotWords = 256;
+	typedef std::uint32_t (__cdecl* WeaponTypeToItemIdFn)(std::uint32_t);
+	typedef void* (__thiscall* ResolveWeaponRecordFn)(void*, std::uint32_t);
+	typedef void* (__thiscall* ResolveAmmoEntryFn)(void*, std::uint32_t);
 
 	enum Role
 	{
@@ -153,6 +155,7 @@ private:
 		void* mode_context);
 	void HandleFireHandler(void* mode, void* input_manager,
 		void* mode_context);
+	void HandleWeaponAmmoConsume(void* weapon_record);
 	bool GetActiveRemoteAction(std::uint32_t action) const;
 	bool GetActiveRemoteHold(std::uint32_t action, float threshold) const;
 	bool GetRemoteFlyRawHeld(std::uint32_t action) const;
@@ -204,6 +207,8 @@ private:
 	void RemoveDefaultModeUpdateHook();
 	bool InstallFireHandlerHook();
 	void RemoveFireHandlerHook();
+	bool InstallWeaponAmmoConsumeHook();
+	void RemoveWeaponAmmoConsumeHook();
 	// Generic 5-byte E9 detour installer.  relocate_len original bytes are copied
 	// into a freshly allocated trampoline which then jumps back to address +
 	// relocate_len; relocate_len must be >= 5 and cover whole instructions.  The
@@ -216,8 +221,10 @@ private:
 	float GetRemoteLookAxis(std::uint32_t axis) const;
 	bool IsGameForeground() const;
 	static void __fastcall HookDefaultModeUpdate(void* mode, void*,
-		void* input_manager, void* mode_context);	static void __fastcall HookFireHandler(void* mode, void*,
 		void* input_manager, void* mode_context);
+	static void __fastcall HookFireHandler(void* mode, void*,
+		void* input_manager, void* mode_context);
+	static void __fastcall HookWeaponAmmoConsume(void* weapon_record, void*);
 
 	volatile LONG m_role;
 	volatile LONG m_remote_connected;
@@ -318,6 +325,10 @@ private:
 	BYTE* m_fire_handler_trampoline;
 	FireHandlerFn m_original_fire_handler;
 	bool m_fire_handler_hooked;
+	BYTE m_original_weapon_ammo_consume_bytes[10];
+	BYTE* m_weapon_ammo_consume_trampoline;
+	WeaponAmmoConsumeFn m_original_weapon_ammo_consume;
+	bool m_weapon_ammo_consume_hooked;
 	bool m_logged_axis_queries[2];
 	bool m_logged_remote_transform;
 	std::uint32_t m_prev_local_action_down[3];
@@ -345,10 +356,7 @@ private:
 	std::uint32_t m_local_release_recorded[3];
 	std::uint8_t m_prev_remote_fly_raw_press_seq[kCoopFlyRawActionCount];
 	std::uint8_t m_prev_remote_fly_raw_release_seq[kCoopFlyRawActionCount];
-	void* m_remote_p2_ammo_item;
-	bool m_remote_p2_ammo_guard_active;
-	bool m_logged_remote_p2_ammo_counter;
-	std::size_t m_remote_p2_ammo_word_offset;
-	std::uint32_t m_remote_p2_ammo_snapshot[kRemoteAmmoSnapshotWords];
+	bool m_logged_remote_p2_ammo_restore;
+	void* m_remote_p2_weapon_record;
 };
 }
