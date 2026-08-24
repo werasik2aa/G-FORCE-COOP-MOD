@@ -15,6 +15,9 @@ namespace
 {
 constexpr DWORD kInputSendIntervalMs = 16;
 constexpr DWORD kNetworkSpawnDelayMs = 1000;
+constexpr LONG kDeferRemotePlayerOneTick = 1;
+constexpr LONG kDeferRemotePlayerUntilFlyActive = 2;
+constexpr DWORD kFlyHandoffTimeoutMs = 1500;
 
 SHORT WINAPI HookGetAsyncKeyState(int virtual_key)
 {
@@ -121,6 +124,7 @@ CoopNetGame::CoopNetGame() :
 	m_remote_connected(0),
 	m_last_send_tick(0),
 	m_last_remote_transform_apply_tick(0),
+	m_fly_handoff_started_tick(0),
 	m_peer_connected_tick(0),
 	m_logged_spawn(0),
 	m_remote_input_active(0),
@@ -155,6 +159,7 @@ CoopNetGame::CoopNetGame() :
 	m_remote_input_thread_id(0),
 	m_local_transform_sequence(0),
 	m_local_fly_transform_sequence(0),
+	m_local_fly_active_seen(false),
 	m_local_weapon_sequence(0),
 	m_last_local_weapon_type(0xFFFFFFFFu),
 	m_logged_remote_transform(false)
@@ -292,9 +297,28 @@ void CoopNetGame::OnRemotePacket(
 	// This is a state buffer, not a one-frame input event.  It deliberately
 	// remains valid until a later packet replaces it, so held keys survive
 	// packet pacing and the remote controller sees a stable input state.
+	const bool remote_fly_controlled = packet->input.fly_controlled != 0 &&
+		packet->input.fly_transform_sequence != 0;
+	bool client_yielded_fly = false;
 	AcquireSRWLockExclusive(&m_input_lock);
 	m_remote_input = packet->input;
+	// Mooch is a single world object.  If both peers obtain the local hand-off
+	// in the same network window, the client yields to the host.  In all normal
+	// cases only one side has fly_controlled set, so this branch is untouched.
+	if (remote_fly_controlled && m_local_input.fly_controlled != 0 &&
+		IsClient())
+	{
+		m_local_input.fly_controlled = 0;
+		m_local_input.fly_transform_sequence = 0;
+		m_local_fly_active_seen = false;
+		client_yielded_fly = true;
+	}
 	ReleaseSRWLockExclusive(&m_input_lock);
+	if (client_yielded_fly)
+	{
+		CoopRuntime::Instance().Log(
+			"[fly] simultaneous claim: client yielded Mooch to host\r\n");
+	}
 }
 
 bool CoopNetGame::IsGameForeground() const
@@ -541,8 +565,7 @@ void CoopNetGame::CaptureLocalAction(std::uint32_t action, bool is_down)
 	const uint32_t word = action_index / 32;
 	const uint32_t bit = action_index % 32;
 	const bool was_down = (m_prev_local_action_down[word] & (1u << bit)) != 0;
-	if ((action_index == kFlySummonActionIndex ||
-		action_index == kMoochActionIndex) && is_down && !was_down)
+	if (action_index == kMoochActionIndex && is_down && !was_down)
 		RequestRemotePlayerTickDeferral();
 	if (is_down)
 		m_prev_local_action_down[word] |= 1u << bit;
@@ -572,9 +595,8 @@ void CoopNetGame::CaptureLocalPress(std::uint32_t action)
 	// Mooch can be entered through the pressed-edge path without a preceding
 	// level query. Request the one-frame P2 hand-off gap here as well; otherwise
 	// BeginRemoteInput is still active when the EXE transfers the active entity
-	// from Darwin to the fly and the first Q/T press is consumed by P2's context.
-	if (action_index == kFlySummonActionIndex ||
-		action_index == kMoochActionIndex)
+	// from Darwin to the fly and the first Mooch press is consumed by P2's context.
+	if (action_index == kMoochActionIndex)
 		RequestRemotePlayerTickDeferral();
 	AcquireSRWLockExclusive(&m_input_lock);
 	if ((m_local_press_recorded[word] & (1u << bit)) == 0)
@@ -620,16 +642,14 @@ bool CoopNetGame::GetActiveRemoteAction(std::uint32_t action) const
 		(1u << (action_index % 32))) != 0;
 }
 
-// The fly must stay with the player who called it: switching to Mooch spends a
-// charge that belongs to the machine the switch happens on, so replaying the
-// sender's key drained one pool twice.  Suppression is pinned to the action INDEX,
-// not to the physical key, because the key is rebindable and the binding table
-// dumped from the shipped build proved the scan codes are not what they looked
-// like: n=0x0E is on T (it is the Mooch switch proven at 0x5BBC80/0x5BBCAC/
-// 0x5BBD94), n=0x09 is on Q (the key actually used to call the fly), and DIK TAB
-// is bound to no action at all - night vision never comes through here, it is read
-// straight from the DirectInput buffer, so it is handled by the VK_TAB skips in
-// BuildRemoteScanCodeState and HandleGetAsyncKeyState instead.
+bool CoopNetGame::IsMoochAction(std::uint32_t action) const
+{
+	return action == kFirstKeyboardActionId + kMoochActionIndex;
+}
+
+// Mooch changes process-global ownership and the map is UI local to one game
+// window, so neither action can be replayed through P2.  This is indexed by the
+// logical action rather than a physical key, and remains correct after a rebind.
 bool CoopNetGame::IsMirrorSuppressedAction(std::uint32_t action) const
 {
 	if (action < kFirstKeyboardActionId ||
@@ -639,7 +659,7 @@ bool CoopNetGame::IsMirrorSuppressedAction(std::uint32_t action) const
 	}
 	const uint32_t action_index = action - kFirstKeyboardActionId;
 	return action_index == kMoochActionIndex ||
-		action_index == kFlySummonActionIndex;
+		action_index == kMapActionIndex;
 }
 
 bool CoopNetGame::IsRemoteFlyControlled() const
@@ -647,6 +667,69 @@ bool CoopNetGame::IsRemoteFlyControlled() const
 	CoopInput remote = {};
 	return GetRemoteInput(remote) && remote.fly_controlled != 0 &&
 		remote.fly_transform_sequence != 0;
+}
+
+bool CoopNetGame::IsLocalFlyControlled() const
+{
+	AcquireSRWLockShared(const_cast<SRWLOCK*>(&m_input_lock));
+	const bool controlled = m_local_input.fly_controlled != 0;
+	ReleaseSRWLockShared(const_cast<SRWLOCK*>(&m_input_lock));
+	return controlled;
+}
+
+void CoopNetGame::ConfirmLocalFlyControl()
+{
+	bool became_owner = false;
+	AcquireSRWLockExclusive(&m_input_lock);
+	if (m_local_input.fly_controlled == 0)
+	{
+		// A sequence of zero prevents a receiver from applying the previous
+		// flight's last coordinate before the fly controller publishes a fresh
+		// post-motor transform below.
+		m_local_input.fly_controlled = 1;
+		m_local_input.fly_transform_sequence = 0;
+		m_local_fly_active_seen = false;
+		became_owner = true;
+	}
+	ReleaseSRWLockExclusive(&m_input_lock);
+	if (became_owner)
+	{
+		// P2's Default update is safe once the fly controller is genuinely active,
+		// but not during Darwin's one-frame hand-off or the immediately following
+		// Mooch update.  A one-frame gap left P2 running before Fly_Active::Enter
+		// had published the fly as the active entity.
+		m_fly_handoff_started_tick = GetTickCount();
+		InterlockedExchange(&m_defer_remote_player_tick,
+			kDeferRemotePlayerUntilFlyActive);
+		CoopRuntime::Instance().Log(
+			"[fly] native Darwin-to-Mooch hand-off confirmed; P2 paused until Fly_Active\r\n");
+	}
+}
+
+void CoopNetGame::ObserveLocalFlyMode(std::uint32_t mode_id)
+{
+	bool released = false;
+	AcquireSRWLockExclusive(&m_input_lock);
+	if (m_local_input.fly_controlled != 0)
+	{
+		if (mode_id == kFlyControlledModeId)
+		{
+			m_local_fly_active_seen = true;
+		}
+		else if (m_local_fly_active_seen && mode_id == kFlyIdleModeId)
+		{
+			m_local_input.fly_controlled = 0;
+			m_local_input.fly_transform_sequence = 0;
+			m_local_fly_active_seen = false;
+			released = true;
+		}
+	}
+	ReleaseSRWLockExclusive(&m_input_lock);
+	if (released)
+	{
+		CoopRuntime::Instance().Log(
+			"[fly] native Mooch exit observed; local authority released\r\n");
+	}
 }
 
 // Answer the native "held for >= threshold seconds" queries (0x488DC0 threshold,
@@ -788,8 +871,9 @@ void CoopNetGame::PublishLocalPlayerTransform(const void* player)
 	ReleaseSRWLockExclusive(&m_input_lock);
 }
 
-void CoopNetGame::PublishLocalFlyTransform(const void* fly, bool controlled)
+void CoopNetGame::PublishLocalFlyTransform(const void* fly)
 {
+	bool controlled = IsLocalFlyControlled();
 	float position[4] = {};
 	if (controlled)
 	{
@@ -810,13 +894,14 @@ void CoopNetGame::PublishLocalFlyTransform(const void* fly, bool controlled)
 	}
 
 	AcquireSRWLockExclusive(&m_input_lock);
-	m_local_input.fly_controlled = controlled ? 1u : 0u;
-	if (controlled)
+	// The owner can be released while the native controller is ticking.  Never
+	// resurrect it from this late transform write.
+	if (controlled && m_local_input.fly_controlled != 0)
 	{
 		memcpy(m_local_input.fly_position, position, sizeof(position));
 		m_local_input.fly_transform_sequence = ++m_local_fly_transform_sequence;
 	}
-	else
+	else if (m_local_input.fly_controlled == 0)
 	{
 		m_local_input.fly_transform_sequence = 0;
 	}
@@ -998,9 +1083,13 @@ void CoopNetGame::EndRemoteInput()
 	ZeroMemory(m_active_remote_scan_codes, sizeof(m_active_remote_scan_codes));
 }
 
+
 void CoopNetGame::RequestRemotePlayerTickDeferral()
 {
-	if (InterlockedExchange(&m_defer_remote_player_tick, 1) == 0)
+	// A subsequent level/edge poll of the same local key must not downgrade the
+	// confirmed "wait for Fly_Active" hand-off to a single frame.
+	if (InterlockedCompareExchange(&m_defer_remote_player_tick,
+		kDeferRemotePlayerOneTick, 0) == 0)
 	{
 		CoopRuntime::Instance().Log(
 			"[fly] Darwin-to-Mooch transition: deferring one P2 remote tick\r\n");
@@ -1009,7 +1098,35 @@ void CoopNetGame::RequestRemotePlayerTickDeferral()
 
 bool CoopNetGame::ConsumeRemotePlayerTickDeferral()
 {
-	return InterlockedExchange(&m_defer_remote_player_tick, 0) != 0;
+	const LONG state = InterlockedCompareExchange(&m_defer_remote_player_tick,
+		0, 0);
+	if (state == 0)
+		return false;
+	if (state == kDeferRemotePlayerOneTick)
+	{
+		InterlockedExchange(&m_defer_remote_player_tick, 0);
+		return true;
+	}
+
+	bool fly_active = false;
+	AcquireSRWLockShared(&m_input_lock);
+	fly_active = m_local_input.fly_controlled != 0 && m_local_fly_active_seen;
+	ReleaseSRWLockShared(&m_input_lock);
+	if (fly_active)
+	{
+		InterlockedExchange(&m_defer_remote_player_tick, 0);
+		CoopRuntime::Instance().Log(
+			"[fly] Fly_Active observed; P2 remote tick resumed\r\n");
+		return false;
+	}
+	if (GetTickCount() - m_fly_handoff_started_tick >= kFlyHandoffTimeoutMs)
+	{
+		InterlockedExchange(&m_defer_remote_player_tick, 0);
+		CoopRuntime::Instance().Log(
+			"[fly] Fly_Active was not observed in time; P2 remote tick resumed\r\n");
+		return false;
+	}
+	return true;
 }
 
 void CoopNetGame::BuildRemoteScanCodeState()
@@ -1018,7 +1135,7 @@ void CoopNetGame::BuildRemoteScanCodeState()
 		sizeof(m_active_remote_scan_codes));
 	for (unsigned virtual_key = 0; virtual_key < 256; ++virtual_key)
 	{
-		// Night vision and the fly stay with the player who pressed the key.  This
+		// Night vision and the map stay with the player who pressed the key.  This
 		// also closes the raw paths that read the DirectInput array directly
 		// (0x488A70's sign-bit branch, and the still unhooked 0x4008xxxx family),
 		// not just the hooked logical-action queries.
@@ -1113,17 +1230,11 @@ void CoopNetGame::RestoreKeyboardState()
 
 SHORT CoopNetGame::HandleGetAsyncKeyState(int virtual_key)
 {
-	if (!IsRemoteInputActiveOnThisThread() &&
-		(virtual_key == 'Q' || virtual_key == 'T') &&
-		IsRemoteFlyControlled())
-	{
-		return 0;
-	}
 	if (IsRemoteInputActiveOnThisThread() &&
 		virtual_key >= 0 && virtual_key < 256)
 	{
 		// Same exclusion as BuildRemoteScanCodeState: never hand P2 the sender's
-		// TAB or Q, or the receiver spends its own night vision / fly charge.
+		// TAB or Q, or the receiver toggles its own night vision or map UI.
 		if (virtual_key == VK_TAB || virtual_key == 'Q')
 			return 0;
 		if (IsVirtualKeyDown(m_active_remote_input,
@@ -1150,7 +1261,7 @@ bool __fastcall CoopNetGame::HandleInputActionQuery(void* input_manager,
 	// dedicated edge hooks (0x488CE0 / 0x488C00) instead.
 	if (is_remote_thread && is_keyboard_action)
 		return GetActiveRemoteAction(action);
-	if (is_keyboard_action && IsMirrorSuppressedAction(action) &&
+	if (is_keyboard_action && IsMoochAction(action) &&
 		IsRemoteFlyControlled())
 	{
 		return false;
@@ -1178,7 +1289,7 @@ bool __fastcall CoopNetGame::HandleInputActionUpQuery(void* input_manager,
 		// "move up", leaving the motor in idle while transform correction slid it.
 		return !GetActiveRemoteAction(action);
 	}
-	if (is_keyboard_action && IsMirrorSuppressedAction(action) &&
+	if (is_keyboard_action && IsMoochAction(action) &&
 		IsRemoteFlyControlled())
 	{
 		return true;
@@ -1222,7 +1333,7 @@ bool __fastcall CoopNetGame::HandleInputPressedQuery(void* input_manager,
 		}
 		return edge;
 	}
-	if (is_keyboard_action && IsMirrorSuppressedAction(action) &&
+	if (is_keyboard_action && IsMoochAction(action) &&
 		IsRemoteFlyControlled())
 	{
 		return false;
@@ -1254,7 +1365,7 @@ bool __fastcall CoopNetGame::HandleInputReleasedQuery(void* input_manager,
 		const uint32_t action_index = action - kFirstKeyboardActionId;
 		return m_remote_release_edge[action_index];
 	}
-	if (is_keyboard_action && IsMirrorSuppressedAction(action) &&
+	if (is_keyboard_action && IsMoochAction(action) &&
 		IsRemoteFlyControlled())
 	{
 		return false;

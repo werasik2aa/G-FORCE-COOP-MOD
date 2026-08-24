@@ -85,15 +85,10 @@ private:
 	// the mode the moment P1 switches to the fly.
 	void TickPlayer1(void* player1_controller);
 	void LogPlayer1ModeEdge(void* player1_controller);
-	// True while the player drives Mooch, the fly.  Mooch is entity slot 4
-	// (0x9128E8) with a controller of its own, and P1's controller mode says
-	// nothing about it: the Mooch switch mode 0x61000065 is a one-frame kick,
-	// 0x5BC050 selects 0x6100003B again on its very next Update, so P1's controller
-	// sits in Default mode for the whole flight.
-	bool IsFlyControlled();
-	// Edge-triggered, two lines per flight: names the fly, its mode, the
-	// active-entity pair and P1's mode at the moment control changes hands.
-	void LogFlyControlEdge(bool fly_controlled);
+	// P2 owns a distinct Default-mode instance.  It must remain fully active for
+	// packet input, but must not occupy the one exclusive Default ownership bit
+	// that the stock single-player Mooch hand-off needs for P1.
+	void ConfigurePlayer2DefaultMode(void* controller);
 	void UpdateController(void* controller);
 	void* SpawnGPig(const Vec4* position, const Vec4* rotation,
 		uint32_t gpig_id, void* context);
@@ -107,13 +102,16 @@ private:
 	volatile LONG m_player2_ready;
 	volatile LONG m_spawn_snapshot_ready;
 	volatile LONG m_spawn_in_progress;
+	// This is a mod-side one-shot guard, not a field in the game entity.  P2
+	// must run Default mode to consume its packet input, but SelectMode must
+	// never be retried during an unrelated Darwin-to-Mooch transition.
+	bool m_player2_default_mode_initialized;
 	bool m_logged_player2;
 	bool m_logged_blocked_active_publish;
+	void* m_last_logged_mooch_controller;
 	// Last observed mode id of P1's controller, so the diagnostic below fires on
 	// the transition only and never every frame.
 	uint32_t m_last_player1_mode;
-	// Same, for who the player is currently driving.
-	bool m_fly_controlled_last;
 	bool m_spawn_key_was_down;
 	uint32_t m_last_weapon_type;
 	Vec4 m_spawn_position;

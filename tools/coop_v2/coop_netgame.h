@@ -31,14 +31,23 @@ public:
 	void RemoveInputHook();
 	void BeginRemoteInput();
 	void EndRemoteInput();
-	// Q starts a process-global hand-off from Darwin to Mooch.  Let that local
-	// hand-off settle before P2 enters its next packet-driven stock tick.
+	// The confirmed Darwin-to-Mooch hand-off must settle before P2 enters its
+	// next packet-driven stock tick.
 	void RequestRemotePlayerTickDeferral();
 	bool ConsumeRemotePlayerTickDeferral();
 	void BeginLocalInputCapture();
 	SHORT HandleGetAsyncKeyState(int virtual_key);
 	void PublishLocalPlayerTransform(const void* player);
-	void PublishLocalFlyTransform(const void* fly, bool controlled);
+	// Mooch ownership is latched only after the EXE has actually selected its
+	// one-frame switch mode.  The active-entity globals are transient during
+	// that hand-off and must not decide who publishes the shared fly.
+	void ConfirmLocalFlyControl();
+	// The fly controller itself confirms a sustained flight with 0x61000034 and
+	// returns to 0x61000033 on exit.  This observes that native lifecycle; it
+	// does not manufacture either transition.
+	void ObserveLocalFlyMode(std::uint32_t mode_id);
+	bool IsLocalFlyControlled() const;
+	void PublishLocalFlyTransform(const void* fly);
 	// Publishes the local camera yaw read from 0x52AD20 right after P1's own
 	// controller tick, which is the frame point where P1's 0x5BCF30 has just
 	// finished driving the shared camera.
@@ -120,9 +129,9 @@ private:
 	bool GetActiveRemoteAction(std::uint32_t action) const;
 	bool GetActiveRemoteHold(std::uint32_t action, float threshold) const;
 	bool IsRemoteFlyControlled() const;
-	// True for actions that must never be mirrored to P2: night vision (TAB) and
-	// the fly (Q).  Both consume a resource that belongs to the local player, so
-	// replaying the sender's key on the receiver drained one pool twice.
+	bool IsMoochAction(std::uint32_t action) const;
+	// True for actions that P2 must never replay.  Mooch changes process-global
+	// ownership; the map is a local UI action.  Neither belongs in a remote tick.
 	bool IsMirrorSuppressedAction(std::uint32_t action) const;
 	bool GetActiveRemoteCameraYaw(float& yaw) const;
 	void SendLocalInput();
@@ -183,9 +192,11 @@ private:
 	BYTE m_active_remote_scan_codes[256];
 	DWORD m_last_send_tick;
 	DWORD m_last_remote_transform_apply_tick;
+	DWORD m_fly_handoff_started_tick;
 	DWORD m_remote_input_thread_id;
 	std::uint32_t m_local_transform_sequence;
 	std::uint32_t m_local_fly_transform_sequence;
+	bool m_local_fly_active_seen;
 	std::uint32_t m_local_weapon_sequence;
 	std::uint32_t m_last_local_weapon_type;
 	volatile LONG m_peer_connected_tick;

@@ -20,6 +20,10 @@ constexpr uintptr_t kSpawnGPig = 0x00545370u;
 constexpr uintptr_t kSelectMode = 0x004B7050u;
 constexpr uintptr_t kDefaultModeActiveStores = 0x005BEAD6u;
 constexpr uintptr_t kGPigUpdateVtableSlot = 0x0070C8A4u;
+// XController_Fly uses the same base Update body as GPig, but a different
+// vtable slot.  Both must reach HookControllerUpdate so the fly's native mode
+// edge and its post-motor position can be observed.
+constexpr uintptr_t kFlyUpdateVtableSlot = 0x007180F4u;
 constexpr uintptr_t kOriginalControllerUpdate = 0x005BFBE0u;
 constexpr uintptr_t kInputActionQuery = 0x00488A70u;      // is-down (level)
 constexpr uintptr_t kInputActionUpQuery = 0x00488B70u;    // is-up (inverse level)
@@ -89,6 +93,7 @@ constexpr size_t kHandlerSelectedWeaponTypeOffset = 0x26E0u;
 constexpr size_t kControllerOwnerOffset = 0x18u;
 constexpr size_t kControllerModeOffset = 0x1Cu;
 constexpr size_t kModeIdOffset = 0x08u;
+constexpr size_t kModeConflictMaskOffset = 0x0Cu;
 constexpr size_t kGameInputDeviceOffset = 0x674u;
 constexpr size_t kCameraTargetControllerOffset = 0x900u;
 constexpr size_t kCameraTargetIdOffset = 0xB8u;
@@ -131,15 +136,14 @@ constexpr uint32_t kGPig2Id = 0x79130002u;
 constexpr uint32_t kDefaultMeleeItemId = 0x50000000u;
 constexpr uint32_t kInactiveModeId = 0x61000000u;
 constexpr uint32_t kDefaultModeId = 0x6100003Bu;
+constexpr uint32_t kDefaultModeConflictMask = 0x00000003u;
+constexpr uint32_t kP2DefaultExclusiveMask = 0x00000001u;
 // One-frame Darwin controller mode selected by the local Mooch-switch action.
 // Its next stock update must run on Darwin before P2 is allowed to tick.
 constexpr uint32_t kMoochSwitchModeId = 0x61000065u;
-// Modes of the FLY's own controller, i.e. the one reached through
-// [[0x9128E8 + 0x144] + 0x510], not a GPig mode.  Read live from the log: every
-// Mooch toggle produced 0x61000033 -> 0x61000034, and 0x61000034 was then lost
-// again with no further input, so 0x61000033 is the idle/follow mode the fly
-// sits in while Darwin is played and 0x61000034 is the one it holds while the
-// fly is the controlled character.
+// Mooch's controller enters 0x34 after the confirmed Darwin hand-off and
+// returns to 0x33 when the native flight finishes.  These modes are only used
+// to observe the already-confirmed owner lifecycle, never to infer entry.
 constexpr uint32_t kFlyIdleModeId = 0x61000033u;
 constexpr uint32_t kFlyControlledModeId = 0x61000034u;
 constexpr uint32_t kFirstKeyboardActionId = 0x10000000u;
@@ -149,7 +153,7 @@ constexpr uint32_t kFireActionId = 0x10000007u;
 // Actions that must never be driven by the remote snapshot, pinned by INDEX so a
 // rebind cannot reopen them.  The live table dumped from the shipped build
 // (profile 1) is the ground truth here:
-//   n=0x09 -> DIK 0x10 (Q)  - the key the player uses to call the fly
+//   n=0x09 -> DIK 0x10 (Q)  - map UI, kept local to each process
 //   n=0x0E -> DIK 0x14 (T)  - the Mooch-mode switch proven in code: 0x5BBC80
 //                             gates on 0x488CE0(pad, dev, 0x1000000E, 1) at
 //                             0x5BBCAC and calls [vtable+0x20](0x61000065) at
@@ -159,7 +163,7 @@ constexpr uint32_t kFireActionId = 0x10000007u;
 // the only thing that can close it is the VK_TAB skip in BuildRemoteScanCodeState
 // and HandleGetAsyncKeyState.  Nothing to pin there, and nothing to rebind.
 constexpr uint32_t kMoochActionIndex = 0x0Eu;
-constexpr uint32_t kFlySummonActionIndex = 0x09u;
+constexpr uint32_t kMapActionIndex = 0x09u;
 
 constexpr uint8_t kExpectedSha256[32] = {
 	0xBF, 0xDB, 0x49, 0x30, 0x33, 0x14, 0xCA, 0x8F,

@@ -20,10 +20,11 @@ Player2Module::Player2Module() :
 	m_player2_ready(0),
 	m_spawn_snapshot_ready(0),
 	m_spawn_in_progress(0),
+	m_player2_default_mode_initialized(false),
 	m_logged_player2(false),
 	m_logged_blocked_active_publish(false),
+	m_last_logged_mooch_controller(NULL),
 	m_last_player1_mode(0),
-	m_fly_controlled_last(false),
 	m_spawn_key_was_down(false),
 	m_last_weapon_type(0xFFFFFFFFu),
 	m_spawn_context(NULL),
@@ -544,9 +545,6 @@ void Player2Module::SpawnPlayer2FromSnapshot(const char* trigger)
 	{
 		used_live_transform = false;
 	}
-	player2_position.x += CoopRuntime::Instance().Config().spawn_offset_x;
-	player2_position.y += CoopRuntime::Instance().Config().spawn_offset_y;
-	player2_position.z += CoopRuntime::Instance().Config().spawn_offset_z;
 
 	SpawnGPigFn spawn = reinterpret_cast<SpawnGPigFn>(kSpawnGPig);
 	void* player2 = NULL;
@@ -578,6 +576,7 @@ void Player2Module::SpawnPlayer2FromSnapshot(const char* trigger)
 	if (player2 && player2_controller)
 	{
 		m_last_weapon_type = 0xFFFFFFFFu;
+		m_player2_default_mode_initialized = false;
 		m_logged_blocked_active_publish = false;
 		InterlockedExchange(&m_player2_ready, 1);
 	}
@@ -601,68 +600,14 @@ void __fastcall Player2Module::HookControllerUpdate(
 	Instance().UpdateController(controller);
 }
 
-bool Player2Module::IsFlyControlled()
-{
-	// Mooch, the fly, is entity slot 4 (0x9128E8) and owns a controller of its own.
-	// P1's controller mode is NOT a usable signal for "the player is flying": the
-	// Mooch switch mode 0x61000065 is a one-frame kick - its Update 0x5BC050
-	// unconditionally selects 0x6100003B again - so P1's controller sits in Default
-	// mode for the whole flight.  The fly's own controller mode and the
-	// process-global active entity are what actually say who the player drives.
-	void* fly = GetFlyEntity();
-	void* active_a = NULL;
-	void* active_b = NULL;
-	__try
-	{
-		active_a = *reinterpret_cast<void**>(kActiveEntityA);
-		active_b = *reinterpret_cast<void**>(kActiveEntityB);
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		return false;
-	}
-	if (!fly)
-		return false;
-	if (active_a == fly || active_b == fly)
-		return true;
-	return GetModeId(GetController(fly)) == kFlyControlledModeId;
-}
-
-void Player2Module::LogFlyControlEdge(bool fly_controlled)
-{
-	// Edge-triggered: two lines per flight, never per frame.
-	if (fly_controlled == m_fly_controlled_last)
-		return;
-	m_fly_controlled_last = fly_controlled;
-	void* fly = NULL;
-	void* active_a = NULL;
-	void* active_b = NULL;
-	__try
-	{
-		fly = *reinterpret_cast<void**>(kFlyEntity);
-		active_a = *reinterpret_cast<void**>(kActiveEntityA);
-		active_b = *reinterpret_cast<void**>(kActiveEntityB);
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-	}
-	CoopRuntime::Instance().Log("[fly] control %s: fly=%p fly_mode=0x%08X active=(%p,%p) p1_mode=0x%08X\r\n",
-		fly_controlled ? "taken" : "released", fly,
-		GetModeId(GetController(fly)), active_a, active_b,
-		GetModeId(GetController(GetGPigEntity(1))));
-}
-
 void Player2Module::TickPlayer1(void* player1_controller)
 {
-	const bool fly_controlled = IsFlyControlled();
-	LogFlyControlEdge(fly_controlled);
-
 	// The single shared GPig camera belongs to whoever the player is actually
-	// driving.  Re-pointing 0x5B03A0 at P1's guinea pig while the fly is the
-	// controlled character drags the view back to Darwin on every frame, and the
-	// Default-mode test alone does not catch that: P1's controller is in Default
-	// for the whole flight.
-	if (!fly_controlled && GetModeId(player1_controller) == kDefaultModeId)
+	// driving.  Its mode goes back to Default immediately after the native Mooch
+	// hand-off, so use the confirmed network owner state rather than a mode or
+	// process-global pointer that lasts only for that transition frame.
+	if (!CoopNetGame::Instance().IsLocalFlyControlled() &&
+		GetModeId(player1_controller) == kDefaultModeId)
 		RefreshCameraForController(player1_controller);
 	CoopNetGame::Instance().BeginLocalInputCapture();
 	m_original_update(player1_controller);
@@ -713,8 +658,56 @@ void Player2Module::LogPlayer1ModeEdge(void* player1_controller)
 			m_last_player1_mode, mode_now, active_a, active_b, player1, fly,
 			fly_controller, fly_mode);
 		if (mode_now == kMoochSwitchModeId)
+		{
+			// This is the only confirmation point: 0x5BBC80 accepted the local
+			// action and selected the EXE's real Darwin-to-Mooch hand-off mode.
+			// Do not infer ownership from the globals, which are reset on the
+			// following stock tick.
+			CoopNetGame::Instance().ConfirmLocalFlyControl();
 			CoopNetGame::Instance().RequestRemotePlayerTickDeferral();
+		}
 		m_last_player1_mode = mode_now;
+	}
+}
+
+void Player2Module::ConfigurePlayer2DefaultMode(void* controller)
+{
+	if (!controller || GetModeId(controller) != kDefaultModeId)
+		return;
+
+	__try
+	{
+		BYTE* const mode = *reinterpret_cast<BYTE**>(
+			static_cast<BYTE*>(controller) + kControllerModeOffset);
+		if (!mode)
+			return;
+
+		uint32_t* const conflict_mask = reinterpret_cast<uint32_t*>(
+			mode + kModeConflictMaskOffset);
+		const uint32_t original_mask = *conflict_mask;
+		if (original_mask != kDefaultModeConflictMask)
+		{
+			CoopRuntime::Instance().Log(
+				"[arbiter] P2 Default conflict mask unexpected: 0x%08X; left unchanged\r\n",
+				original_mask);
+			return;
+		}
+
+		// The modes are per-controller objects: the observed P2 Default instance
+		// differs from P1's Mooch instance.  0x5BFF80 compares the bit newly
+		// required by P1's Mooch -> Default hand-off (bit 0x1) against every
+		// other controller.  P2 has no local camera/active-entity ownership, so
+		// leaving that bit set falsely makes it a competing single-player owner.
+		// Retain the rest of P2's native Default mask and its full stock tick.
+		*conflict_mask = original_mask & ~kP2DefaultExclusiveMask;
+		CoopRuntime::Instance().Log(
+			"[arbiter] P2 Default mode=%p conflict mask 0x%08X -> 0x%08X\r\n",
+			mode, original_mask, *conflict_mask);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		CoopRuntime::Instance().Log(
+			"[arbiter] unable to configure P2 Default conflict mask\r\n");
 	}
 }
 
@@ -729,8 +722,22 @@ void Player2Module::UpdateController(void* controller)
 	// never ran, and the log shows exactly that: the 0x6100003B -> 0x61000065 edge
 	// appears and the return edge never does.  Nothing below may skip, relocate or
 	// synthesise a stock tick for a controller the player drives.
-	const uint32_t imode = GetModeId(controller);
 	const int slot = FindGPigSlot(controller);
+	const uint32_t controller_mode = GetModeId(controller);
+	if (controller_mode == kMoochSwitchModeId &&
+		m_last_logged_mooch_controller != controller)
+	{
+		m_last_logged_mooch_controller = controller;
+		CoopRuntime::Instance().Log(
+			"[mooch-route] controller=%p slot=%d p1.controller=%p p2.controller=%p fly.controller=%p\r\n",
+			controller, slot, GetController(GetGPigEntity(1)),
+			GetController(GetGPigEntity(2)), GetController(GetFlyEntity()));
+	}
+	else if (controller_mode != kMoochSwitchModeId &&
+		m_last_logged_mooch_controller == controller)
+	{
+		m_last_logged_mooch_controller = NULL;
+	}
 	const bool player2_slot = slot == 2 &&
 		CoopRuntime::Instance().Config().enabled &&
 		InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
@@ -746,22 +753,13 @@ void Player2Module::UpdateController(void* controller)
 		else if (controller == GetController(GetFlyEntity()))
 		{
 			void* fly = GetFlyEntity();
-			// XController_Fly consumes its active state during its own stock update:
-			// immediately afterwards it can already report idle even though this was
-			// the frame where the local player drove Mooch.  Keep the ownership
-			// decision from before that update, but capture the position afterwards
-			// when the Mooch motor has written its final transform.
-			const bool local_fly_controlled = IsFlyControlled();
 			m_original_update(controller);
-			// This is the only correct capture point: Mooch's own controller has
-			// just applied its motor input, so the packet carries the resulting
-			// position instead of the stale position P1 saw earlier in the frame.
-			// The ownership flag above deliberately remains the pre-update value.
-			CoopNetGame::Instance().PublishLocalFlyTransform(fly,
-				local_fly_controlled);
-			// A local owner is authoritative.  Every other process leaves Mooch's
-			// stock tick intact, then applies the remote owner's final position.
-			if (!local_fly_controlled)
+			// Capture after Mooch's native motor has produced this frame's final
+			// position.  The owner state itself was confirmed from P1's native
+			// Darwin-to-Mooch hand-off and is not inferred here.
+			CoopNetGame::Instance().ObserveLocalFlyMode(GetModeId(controller));
+			CoopNetGame::Instance().PublishLocalFlyTransform(fly);
+			if (!CoopNetGame::Instance().IsLocalFlyControlled())
 				CoopNetGame::Instance().ApplyRemoteFlyTransform(fly);
 		}
 		else
@@ -793,15 +791,41 @@ void Player2Module::UpdateController(void* controller)
 
 	__try
 	{
-		// P2 has to leave Inactive mode once to own a body that animates at all.
-		SelectMode(controller, kInactiveModeId);
-
 		// Read the packet.  For the length of P2's tick the stock keyboard action
 		// code consumes the remote snapshot while P1 keeps reading the physical
 		// keyboard.  With no packet the snapshot is zeroed, so P2 simply idles -
 		// BuildRemoteScanCodeState reports every key up and no edge is forged.
 		CoopNetGame::Instance().BeginRemoteInput();
 		remote_input_active = true;
+		// Default is the P2 controller's native input/animation state.  Its Enter
+		// routine reads the pad immediately, so selecting it outside this bracket
+		// incorrectly consumes P1's physical key edge.  This mod-side guard is
+		// reset only when a new P2 is spawned: it never retries a mode selection
+		// while P1 is changing to or from Mooch.
+		if (!m_player2_default_mode_initialized &&
+			!CoopNetGame::Instance().IsLocalFlyControlled())
+		{
+			if (GetModeId(controller) == kInactiveModeId)
+			{
+				// Default::Enter runs 0x5BB1D0 immediately.  Unlike the later
+				// per-frame camera update that is already skipped for P2, this one
+				// writes the singleton camera handler during the one-off mode
+				// selection.  Preserve P1's handler around that Enter so P2 gets a
+				// real Default state without leaving its aim/follow state behind for
+				// P1's subsequent Mooch transition.
+				SharedCameraAimState saved_camera_state = {};
+				const bool have_saved_camera_state =
+					SaveSharedCameraAimState(saved_camera_state);
+				SelectMode(controller, kDefaultModeId);
+				if (have_saved_camera_state)
+					RestoreSharedCameraAimState(saved_camera_state);
+			}
+			ConfigurePlayer2DefaultMode(controller);
+			m_player2_default_mode_initialized = true;
+			CoopRuntime::Instance().Log(
+				"[player2] one-time Default initialization mode=0x%08X\r\n",
+				GetModeId(controller));
+		}
 		uint32_t remote_weapon_type = 0xFFFFFFFFu;
 		if (CoopNetGame::Instance().GetActiveRemoteWeaponType(remote_weapon_type))
 			ApplyPlayer2WeaponSelection(player2, remote_weapon_type, "remote P1");
@@ -918,10 +942,18 @@ bool Player2Module::PatchDefaultModeActivePublish()
 
 bool Player2Module::Install()
 {
-	void** update_slot = reinterpret_cast<void**>(kGPigUpdateVtableSlot);
-	if (*update_slot != reinterpret_cast<void*>(kOriginalControllerUpdate))
+	void** gpig_update_slot = reinterpret_cast<void**>(kGPigUpdateVtableSlot);
+	void** fly_update_slot = reinterpret_cast<void**>(kFlyUpdateVtableSlot);
+	if (*gpig_update_slot != reinterpret_cast<void*>(kOriginalControllerUpdate))
 	{
-		CoopRuntime::Instance().Log("[error] GPig update vtable mismatch: %p\r\n", *update_slot);
+		CoopRuntime::Instance().Log("[error] GPig update vtable mismatch: %p\r\n",
+			*gpig_update_slot);
+		return false;
+	}
+	if (*fly_update_slot != reinterpret_cast<void*>(kOriginalControllerUpdate))
+	{
+		CoopRuntime::Instance().Log("[error] Fly update vtable mismatch: %p\r\n",
+			*fly_update_slot);
 		return false;
 	}
 
@@ -943,8 +975,22 @@ bool Player2Module::Install()
 	}
 
 	void* replacement = reinterpret_cast<void*>(&HookControllerUpdate);
-	if (!MemoryPatch::Write(update_slot, &replacement, sizeof(replacement)))
+	if (!MemoryPatch::Write(gpig_update_slot, &replacement, sizeof(replacement)))
 	{
+		MemoryPatch::Write(reinterpret_cast<void*>(kSpawnCall1),
+			m_original_spawn_call1, sizeof(m_original_spawn_call1));
+		MemoryPatch::Write(reinterpret_cast<void*>(kSpawnCall2),
+			m_original_spawn_call2, sizeof(m_original_spawn_call2));
+		MemoryPatch::Write(reinterpret_cast<void*>(kDefaultModeActiveStores),
+			m_original_default_mode_active_stores,
+			sizeof(m_original_default_mode_active_stores));
+		m_default_mode_active_stores_patched = false;
+		return false;
+	}
+	if (!MemoryPatch::Write(fly_update_slot, &replacement, sizeof(replacement)))
+	{
+		void* original = reinterpret_cast<void*>(kOriginalControllerUpdate);
+		MemoryPatch::Write(gpig_update_slot, &original, sizeof(original));
 		MemoryPatch::Write(reinterpret_cast<void*>(kSpawnCall1),
 			m_original_spawn_call1, sizeof(m_original_spawn_call1));
 		MemoryPatch::Write(reinterpret_cast<void*>(kSpawnCall2),
@@ -958,8 +1004,9 @@ bool Player2Module::Install()
 
 	CoopRuntime::Instance().Log("[ok] spawn CALLs patched at 0x%08X and 0x%08X\r\n",
 		static_cast<unsigned>(kSpawnCall1), static_cast<unsigned>(kSpawnCall2));
-	CoopRuntime::Instance().Log("[ok] GPig update vtable slot 0x%08X: 0x%08X -> %p\r\n",
+	CoopRuntime::Instance().Log("[ok] GPig/Fly update vtable slots 0x%08X/0x%08X: 0x%08X -> %p\r\n",
 		static_cast<unsigned>(kGPigUpdateVtableSlot),
+		static_cast<unsigned>(kFlyUpdateVtableSlot),
 		static_cast<unsigned>(kOriginalControllerUpdate), replacement);
 	CoopRuntime::Instance().Log("[ok] Default-mode active-player stores guarded at 0x%08X\r\n",
 		static_cast<unsigned>(kDefaultModeActiveStores));
@@ -968,12 +1015,15 @@ bool Player2Module::Install()
 
 void Player2Module::Remove()
 {
-	void** update_slot = reinterpret_cast<void**>(kGPigUpdateVtableSlot);
-	if (*update_slot == reinterpret_cast<void*>(&HookControllerUpdate))
+	void** gpig_update_slot = reinterpret_cast<void**>(kGPigUpdateVtableSlot);
+	void** fly_update_slot = reinterpret_cast<void**>(kFlyUpdateVtableSlot);
+	void* original = reinterpret_cast<void*>(kOriginalControllerUpdate);
+	if (*gpig_update_slot == reinterpret_cast<void*>(&HookControllerUpdate))
 	{
-		void* original = reinterpret_cast<void*>(kOriginalControllerUpdate);
-		MemoryPatch::Write(update_slot, &original, sizeof(original));
+		MemoryPatch::Write(gpig_update_slot, &original, sizeof(original));
 	}
+	if (*fly_update_slot == reinterpret_cast<void*>(&HookControllerUpdate))
+		MemoryPatch::Write(fly_update_slot, &original, sizeof(original));
 	if (m_original_spawn_call1[0] == 0xE8)
 		MemoryPatch::Write(reinterpret_cast<void*>(kSpawnCall1),
 			m_original_spawn_call1, sizeof(m_original_spawn_call1));

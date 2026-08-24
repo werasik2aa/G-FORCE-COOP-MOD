@@ -34,16 +34,11 @@ CoopRuntime::CoopRuntime() :
 	ZeroMemory(m_game_ini_path, sizeof(m_game_ini_path));
 	ZeroMemory(&m_config, sizeof(m_config));
 	m_config.enabled = 1;
-	m_config.activate_player2 = 1;
 	m_config.test_windowed = 1;
 	m_config.keep_active_in_background = 1;
-	m_config.player2_device = 1;
 	m_config.spawn_key = VK_F6;
 	m_config.window_width = 1280;
 	m_config.window_height = 720;
-	m_config.spawn_offset_x = 0.5f;
-	m_config.spawn_offset_y = 0.5f;
-	m_config.spawn_offset_z = 0.0f;
 }
 
 void CoopRuntime::SetModule(HMODULE module)
@@ -246,36 +241,13 @@ bool CoopRuntime::VerifyExecutable()
 	return true;
 }
 
-float CoopRuntime::ReadIniFloat(const wchar_t* key, float fallback)
-{
-	wchar_t default_value[64] = {};
-	wchar_t value[64] = {};
-	swprintf_s(default_value, _countof(default_value), L"%.6g",
-		static_cast<double>(fallback));
-	GetPrivateProfileStringW(L"coop", key, default_value, value,
-		_countof(value), m_ini_path);
-	wchar_t* end = NULL;
-	const float parsed = wcstof(value, &end);
-	return end == value ? fallback : parsed;
-}
-
 void CoopRuntime::LoadConfiguration()
 {
 	InterlockedExchange(&m_config.enabled,
 		GetPrivateProfileIntW(L"coop", L"enabled", 1, m_ini_path) ? 1 : 0);
-	InterlockedExchange(&m_config.activate_player2,
-		GetPrivateProfileIntW(L"coop", L"activate_player2", 1, m_ini_path) ? 1 : 0);
-	m_config.player2_device = GetPrivateProfileIntW(L"coop", L"player2_device", 1, m_ini_path);
-	if (m_config.player2_device < 0)
-		m_config.player2_device = 0;
-	if (m_config.player2_device > 3)
-		m_config.player2_device = 3;
 	m_config.spawn_key = GetPrivateProfileIntW(L"coop", L"spawn_key", VK_F6, m_ini_path);
 	if (m_config.spawn_key < 0 || m_config.spawn_key > 255)
 		m_config.spawn_key = VK_F6;
-	m_config.spawn_offset_x = ReadIniFloat(L"spawn_offset_x", 0.5f);
-	m_config.spawn_offset_y = ReadIniFloat(L"spawn_offset_y", 0.5f);
-	m_config.spawn_offset_z = ReadIniFloat(L"spawn_offset_z", 0.0f);
 	InterlockedExchange(&m_config.test_windowed,
 		GetPrivateProfileIntW(L"window", L"experimental_windowed", 1,
 			m_ini_path) ? 1 : 0);
@@ -301,9 +273,8 @@ void CoopRuntime::LoadConfiguration()
 		WritePrivateProfileStringW(L"RenderMode", L"FBHeight", height,
 			m_game_ini_path);
 	}
-	Log("[config] enabled=%ld activate_player2=%ld player2_device=%d spawn_key=0x%02X offset=(%.3f, %.3f, %.3f)\r\n",
-		m_config.enabled, m_config.activate_player2, m_config.player2_device, m_config.spawn_key,
-		m_config.spawn_offset_x, m_config.spawn_offset_y, m_config.spawn_offset_z);
+	Log("[config] enabled=%ld spawn_key=0x%02X\r\n",
+		m_config.enabled, m_config.spawn_key);
 	Log("[config-window] experimental_windowed=%ld keep_active_in_background=%ld client=%dx%d\r\n",
 		m_config.test_windowed, m_config.keep_active_in_background,
 		m_config.window_width, m_config.window_height);

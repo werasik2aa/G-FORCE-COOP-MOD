@@ -10,16 +10,11 @@ namespace coop
 struct CoopConfig
 {
 	volatile LONG enabled;
-	volatile LONG activate_player2;
 	volatile LONG test_windowed;
 	volatile LONG keep_active_in_background;
-	int player2_device;
 	int spawn_key;
 	int window_width;
 	int window_height;
-	float spawn_offset_x;
-	float spawn_offset_y;
-	float spawn_offset_z;
 };
 
 class CoopRuntime final
@@ -47,8 +42,6 @@ private:
 
 	bool BuildModulePaths();
 	bool HashExecutable(BYTE digest[32]);
-	float ReadIniFloat(const wchar_t* key, float fallback);
-
 	HMODULE m_module;
 	HANDLE m_log;
 	CRITICAL_SECTION m_log_lock;
