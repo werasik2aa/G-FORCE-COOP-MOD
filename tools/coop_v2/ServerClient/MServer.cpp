@@ -2,6 +2,7 @@
 
 #include "MStandalone.h"
 #include "../coop_netgame.h"
+#include "../save_sync.h"
 
 #include <algorithm>
 #include <string.h>
@@ -181,6 +182,7 @@ void CSteamOfflineSocketServer::OnRemotePacket(
 		SendRaw(message->m_conn, kWelcomeMessage,
 			static_cast<std::uint32_t>(sizeof(kWelcomeMessage)),
 			k_nSteamNetworkingSend_Reliable);
+		coop::SaveSync::Instance().SendHostJoinSave(this, message->m_conn);
 		return;
 	}
 
@@ -194,6 +196,9 @@ void CSteamOfflineSocketServer::OnRemotePacket(
 				message->m_pData, static_cast<std::uint32_t>(message->m_cbSize));
 			return;
 		}
+		if (coop::SaveSync::Instance().OnRemotePacket(message->m_pData,
+			static_cast<std::uint32_t>(message->m_cbSize)))
+			return;
 	}
 	Msg("[network-server] ignored unknown packet from %u: %d bytes",
 		message->m_conn, message->m_cbSize);

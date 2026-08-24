@@ -26,7 +26,8 @@ enum CoopPacketId : std::uint32_t
 	kCoopPacketInvalid = 0,
 	kCoopPacketHello = 1,
 	kCoopPacketWelcome = 2,
-	kCoopPacketInput = 10
+	kCoopPacketInput = 10,
+	kCoopPacketSaveSlot = 20
 };
 
 struct PacketHeader

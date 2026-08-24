@@ -2,6 +2,7 @@
 
 #include "MStandalone.h"
 #include "../coop_netgame.h"
+#include "../save_sync.h"
 
 #include <string.h>
 
@@ -160,6 +161,9 @@ void CSteamOfflineSocketClient::OnRemotePacket(
 				message->m_pData, static_cast<std::uint32_t>(message->m_cbSize));
 			return;
 		}
+		if (coop::SaveSync::Instance().OnRemotePacket(message->m_pData,
+			static_cast<std::uint32_t>(message->m_cbSize)))
+			return;
 	}
 	if (!welcome)
 		Msg("[network-client] ignored unknown packet: %d bytes",
