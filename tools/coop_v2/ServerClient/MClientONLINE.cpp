@@ -5,7 +5,7 @@
 namespace
 {
 // Four attempts spaced two seconds apart covers the realistic window: the host
-// alt-tabs into the game and presses F7 shortly after the joiner clicked Join.
+// is still finishing its save load shortly after the joiner clicked Join.
 constexpr std::uint32_t kMaxConnectRetries = 4;
 constexpr std::uint32_t kConnectRetryDelayMs = 2000;
 }
@@ -116,7 +116,7 @@ void CSteamOnlineSocketClient::ScheduleConnectRetry()
 	if (m_retry_attempts >= kMaxConnectRetries)
 	{
 		Msg("[network-client] Steam connect gave up after %u attempts; the peer "
-			"has no open P2P socket (host must press F7 with the game focused)",
+			"has no open P2P socket (host must finish loading its save)",
 			m_retry_attempts);
 		return;
 	}

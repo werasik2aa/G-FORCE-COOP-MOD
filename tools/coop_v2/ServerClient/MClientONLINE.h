@@ -23,8 +23,8 @@ public:
 
 private:
 	// A P2P connect that dies while still Connecting almost always means the peer
-	// had no listen socket yet - the host's F7 is gated on the game window being
-	// in the foreground, so it is routinely pressed seconds after the join click.
+	// had no listen socket yet - it opens only after the host's save has loaded,
+	// so it can legitimately appear seconds after the join click.
 	// Retrying turns that ordering problem into a non-issue instead of a dead run.
 	void ScheduleConnectRetry();
 

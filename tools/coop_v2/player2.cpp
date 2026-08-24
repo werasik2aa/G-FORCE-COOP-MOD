@@ -3,6 +3,7 @@
 #include "coop_netgame.h"
 #include "coop_runtime.h"
 #include "gforce_constants.h"
+#include "ServerClient/SteamManager.h"
 
 #include <string.h>
 
@@ -602,6 +603,12 @@ void __fastcall Player2Module::HookControllerUpdate(
 
 void Player2Module::TickPlayer1(void* player1_controller)
 {
+	// The first real P1 controller tick cannot happen in the main menu.  It is
+	// therefore the safe boundary for turning a normal loaded save into an IP
+	// host, without advertising or probing Steam during startup.
+	if (SteamManager)
+		SteamManager->NotifyGameWorldReady();
+
 	// The single shared GPig camera belongs to whoever the player is actually
 	// driving.  Its mode goes back to Default immediately after the native Mooch
 	// hand-off, so use the confirmed network owner state rather than a mode or

@@ -26,19 +26,23 @@ public:
 	bool Initialize();
 	void Destroy();
 	void OnFrame();
+	// Called from P1's native controller tick, never from the menu.  It merely
+	// queues the host listeners for the network worker.
+	void NotifyGameWorldReady();
 
 	bool InitializeSteam();
 	bool IsSteamInitialized() const;
 	const CSteamID& GetMySteamID() const;
-
-	void StartServers();
-	void ConnectLocalhost();
 
 private:
 	static DWORD WINAPI WorkerThread(LPVOID context);
 	void WorkerLoop();
 	void PollHotkeys();
 	bool IsGameForeground() const;
+	void StartLoadedWorldServers();
+	void ConnectLocalhost();
+	void StopServersForClient();
+	void ProcessAutomaticHostRequest();
 	void WarmUpRelayNetwork();
 
 	STEAM_CALLBACK(CSteamManager, OnGameRichPresenceJoinRequested,
@@ -53,7 +57,8 @@ private:
 	CSteamID m_my_steam_id;
 	HANDLE m_stop_event;
 	HANDLE m_worker_thread;
-	bool m_f7_was_down;
+	volatile LONG m_game_world_ready;
+	volatile LONG m_automatic_host_attempted;
 	bool m_f8_was_down;
 };
 

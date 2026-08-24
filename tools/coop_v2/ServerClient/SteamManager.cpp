@@ -13,7 +13,6 @@ namespace
 {
 constexpr std::uint32_t kOfflinePort = 44139;
 constexpr std::uint32_t kSteamVirtualPort = 44140;
-const char kLocalAddress[] = "127.0.0.1:44139";
 
 CSteamManager g_manager;
 }
@@ -30,7 +29,8 @@ CSteamManager::CSteamManager() :
 	m_steam_initialized(false),
 	m_stop_event(NULL),
 	m_worker_thread(NULL),
-	m_f7_was_down(false),
+	m_game_world_ready(0),
+	m_automatic_host_attempted(0),
 	m_f8_was_down(false)
 {
 }
@@ -78,8 +78,8 @@ bool CSteamManager::Initialize()
 		return false;
 	}
 
-	Msg("[network] worker started; F7=host ports %u/%u, F8=connect %s",
-		kOfflinePort, kSteamVirtualPort, kLocalAddress);
+	Msg("[network] worker started; world load opens host ports %u/%u, F8 connects %s",
+		kOfflinePort, kSteamVirtualPort, "127.0.0.1:44139");
 	return true;
 }
 
@@ -169,13 +169,9 @@ void CSteamManager::WarmUpRelayNetwork()
 	ISteamNetworkingUtils* utils = SteamNetworkingUtils_SteamAPI();
 	if (!utils)
 		return;
-	// InitRelayNetworkAccess only STARTS the relay ping measurement, and ConnectP2P
-	// cannot route through Steam Datagram Relay until that finishes.  Both the
-	// listen socket and the join-request handler used to call it on the same line as
-	// the connect, so the first Steam connect of a process raced a relay network
-	// that was still being measured - which ends as
-	// "reason=5003 Timed out attempting to connect" even though the peer is fine.
-	// Starting it here gives the relays the whole menu/loading time to come up.
+	// This is called only after a world is loaded or for an explicit Steam Join.
+	// It starts relay/NAT traversal, so doing it while merely opening the game makes
+	// Steam rate-limit a path the player may never use.
 	utils->InitRelayNetworkAccess();
 	// The offline path tunes its timeouts through the standalone
 	// GameNetworkingSockets utils; that is a different library instance and leaves
@@ -227,6 +223,11 @@ const CSteamID& CSteamManager::GetMySteamID() const
 	return m_my_steam_id;
 }
 
+void CSteamManager::NotifyGameWorldReady()
+{
+	InterlockedExchange(&m_game_world_ready, 1);
+}
+
 DWORD WINAPI CSteamManager::WorkerThread(LPVOID context)
 {
 	static_cast<CSteamManager*>(context)->WorkerLoop();
@@ -235,14 +236,6 @@ DWORD WINAPI CSteamManager::WorkerThread(LPVOID context)
 
 void CSteamManager::WorkerLoop()
 {
-	// The relay warm-up has to happen HERE and not in InitializeSteam.  Initialize
-	// runs on the game's startup path, and the very first touch of the Steam
-	// networking interface brings up the SDR library from that context - which hung
-	// the process before it could even print the next log line.  The worker thread
-	// is the context that already drives every other Steam networking call, and it
-	// starts at game launch, so the relays still get the whole menu/loading time.
-	if (m_steam_initialized)
-		WarmUpRelayNetwork();
 	while (WaitForSingleObject(m_stop_event, 1) == WAIT_TIMEOUT)
 	{
 		PollHotkeys();
@@ -270,6 +263,7 @@ void CSteamManager::OnFrame()
 		SteamSServer->OnFrame();
 	}
 
+	ProcessAutomaticHostRequest();
 	coop::CoopNetGame::Instance().NetworkTick();
 }
 
@@ -285,51 +279,75 @@ bool CSteamManager::IsGameForeground() const
 
 void CSteamManager::PollHotkeys()
 {
-	const bool f7_down = IsGameForeground() &&
-		(GetAsyncKeyState(VK_F7) & 0x8000) != 0;
 	const bool f8_down = IsGameForeground() &&
 		(GetAsyncKeyState(VK_F8) & 0x8000) != 0;
-	if (f7_down && !m_f7_was_down)
-		StartServers();
 	if (f8_down && !m_f8_was_down)
 		ConnectLocalhost();
-	m_f7_was_down = f7_down;
 	m_f8_was_down = f8_down;
 }
 
-void CSteamManager::StartServers()
+void CSteamManager::ProcessAutomaticHostRequest()
+{
+	if (InterlockedCompareExchange(&m_game_world_ready, 0, 0) == 0 ||
+		InterlockedCompareExchange(&m_automatic_host_attempted, 0, 0) != 0)
+	{
+		return;
+	}
+
+	InterlockedExchange(&m_automatic_host_attempted, 1);
+	if (coop::CoopNetGame::Instance().IsClient())
+	{
+		Msg("[network-host] loaded-world host skipped; Steam join selected client mode");
+		return;
+	}
+	StartLoadedWorldServers();
+}
+
+void CSteamManager::StartLoadedWorldServers()
 {
 	if (!SteamOServer || !SteamSServer)
 		return;
-	if (SteamOClient && SteamOClient->IsConnected())
-		SteamOClient->Disconnect();
 
+	if (m_steam_initialized)
+		WarmUpRelayNetwork();
 	const bool offline = SteamOServer->OpenListenSocket(kOfflinePort);
 	const bool online = SteamSServer->OpenListenSocket(kSteamVirtualPort);
-	Msg("[network-host] F7 result: offline=%s Steam=%s relay=%s",
+	Msg("[network-host] loaded world: IP=%s Steam=%s ports=%u/%u relay=%s",
 		offline ? "ready" : "failed", online ? "ready" : "unavailable",
-		SteamRelayStatusName());
+		kOfflinePort, kSteamVirtualPort, SteamRelayStatusName());
 	if (offline || online)
 		coop::CoopNetGame::Instance().SetModeHost();
 }
 
 void CSteamManager::ConnectLocalhost()
 {
-	if (!SteamLClient || !SteamOServer)
+	if (!SteamLClient)
 		return;
-	if (SteamOServer->IsSteamSocketOpen())
+	if (coop::CoopNetGame::Instance().IsClient())
 	{
-		Msg("[network-client] F8 ignored in host process");
+		Msg("[network-client] F8 ignored; this process is already a client");
 		return;
 	}
+
+	// F8 is explicit LAN-client intent.  A process can already have opened its
+	// own listener after loading a save, so close it before connecting to the
+	// other local host rather than leaving both roles active.
+	coop::CoopNetGame::Instance().SetModeClient();
 	if (SteamOClient && SteamOClient != SteamLClient)
 		SteamOClient->Disconnect();
+	StopServersForClient();
 	SteamOClient = SteamLClient;
-	const bool started = SteamOClient->CreateConnection(kLocalAddress);
+	const bool started = SteamOClient->CreateConnection("127.0.0.1:44139");
 	Msg("[network-client] F8 localhost connect=%s",
 		started ? "started" : "failed");
-	if (started)
-		coop::CoopNetGame::Instance().SetModeClient();
+}
+
+void CSteamManager::StopServersForClient()
+{
+	if (SteamOServer)
+		SteamOServer->CloseServer();
+	if (SteamSServer)
+		SteamSServer->CloseServer();
 }
 
 void CSteamManager::OnGameRichPresenceJoinRequested(
@@ -340,19 +358,22 @@ void CSteamManager::OnGameRichPresenceJoinRequested(
 	Msg("[network-steam] join request from %llu; connecting without X-Ray UI "
 		"(relay=%s)",
 		callback->m_steamIDFriend.ConvertToUint64(), SteamRelayStatusName());
+	// A Steam Join is explicit client intent.  It wins even if the local save
+	// just finished loading on the same frame, so this process never becomes a
+	// temporary host while it is following a friend.
+	coop::CoopNetGame::Instance().SetModeClient();
 	if (SteamOClient)
 		SteamOClient->Disconnect();
-	if (SteamOServer)
-		SteamOServer->CloseServer();
-	if (SteamSServer)
-		SteamSServer->CloseServer();
+	StopServersForClient();
 	SteamOClient = SteamSClient;
+	// The relay is touched only for the explicit join action, never at startup.
+	if (m_steam_initialized)
+		WarmUpRelayNetwork();
 	// A join request is a fresh user intent, so the retry budget starts over even
 	// if a previous friend's connect had already exhausted it.
 	SteamSClient->ResetConnectRetries();
-	if (SteamOClient->ConnectToFriend(
-		callback->m_steamIDFriend, kSteamVirtualPort))
-		coop::CoopNetGame::Instance().SetModeClient();
+	SteamOClient->ConnectToFriend(callback->m_steamIDFriend,
+		kSteamVirtualPort);
 }
 
 void CSteamManager::OnSteamServersConnected(SteamServersConnected_t*)
