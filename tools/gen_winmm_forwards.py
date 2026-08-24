@@ -7,10 +7,10 @@ other DLL: Steam's steamwebrtc.dll imports timeSetEvent/timeKillEvent, and with
 those missing the loader refused it outright ("entry point timeKillEvent not
 found"), which took Steam Datagram Relay down with it.
 
-Run from this directory with the real 32-bit winmm export dump available:
+Run from the repository root with the real 32-bit winmm export dump available:
 
-    dumpbin /exports %SystemRoot%\\SysWOW64\\winmm.dll > build\\winmm_exports.txt
-    python gen_winmm_forwards.py
+    dumpbin /exports %SystemRoot%\\SysWOW64\\winmm.dll > tools\\coop_v2\\build\\winmm_exports.txt
+    python tools\\gen_winmm_forwards.py
 
 Functions with a hand-written implementation in winmm_proxy.cpp (fallbacks,
 co-op bootstrap) stay hand-written; everything else becomes a naked jmp thunk.
@@ -19,10 +19,12 @@ Ordinals are copied from the real DLL so imports by ordinal keep working.
 
 import re
 import sys
+from pathlib import Path
 
-DUMP = "build/winmm_exports.txt"
-DEF = "winmm_proxy.def"
-INL = "winmm_forward.inl"
+COOP_DIRECTORY = Path(__file__).resolve().parent / "coop_v2"
+DUMP = COOP_DIRECTORY / "build" / "winmm_exports.txt"
+DEF = COOP_DIRECTORY / "winmm_proxy.def"
+INL = COOP_DIRECTORY / "winmm_forward.inl"
 
 # Hand-written in winmm_proxy.cpp; keep their existing wrappers.
 HAND_WRITTEN = [
@@ -67,7 +69,7 @@ def parse_hand_written_def(path):
 def main():
     exports = parse_exports(DUMP)
     if not exports:
-        print("no exports parsed from " + DUMP, file=sys.stderr)
+        print("no exports parsed from " + str(DUMP), file=sys.stderr)
         return 1
     existing = parse_hand_written_def(DEF)
 

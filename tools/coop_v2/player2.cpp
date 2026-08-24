@@ -3,6 +3,8 @@
 #include "coop_netgame.h"
 #include "coop_runtime.h"
 #include "gforce_constants.h"
+#include "save_sync.h"
+#include "world_sync.h"
 #include "ServerClient/SteamManager.h"
 
 #include <string.h>
@@ -27,6 +29,8 @@ Player2Module::Player2Module() :
 	m_last_logged_mooch_controller(NULL),
 	m_last_player1_mode(0),
 	m_spawn_key_was_down(false),
+	m_npc_spawn_key_was_down(false),
+	m_npc_spawn_random_state(0),
 	m_last_weapon_type(0xFFFFFFFFu),
 	m_spawn_context(NULL),
 	m_default_mode_active_stores_patched(false),
@@ -595,6 +599,198 @@ void Player2Module::PollPlayer2SpawnKey()
 	m_spawn_key_was_down = down;
 }
 
+bool Player2Module::IsSpawnableNpcTemplate(void* trigger, uint32_t family)
+{
+	if (!trigger ||
+		(family != kMonsterTriggerFamily && family != kNpcTriggerFamily))
+	{
+		return false;
+	}
+
+	__try
+	{
+		BYTE* const bytes = static_cast<BYTE*>(trigger);
+		if (*reinterpret_cast<uint32_t*>(bytes + kTriggerFamilyOffset) != family ||
+			(*reinterpret_cast<uint32_t*>(bytes + kTriggerFlagsOffset) &
+				kTriggerHasSpawnDefinition) == 0 ||
+			*reinterpret_cast<int32_t*>(bytes + kTriggerSpawnIdOffset) < 0)
+		{
+			return false;
+		}
+
+		void** const vtable = *reinterpret_cast<void***>(trigger);
+		if (!vtable ||
+			vtable[kTriggerSpawnVtableOffset / sizeof(void*)] !=
+				reinterpret_cast<void*>(kTriggerSpawnFromDefinition))
+		{
+			return false;
+		}
+
+		void* const clone = vtable[kTriggerCloneVtableOffset / sizeof(void*)];
+		return clone == reinterpret_cast<void*>(kTriggerCloneGeneric) ||
+			clone == reinterpret_cast<void*>(kTriggerCloneMonster);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		return false;
+	}
+}
+
+void* Player2Module::SelectRandomNpcTemplate(uint32_t& family,
+	uint32_t& subtype, size_t& candidate_count)
+{
+	family = 0;
+	subtype = 0;
+	candidate_count = 0;
+
+	struct TemplateList
+	{
+		size_t offset;
+		uint32_t family;
+	};
+	const TemplateList lists[] =
+	{
+		{ kEntityRegistryMonsterListOffset, kMonsterTriggerFamily },
+		{ kEntityRegistryNpcListOffset, kNpcTriggerFamily }
+	};
+
+	__try
+	{
+		BYTE* const registry = *reinterpret_cast<BYTE**>(kEntityRegistry);
+		if (!registry)
+			return NULL;
+
+		for (size_t list_index = 0; list_index < _countof(lists); ++list_index)
+		{
+			BYTE* node = *reinterpret_cast<BYTE**>(registry + lists[list_index].offset);
+			for (size_t visited = 0; node && visited != 256; ++visited)
+			{
+				BYTE* const entity = *reinterpret_cast<BYTE**>(
+					node + kIntrusiveListValueOffset);
+				BYTE* const trigger = entity ? *reinterpret_cast<BYTE**>(
+					entity + kEntityTriggerOffset) : NULL;
+				if (IsSpawnableNpcTemplate(trigger, lists[list_index].family))
+					++candidate_count;
+				node = *reinterpret_cast<BYTE**>(node + kIntrusiveListNextOffset);
+			}
+		}
+
+		if (!candidate_count)
+			return NULL;
+
+		if (!m_npc_spawn_random_state)
+			m_npc_spawn_random_state = GetTickCount();
+		m_npc_spawn_random_state = m_npc_spawn_random_state * 1664525u +
+			1013904223u;
+		size_t remaining = m_npc_spawn_random_state % candidate_count;
+		for (size_t list_index = 0; list_index < _countof(lists); ++list_index)
+		{
+			BYTE* node = *reinterpret_cast<BYTE**>(registry + lists[list_index].offset);
+			for (size_t visited = 0; node && visited != 256; ++visited)
+			{
+				BYTE* const entity = *reinterpret_cast<BYTE**>(
+					node + kIntrusiveListValueOffset);
+				BYTE* const trigger = entity ? *reinterpret_cast<BYTE**>(
+					entity + kEntityTriggerOffset) : NULL;
+				if (IsSpawnableNpcTemplate(trigger, lists[list_index].family))
+				{
+					if (!remaining)
+					{
+						family = lists[list_index].family;
+						subtype = *reinterpret_cast<uint32_t*>(
+							trigger + kTriggerSubtypeOffset);
+						return trigger;
+					}
+					--remaining;
+				}
+				node = *reinterpret_cast<BYTE**>(node + kIntrusiveListNextOffset);
+			}
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		CoopRuntime::Instance().Log(
+			"[npc-spawn] live trigger list fault; no object created\r\n");
+	}
+	return NULL;
+}
+
+void Player2Module::SpawnRandomNpcFromLiveTemplate()
+{
+	void* const player1 = GetGPigEntity(1);
+	if (!player1)
+	{
+		CoopRuntime::Instance().Log(
+			"[npc-spawn] F5 ignored: no loaded P1/world yet\r\n");
+		return;
+	}
+
+	uint32_t family = 0;
+	uint32_t subtype = 0;
+	size_t candidate_count = 0;
+	void* const source = SelectRandomNpcTemplate(family, subtype, candidate_count);
+	if (!source)
+	{
+		CoopRuntime::Instance().Log(
+			"[npc-spawn] F5 found no spawnable monster/NPC map template\r\n");
+		return;
+	}
+
+	__try
+	{
+		void** const source_vtable = *reinterpret_cast<void***>(source);
+		TriggerCloneFn const clone = reinterpret_cast<TriggerCloneFn>(
+			source_vtable[kTriggerCloneVtableOffset / sizeof(void*)]);
+		void* const created = clone(source);
+		if (!created)
+		{
+			CoopRuntime::Instance().Log(
+				"[npc-spawn] clone failed family=0x%08X subtype=0x%08X\r\n",
+				family, subtype);
+			return;
+		}
+
+		// The clone preserves the map's exact archetype/spawn definition.  Only
+		// replace its transform with the current P1 transform before the native
+		// spawn method reads trigger+0xA4.
+		*reinterpret_cast<Vec4*>(static_cast<BYTE*>(created) +
+			kTriggerPositionOffset) = *reinterpret_cast<Vec4*>(
+			static_cast<BYTE*>(player1) + kEntityPositionOffset);
+		*reinterpret_cast<Vec4*>(static_cast<BYTE*>(created) +
+			kTriggerRotationOffset) = *reinterpret_cast<Vec4*>(
+			static_cast<BYTE*>(player1) + kEntityRotationOffset);
+
+		void** const created_vtable = *reinterpret_cast<void***>(created);
+		if (!created_vtable ||
+			created_vtable[kTriggerSpawnVtableOffset / sizeof(void*)] !=
+				reinterpret_cast<void*>(kTriggerSpawnFromDefinition))
+		{
+			CoopRuntime::Instance().Log(
+				"[npc-spawn] clone has no expected native spawn method; left untouched\r\n");
+			return;
+		}
+
+		TriggerSpawnFn const spawn = reinterpret_cast<TriggerSpawnFn>(
+			created_vtable[kTriggerSpawnVtableOffset / sizeof(void*)]);
+		spawn(created);
+		CoopRuntime::Instance().Log(
+			"[npc-spawn] F5 template=%p family=0x%08X subtype=0x%08X candidates=%u created=%p\r\n",
+			source, family, subtype, static_cast<unsigned>(candidate_count), created);
+	}
+	__except (CoopRuntime::Instance().LogException(
+		GetExceptionInformation(), "npc-spawn-from-live-template"))
+	{
+	}
+}
+
+void Player2Module::PollRandomNpcSpawnKey()
+{
+	const bool down = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+	if (down && !m_npc_spawn_key_was_down)
+		SpawnRandomNpcFromLiveTemplate();
+	m_npc_spawn_key_was_down = down;
+}
+
 void __fastcall Player2Module::HookControllerUpdate(
 	void* controller, void*)
 {
@@ -606,6 +802,8 @@ void Player2Module::TickPlayer1(void* player1_controller)
 	// The first real P1 controller tick cannot happen in the main menu.  It is
 	// therefore the safe boundary for turning a normal loaded save into an IP
 	// host, without advertising or probing Steam during startup.
+	SaveSync::Instance().CaptureLoadedHostSlot();
+	WorldSync::Instance().NotifyLocalWorldReady();
 	if (SteamManager)
 		SteamManager->NotifyGameWorldReady();
 
@@ -778,6 +976,7 @@ void Player2Module::UpdateController(void* controller)
 		// the game happens to visit is free and keeps F6 alive even in the frames
 		// where P1's own array slot is not reached at all.
 		PollPlayer2SpawnKey();
+		PollRandomNpcSpawnKey();
 		return;
 	}
 
@@ -816,44 +1015,40 @@ void Player2Module::UpdateController(void* controller)
 		// BuildRemoteScanCodeState reports every key up and no edge is forged.
 		CoopNetGame::Instance().BeginRemoteInput();
 		remote_input_active = true;
-		// GPig_Default::main Update does not consistently honour the pad passed to
-		// its inner calls: it reloads [0x9905CC] for 0x5B92A0, 0x5BB1D0 and other
-		// state machines.  Leaving that pointer on P1 lets P2 reset the physical
-		// pad state which Fly_Active reads for its movable turn crosshair.  The
-		// private pad already exists for P2; expose it only for this synchronous
-		// P2 tick, then restore P1 before the next controller (including the fly)
-		// is updated.
-		remote_gamepad_active =
-			CoopNetGame::Instance().BeginRemoteGamePadScope(primary_gamepad);
-		// Default is the P2 controller's native input/animation state.  Its Enter
-		// routine reads the pad immediately, so selecting it outside this bracket
-		// incorrectly consumes P1's physical key edge.  This mod-side guard is
-		// reset only when a new P2 is spawned: it never retries a mode selection
-		// while P1 is changing to or from Mooch.
-		if (!m_player2_default_mode_initialized &&
-			!CoopNetGame::Instance().IsLocalFlyControlled())
+		// GPig_Default::main Update reloads [0x9905CC] in several inner state
+		// machines.  The private pad deliberately has no fabricated raw action
+		// state, so exposing it for every P2 tick suppresses ordinary remote
+		// movement, attacks and weapon transitions.  It is needed only while the
+		// local player drives Mooch: then P2 must not reset the physical P1 pad
+		// before Fly_Active uses its turn axes.
+		if (preserve_fly_camera)
 		{
-			if (GetModeId(controller) == kInactiveModeId)
-			{
-				// Default::Enter runs 0x5BB1D0 immediately.  Unlike the later
-				// per-frame camera update that is already skipped for P2, this one
-				// writes the singleton camera handler during the one-off mode
-				// selection.  Preserve P1's handler around that Enter so P2 gets a
-				// real Default state without leaving its aim/follow state behind for
-				// P1's subsequent Mooch transition.
-				SharedCameraAimState saved_camera_state = {};
-				const bool have_saved_camera_state =
-					SaveSharedCameraAimState(saved_camera_state);
-				SelectMode(controller, kDefaultModeId);
-				if (have_saved_camera_state)
-					RestoreSharedCameraAimState(saved_camera_state);
-			}
+			remote_gamepad_active =
+				CoopNetGame::Instance().BeginRemoteGamePadScope(primary_gamepad);
+		}
+		// P2's stock update can return it to Inactive after consuming a remote
+		// frame.  It must re-enter Default before the next packet frame or the
+		// native motor stops polling every action.  This is also safe while Mooch
+		// is active: the hand-off itself still defers the P2 tick above.
+		if (GetModeId(controller) == kInactiveModeId)
+		{
+			SharedCameraAimState saved_camera_state = {};
+			const bool have_saved_camera_state =
+				SaveSharedCameraAimState(saved_camera_state);
+			SelectMode(controller, kDefaultModeId);
+			if (have_saved_camera_state)
+				RestoreSharedCameraAimState(saved_camera_state);
+		}
+		if (!m_player2_default_mode_initialized &&
+			GetModeId(controller) == kDefaultModeId)
+		{
 			ConfigurePlayer2DefaultMode(controller);
 			m_player2_default_mode_initialized = true;
 			CoopRuntime::Instance().Log(
-				"[player2] one-time Default initialization mode=0x%08X\r\n",
+				"[player2] Default mode initialized mode=0x%08X\r\n",
 				GetModeId(controller));
 		}
+
 		uint32_t remote_weapon_type = 0xFFFFFFFFu;
 		if (CoopNetGame::Instance().GetActiveRemoteWeaponType(remote_weapon_type))
 			ApplyPlayer2WeaponSelection(player2, remote_weapon_type, "remote P1");

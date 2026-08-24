@@ -2,6 +2,7 @@
 
 #include "coop_runtime.h"
 #include "save_sync.h"
+#include "world_sync.h"
 
 namespace coop
 {
@@ -146,6 +147,7 @@ HRESULT WindowHook::Present(IDirect3DDevice9* device,
 {
 	ForceGameActiveState();
 	SaveSync::Instance().OnMainFrame();
+	WorldSync::Instance().OnRenderFrame();
 	return m_original_d3d_present ? m_original_d3d_present(device,
 		source_rectangle, destination_rectangle, destination_window,
 		dirty_region) : D3DERR_INVALIDCALL;

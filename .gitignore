@@ -1,7 +1,6 @@
 # Reverse-engineering caches and extracted game data
-/_ida_trace_db/
+/re_cache/
 /extracted/
-/tools/coop_v2/re_cache/
 
 # Local Visual Studio state and generated build products
 **/.vs/

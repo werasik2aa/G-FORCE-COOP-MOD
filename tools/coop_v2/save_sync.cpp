@@ -2,6 +2,8 @@
 
 #include "coop_netgame.h"
 #include "coop_runtime.h"
+#include "gforce_constants.h"
+#include "world_sync.h"
 #include "ServerClient/MServer.h"
 #include "ServerClient/MTypes.h"
 
@@ -11,14 +13,7 @@
 namespace
 {
 constexpr std::uint32_t kSavePacketVersion = 1;
-constexpr std::uint32_t kCoopJoinSaveSlot = 4;
 constexpr std::uint32_t kMaxSaveBytes = 128 * 1024;
-
-// XLoadSaveManagerPlatform is a process-global controller in the supported
-// GForce.exe.  Its native Load command receives a zero-based visible-slot
-// index, so 4 is exactly the fifth UI slot (DATA4).
-constexpr std::uintptr_t kLoadSaveManagerAddress = 0x00915B40u;
-constexpr std::uintptr_t kBeginNativeLoadAddress = 0x005F1920u;
 
 struct CoopSaveSlotPacketHeader
 {
@@ -75,11 +70,66 @@ bool BuildSavePath(wchar_t path[MAX_PATH], const wchar_t* file_name)
 	return true;
 }
 
-bool ReadWholeSave(std::vector<BYTE>& data)
+bool GetSaveFileName(std::uint32_t slot, const wchar_t*& file_name)
+{
+	static const wchar_t* const file_names[] = {
+		L"DATA0", L"DATA1", L"DATA2", L"DATA3", L"DATA4"
+	};
+	static_assert(_countof(file_names) == coop::gforce::kVisibleSaveSlotCount,
+		"file names must cover every native visible save slot");
+	if (slot >= _countof(file_names))
+		return false;
+	file_name = file_names[slot];
+	return true;
+}
+
+bool VerifyNativeLoadPath()
+{
+	using namespace coop::gforce;
+	if (memcmp(reinterpret_cast<const void*>(kBeginNativeSaveLoad),
+		kExpectedBeginNativeSaveLoad,
+		sizeof(kExpectedBeginNativeSaveLoad)) == 0)
+	{
+		return true;
+	}
+	coop::CoopRuntime::Instance().Log(
+		"[save-sync] native load fingerprint mismatch\r\n");
+	return false;
+}
+
+bool ReadHostSelectedSlot(std::uint32_t& slot)
+{
+	using namespace coop::gforce;
+	if (!VerifyNativeLoadPath())
+		return false;
+	__try
+	{
+		slot = *reinterpret_cast<const volatile std::uint32_t*>(
+			kLoadSaveManager + kLoadSaveSelectedSlotOffset);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		coop::CoopRuntime::Instance().Log(
+			"[save-sync] cannot read host selected slot\r\n");
+		return false;
+	}
+	if (slot >= kVisibleSaveSlotCount)
+	{
+		coop::CoopRuntime::Instance().Log(
+			"[save-sync] host selected slot is invalid: %u\r\n", slot);
+		return false;
+	}
+	return true;
+}
+
+bool ReadWholeSave(std::uint32_t slot, std::vector<BYTE>& data)
 {
 	data.clear();
+	const wchar_t* file_name = NULL;
+	if (!GetSaveFileName(slot, file_name))
+		return false;
 	wchar_t path[MAX_PATH] = {};
-	if (!BuildSavePath(path, L"DATA4"))
+	if (!BuildSavePath(path, file_name))
 		return false;
 	const HANDLE file = CreateFileW(path, GENERIC_READ,
 		FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
@@ -87,7 +137,7 @@ bool ReadWholeSave(std::vector<BYTE>& data)
 	if (file == INVALID_HANDLE_VALUE)
 	{
 		coop::CoopRuntime::Instance().Log(
-			"[save-sync] host DATA4 cannot be opened error=%lu\r\n",
+			"[save-sync] host DATA%u cannot be opened error=%lu\r\n", slot,
 			GetLastError());
 		return false;
 	}
@@ -96,7 +146,7 @@ bool ReadWholeSave(std::vector<BYTE>& data)
 	{
 		CloseHandle(file);
 		coop::CoopRuntime::Instance().Log(
-			"[save-sync] host DATA4 has invalid size=%lu\r\n", size);
+			"[save-sync] host DATA%u has invalid size=%lu\r\n", slot, size);
 		return false;
 	}
 	data.resize(size);
@@ -108,19 +158,27 @@ bool ReadWholeSave(std::vector<BYTE>& data)
 	{
 		data.clear();
 		coop::CoopRuntime::Instance().Log(
-			"[save-sync] host DATA4 read failed\r\n");
+			"[save-sync] host DATA%u read failed\r\n", slot);
 	}
 	return ok;
 }
 
-bool WriteWholeJoinSave(const BYTE* data, std::uint32_t size)
+bool WriteWholeJoinSave(std::uint32_t slot, const BYTE* data,
+	std::uint32_t size)
 {
 	if (!data || size == 0 || size > kMaxSaveBytes)
 		return false;
+	const wchar_t* file_name = NULL;
+	if (!GetSaveFileName(slot, file_name))
+		return false;
+	wchar_t temporary_file_name[16] = {};
+	lstrcpynW(temporary_file_name, file_name,
+		static_cast<int>(_countof(temporary_file_name)));
+	lstrcatW(temporary_file_name, L".coop.tmp");
 	wchar_t target[MAX_PATH] = {};
 	wchar_t temporary[MAX_PATH] = {};
-	if (!BuildSavePath(target, L"DATA4") ||
-		!BuildSavePath(temporary, L"DATA4.coop.tmp"))
+	if (!BuildSavePath(target, file_name) ||
+		!BuildSavePath(temporary, temporary_file_name))
 		return false;
 
 	const HANDLE file = CreateFileW(temporary, GENERIC_WRITE, 0, NULL,
@@ -149,7 +207,7 @@ bool WriteWholeJoinSave(const BYTE* data, std::uint32_t size)
 	{
 		DeleteFileW(temporary);
 		coop::CoopRuntime::Instance().Log(
-			"[save-sync] client DATA4 replacement failed error=%lu\r\n",
+			"[save-sync] client DATA%u replacement failed error=%lu\r\n", slot,
 			GetLastError());
 		return false;
 	}
@@ -165,14 +223,39 @@ SaveSync& SaveSync::Instance()
 	return instance;
 }
 
+void SaveSync::CaptureLoadedHostSlot()
+{
+	if (CoopNetGame::Instance().IsClient())
+		return;
+	std::uint32_t slot = 0;
+	if (!ReadHostSelectedSlot(slot))
+		return;
+	const long previous = InterlockedExchange(&m_host_slot,
+		static_cast<long>(slot));
+	if (previous != static_cast<long>(slot))
+	{
+		CoopRuntime::Instance().Log(
+			"[save-sync] captured loaded host DATA%u (slot %u)\r\n", slot, slot);
+	}
+}
+
 void SaveSync::SendHostJoinSave(CSteamOfflineSocketServer* server,
 	std::int32_t connection)
 {
 	if (!server || !CoopNetGame::Instance().IsHost())
 		return;
 
+	const long captured_slot = InterlockedCompareExchange(&m_host_slot, 0, 0);
+	if (captured_slot < 0 || static_cast<std::uint32_t>(captured_slot) >=
+		gforce::kVisibleSaveSlotCount)
+	{
+		CoopRuntime::Instance().Log(
+			"[save-sync] host join save skipped: no loaded slot captured\r\n");
+		return;
+	}
+	const std::uint32_t slot = static_cast<std::uint32_t>(captured_slot);
 	std::vector<BYTE> save;
-	if (!ReadWholeSave(save))
+	if (!ReadWholeSave(slot, save))
 		return;
 
 	std::vector<BYTE> packet(sizeof(CoopSaveSlotPacketHeader) + save.size());
@@ -184,7 +267,7 @@ void SaveSync::SendHostJoinSave(CSteamOfflineSocketServer* server,
 		packet.size() - sizeof(PacketHeader));
 	header->packet.m_SizeOne = header->packet.m_RealSize;
 	header->version = kSavePacketVersion;
-	header->slot = kCoopJoinSaveSlot;
+	header->slot = slot;
 	header->save_size = static_cast<std::uint32_t>(save.size());
 	header->checksum = SaveChecksum(save.data(), save.size());
 	memcpy(packet.data() + sizeof(*header), save.data(), save.size());
@@ -194,12 +277,13 @@ void SaveSync::SendHostJoinSave(CSteamOfflineSocketServer* server,
 		k_nSteamNetworkingSend_Reliable))
 	{
 		CoopRuntime::Instance().Log(
-			"[save-sync] sent host DATA4 (%u bytes)\r\n",
+			"[save-sync] sent host DATA%u (slot %u, %u bytes)\r\n", slot, slot,
 			header->save_size);
 	}
 	else
 	{
-		CoopRuntime::Instance().Log("[save-sync] failed to send host DATA4\r\n");
+		CoopRuntime::Instance().Log(
+			"[save-sync] failed to send host DATA%u\r\n", slot);
 	}
 }
 
@@ -215,7 +299,7 @@ bool SaveSync::OnRemotePacket(const void* data, std::uint32_t size)
 	if (!CoopNetGame::Instance().IsClient() ||
 		CoopNetGame::Instance().IsHost() ||
 		header->version != kSavePacketVersion ||
-		header->slot != kCoopJoinSaveSlot ||
+		header->slot >= gforce::kVisibleSaveSlotCount ||
 		header->save_size == 0 || header->save_size > kMaxSaveBytes ||
 		header->packet.Size() != size ||
 		size != sizeof(*header) + header->save_size)
@@ -227,15 +311,18 @@ bool SaveSync::OnRemotePacket(const void* data, std::uint32_t size)
 	const BYTE* save = reinterpret_cast<const BYTE*>(header + 1);
 	if (SaveChecksum(save, header->save_size) != header->checksum)
 	{
-		CoopRuntime::Instance().Log("[save-sync] rejected host DATA4 checksum\r\n");
+		CoopRuntime::Instance().Log(
+			"[save-sync] rejected host DATA%u checksum\r\n", header->slot);
 		return true;
 	}
-	if (WriteWholeJoinSave(save, header->save_size))
+	if (WriteWholeJoinSave(header->slot, save, header->save_size))
 	{
+		InterlockedExchange(&m_pending_slot,
+			static_cast<long>(header->slot));
 		InterlockedExchange(&m_pending_load, 1);
 		CoopRuntime::Instance().Log(
-			"[save-sync] received host DATA4 (%u bytes); native load of slot 5 queued\r\n",
-			header->save_size);
+			"[save-sync] received host DATA%u (%u bytes); native load queued\r\n",
+			header->slot, header->save_size);
 	}
 	return true;
 }
@@ -248,19 +335,34 @@ void SaveSync::OnMainFrame()
 	if (!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
 		return;
 
+	const long pending_slot = InterlockedExchange(&m_pending_slot, -1);
+	if (pending_slot < 0 || static_cast<std::uint32_t>(pending_slot) >=
+		gforce::kVisibleSaveSlotCount || !VerifyNativeLoadPath())
+	{
+		CoopRuntime::Instance().Log("[save-sync] queued host slot is invalid\r\n");
+		return;
+	}
+
 	typedef bool (__thiscall* BeginNativeLoadFn)(void*, std::uint32_t);
 	BeginNativeLoadFn begin_native_load =
-		reinterpret_cast<BeginNativeLoadFn>(kBeginNativeLoadAddress);
-	void* load_save_manager = reinterpret_cast<void*>(kLoadSaveManagerAddress);
-	if (begin_native_load(load_save_manager, kCoopJoinSaveSlot))
+		reinterpret_cast<BeginNativeLoadFn>(gforce::kBeginNativeSaveLoad);
+	void* load_save_manager = reinterpret_cast<void*>(gforce::kLoadSaveManager);
+	// All local entity pointers become invalid during the stock load.  Clear the
+	// client match table before the loader starts constructing the next world.
+	WorldSync::Instance().ResetForWorldLoad();
+	if (begin_native_load(load_save_manager,
+		static_cast<std::uint32_t>(pending_slot)))
 	{
 		CoopRuntime::Instance().Log(
-			"[save-sync] entering stock Load Game for DATA4 (slot 5)\r\n");
+			"[save-sync] entering stock Load Game for DATA%u (slot %u)\r\n",
+			static_cast<unsigned>(pending_slot),
+			static_cast<unsigned>(pending_slot));
 	}
 	else
 	{
 		CoopRuntime::Instance().Log(
-			"[save-sync] stock Load Game rejected DATA4\r\n");
+			"[save-sync] stock Load Game rejected DATA%u\r\n",
+			static_cast<unsigned>(pending_slot));
 	}
 }
 }

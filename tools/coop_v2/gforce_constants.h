@@ -56,7 +56,18 @@ constexpr uintptr_t kFireHandler = 0x005B8760u;
 // point that can preserve P1's pool without racing the stock write.
 constexpr uintptr_t kWeaponAmmoConsume = 0x0059F650u;
 constexpr uintptr_t kXGamePadCtor = 0x0048B290u;
-
+// XLoadSaveManagerPlatform is a process-global object.  The stock Load Game
+// menu passes the selected zero-based row to 0x5F1920, which persists it here
+// before the game flow switches into loading.  It is therefore the selected
+// host save slot, not a guessed DATA file number.
+constexpr uintptr_t kLoadSaveManager = 0x00915B40u;
+constexpr uintptr_t kBeginNativeSaveLoad = 0x005F1920u;
+constexpr size_t kLoadSaveSelectedSlotOffset = 0x4BECu;
+constexpr uint32_t kVisibleSaveSlotCount = 5u;
+constexpr uint8_t kExpectedBeginNativeSaveLoad[] = {
+	0x8B, 0x44, 0x24, 0x04, 0x56, 0x8B, 0xF1, 0x6A, 0x09,
+	0x89, 0x86, 0xEC, 0x4B, 0x00, 0x00
+};
 constexpr uintptr_t kGamePointer = 0x00912784u;
 // The process-wide XGamePad selected by XGamePad::Register at 0x487F10.
 // P1 owns this pointer permanently. P2's pad is constructed but never
@@ -65,6 +76,10 @@ constexpr uintptr_t kPrimaryGamePad = 0x009905CCu;
 constexpr uintptr_t kActiveEntityA = 0x00912AA4u;
 constexpr uintptr_t kActiveEntityB = 0x00912788u;
 constexpr uintptr_t kGPigEntityArray = 0x009128D8u;
+// Global live-entity registry.  The two intrusive lists below are walked by
+// the game's own targeting code: +0x28 holds generic NPCs and +0x30 holds
+// monster/appliance entities.  Each list node is { prev, next, entity }.
+constexpr uintptr_t kEntityRegistry = 0x00912B50u;
 // Slot 4 of the same array (0x9128D8 + 4*4): Mooch, the fly.  It is NOT one of
 // the guinea-pig slots 1..3, so P2 in slot 2 does not collide with it.  The fly
 // switch at 0x5BBC80 refuses to run when this is null (0x5BBD00), and reads the
@@ -108,6 +123,59 @@ constexpr size_t kAmmoEntryCurrentOffset = 0x0Cu;
 constexpr size_t kEntityHandlerOffset = 0x144u;
 constexpr size_t kEntityRotationOffset = 0xC8u;
 constexpr size_t kEntityPositionOffset = 0xE8u;
+// Live NPC/monster entity -> source trigger.  The trigger retains the exact
+// map archetype and spawn data, so cloning it is safer than guessing a subtype
+// from the very large factory switch at 0x423830.
+constexpr size_t kEntityTriggerOffset = 0x14Cu;
+constexpr size_t kEntityRegistryNpcListOffset = 0x28u;
+constexpr size_t kEntityRegistryMonsterListOffset = 0x30u;
+constexpr size_t kIntrusiveListNextOffset = 0x04u;
+constexpr size_t kIntrusiveListValueOffset = 0x08u;
+constexpr size_t kTriggerFamilyOffset = 0x100u;
+constexpr size_t kTriggerSubtypeOffset = 0x104u;
+constexpr size_t kTriggerFlagsOffset = 0x108u;
+constexpr size_t kTriggerSpawnIdOffset = 0x130u;
+// The native spawn routine stores its freshly constructed game object here.
+// It is useful for tracing a trigger-to-live-instance relationship, but it is
+// deliberately not a cross-process identifier.
+constexpr size_t kTriggerSpawnedObjectOffset = 0x98u;
+constexpr size_t kTriggerPositionOffset = 0xA4u;
+constexpr size_t kTriggerRotationOffset = 0xB4u;
+constexpr size_t kTriggerSpawnVtableOffset = 0x30u;
+constexpr size_t kTriggerCloneVtableOffset = 0x3Cu;
+constexpr uint32_t kMonsterTriggerFamily = 0x1E000002u;
+constexpr uint32_t kNpcTriggerFamily = 0x1E00000Cu;
+constexpr uint32_t kTriggerHasSpawnDefinition = 0x04000000u;
+// The two known clone implementations are the generic one and the monster
+// override.  Both preserve the source trigger's map-only spawn definition.
+constexpr uintptr_t kTriggerCloneGeneric = 0x0042E6C0u;
+constexpr uintptr_t kTriggerCloneMonster = 0x0042E9A0u;
+// Common factory for the trigger definitions themselves.  Unlike the later
+// 0x41F220 entry, this sees both map construction and dynamic clone requests.
+constexpr uintptr_t kTriggerFactory = 0x00423830u;
+constexpr uintptr_t kTriggerSpawnFromDefinition = 0x0041F220u;
+// Shared vtable slot +0x1C for the generic NPC/enemy trigger classes.  It is
+// called when a trigger receives a gameplay event, before its specialised
+// handlers create any dynamic children.
+constexpr uintptr_t kTriggerEventDispatcher = 0x0042FAB0u;
+constexpr uint8_t kExpectedTriggerFactory[] = {
+	0x6A, 0xFF, 0x68, 0x02, 0x39, 0x6D, 0x00,
+	0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x50
+};
+// `sub_41F220` begins with an SEH frame setup.  These fourteen bytes comprise
+// four complete non-relative instructions and are safe to move to a detour
+// trampoline.  Keep this fingerprint strict: another executable revision must
+// not be traced through a guessed entry point.
+constexpr uint8_t kExpectedTriggerSpawnFromDefinition[] = {
+	0x6A, 0xFF, 0x68, 0x16, 0x35, 0x6D, 0x00,
+	0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x50
+};
+// `sub_42FAB0`: push ebp; push esi; mov esi, ecx; cmp byte ptr [esi+144], 0.
+// The following push edi begins a new instruction, so these eleven bytes are
+// safe to relocate into the generic detour trampoline.
+constexpr uint8_t kExpectedTriggerEventDispatcher[] = {
+	0x55, 0x56, 0x8B, 0xF1, 0x80, 0xBE, 0x44, 0x01, 0x00, 0x00, 0x00
+};
 // 0x5933E0 walks an inventory list, not the GPig handler itself.  The ammo HUD
 // obtains this exact container through `[handler + 0x514]` at 0x5D60EF before
 // resolving the selected weapon's WeaponAmmoItem record.

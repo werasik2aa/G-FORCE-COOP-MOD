@@ -3,6 +3,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <stddef.h>
 #include <stdint.h>
 
 namespace coop
@@ -29,6 +30,10 @@ private:
 	typedef void* (__cdecl* SpawnGPigFn)(
 		const Vec4*, const Vec4*, uint32_t, void*);
 	typedef void (__thiscall* ControllerUpdateFn)(void*);
+	typedef void* (__thiscall* TriggerCloneFn)(void*);
+	typedef void (__thiscall* TriggerSpawnFn)(void*);
+	// 0x4B7050 takes the target mode and a force/reselect flag.  The native
+	// function ends in `ret 8`; omitting the flag corrupts its stack contract.
 	typedef bool (__thiscall* SelectModeFn)(void*, uint32_t, bool);
 	typedef void* (__thiscall* GetCameraHandlerFn)(void*);
 	typedef void (__thiscall* RefreshGPigCameraFn)(void*);
@@ -78,6 +83,14 @@ private:
 		const char* source);
 	void SpawnPlayer2FromSnapshot(const char* trigger);
 	void PollPlayer2SpawnKey();
+	// F5 is a local reverse-engineering test: it clones an already loaded
+	// map-trigger definition for a monster/appliance (or, only if none exist, a
+	// generic NPC), then asks the original trigger path to spawn it.
+	void PollRandomNpcSpawnKey();
+	void SpawnRandomNpcFromLiveTemplate();
+	bool IsSpawnableNpcTemplate(void* trigger, uint32_t family);
+	void* SelectRandomNpcTemplate(uint32_t& family, uint32_t& subtype,
+		size_t& candidate_count);
 	// P1's stock tick, wrapped in the local half of the network bracket.  Called
 	// only from P1's own array slot, with the controller the game itself handed to
 	// the hook: re-issuing the tick from anywhere else has to re-resolve
@@ -113,6 +126,8 @@ private:
 	// the transition only and never every frame.
 	uint32_t m_last_player1_mode;
 	bool m_spawn_key_was_down;
+	bool m_npc_spawn_key_was_down;
+	uint32_t m_npc_spawn_random_state;
 	uint32_t m_last_weapon_type;
 	Vec4 m_spawn_position;
 	Vec4 m_spawn_rotation;

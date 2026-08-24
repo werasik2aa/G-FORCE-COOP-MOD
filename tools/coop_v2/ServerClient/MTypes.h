@@ -27,7 +27,15 @@ enum CoopPacketId : std::uint32_t
 	kCoopPacketHello = 1,
 	kCoopPacketWelcome = 2,
 	kCoopPacketInput = 10,
-	kCoopPacketSaveSlot = 20
+	kCoopPacketSaveSlot = 20,
+	// Reliable host-created world entity event.  It carries a process-neutral
+	// trigger identity, never a raw game pointer.
+	kCoopPacketWorldSpawn = 30,
+	// Position/rotation correction for an already linked world entity.
+	kCoopPacketWorldSnapshot = 31,
+	// Sent by the client after its stock save load has reached a real P1 tick.
+	// It asks the host to send the current living-world baseline again.
+	kCoopPacketWorldReady = 32
 };
 
 struct PacketHeader

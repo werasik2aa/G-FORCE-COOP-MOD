@@ -68,6 +68,9 @@ public:
 	void PublishLocalCameraYaw(float yaw, bool valid);
 	bool ApplyRemotePlayerTransform(void* player2);
 	bool ApplyRemoteFlyTransform(void* fly);
+	// Game-thread-only replay of the exact native trigger spawn route.  WorldSync
+	// uses it only after a host event cannot be paired to a client-native entity.
+	bool SpawnWorldFromTrigger(void* trigger);
 	bool GetActiveRemoteWeaponType(std::uint32_t& weapon_type) const;
 	bool __fastcall HandleInputActionQuery(void* input_manager,
 		void*, std::uint32_t device, std::uint32_t action,
@@ -122,6 +125,10 @@ private:
 	typedef void (__thiscall* DefaultModeUpdateFn)(void*, void*, void*);
 	typedef void (__thiscall* FireHandlerFn)(void*, void*, void*);
 	typedef void (__thiscall* WeaponAmmoConsumeFn)(void*);
+	typedef void (__thiscall* TriggerSpawnFromDefinitionFn)(void*);
+	typedef void* (__cdecl* TriggerFactoryFn)(std::uint32_t,
+		std::uint32_t, void*);
+	typedef int (__thiscall* TriggerEventFn)(void*, int);
 	typedef void* (__thiscall* XGamePadCtorFn)(void*);
 	typedef std::uint32_t (__thiscall* GetCurrentWeaponIdFn)(void*);
 	typedef std::uint32_t (__cdecl* WeaponTypeToItemIdFn)(std::uint32_t);
@@ -156,6 +163,12 @@ private:
 	void HandleFireHandler(void* mode, void* input_manager,
 		void* mode_context);
 	void HandleWeaponAmmoConsume(void* weapon_record);
+	// Both NPC and monster trigger vtables reach 0x41F220.  The hook preserves
+	// the native call, then hands its trigger-to-live-entity result to WorldSync.
+	void HandleTriggerSpawnFromDefinition(void* trigger);
+	void* HandleTriggerFactory(std::uint32_t family, std::uint32_t subtype,
+		void* output, std::uintptr_t caller);
+	int HandleTriggerEvent(void* trigger, int event_code);
 	bool GetActiveRemoteAction(std::uint32_t action) const;
 	bool GetActiveRemoteHold(std::uint32_t action, float threshold) const;
 	bool GetRemoteFlyRawHeld(std::uint32_t action) const;
@@ -209,6 +222,12 @@ private:
 	void RemoveFireHandlerHook();
 	bool InstallWeaponAmmoConsumeHook();
 	void RemoveWeaponAmmoConsumeHook();
+	bool InstallTriggerSpawnTraceHook();
+	void RemoveTriggerSpawnTraceHook();
+	bool InstallTriggerFactoryTraceHook();
+	void RemoveTriggerFactoryTraceHook();
+	bool InstallTriggerEventTraceHook();
+	void RemoveTriggerEventTraceHook();
 	// Generic 5-byte E9 detour installer.  relocate_len original bytes are copied
 	// into a freshly allocated trampoline which then jumps back to address +
 	// relocate_len; relocate_len must be >= 5 and cover whole instructions.  The
@@ -225,6 +244,10 @@ private:
 	static void __fastcall HookFireHandler(void* mode, void*,
 		void* input_manager, void* mode_context);
 	static void __fastcall HookWeaponAmmoConsume(void* weapon_record, void*);
+	static void __fastcall HookTriggerSpawnFromDefinition(void* trigger, void*);
+	static void* __cdecl HookTriggerFactory(std::uint32_t family,
+		std::uint32_t subtype, void* output);
+	static int __fastcall HookTriggerEvent(void* trigger, void*, int event_code);
 
 	volatile LONG m_role;
 	volatile LONG m_remote_connected;
@@ -329,6 +352,21 @@ private:
 	BYTE* m_weapon_ammo_consume_trampoline;
 	WeaponAmmoConsumeFn m_original_weapon_ammo_consume;
 	bool m_weapon_ammo_consume_hooked;
+	BYTE m_original_trigger_spawn_bytes[14];
+	BYTE* m_trigger_spawn_trampoline;
+	TriggerSpawnFromDefinitionFn m_original_trigger_spawn;
+	bool m_trigger_spawn_trace_hooked;
+	volatile LONG m_trigger_spawn_sequence;
+	BYTE m_original_trigger_factory_bytes[14];
+	BYTE* m_trigger_factory_trampoline;
+	TriggerFactoryFn m_original_trigger_factory;
+	bool m_trigger_factory_trace_hooked;
+	volatile LONG m_trigger_factory_sequence;
+	BYTE m_original_trigger_event_bytes[11];
+	BYTE* m_trigger_event_trampoline;
+	TriggerEventFn m_original_trigger_event;
+	bool m_trigger_event_trace_hooked;
+	volatile LONG m_trigger_event_sequence;
 	bool m_logged_axis_queries[2];
 	bool m_logged_remote_transform;
 	std::uint32_t m_prev_local_action_down[3];
