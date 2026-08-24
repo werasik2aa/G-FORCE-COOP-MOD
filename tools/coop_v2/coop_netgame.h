@@ -31,6 +31,10 @@ public:
 	void RemoveInputHook();
 	void BeginRemoteInput();
 	void EndRemoteInput();
+	// P2 currently uses the stock shared weapon instance.  Protect just that
+	// instance's discovered ammunition counter during a remote fire tick.
+	bool BeginRemoteP2AmmoGuard(void* player2);
+	void EndRemoteP2AmmoGuard();
 	// The stock P2 mode reloads [0x9905CC] instead of using its explicit pad
 	// argument. Scope that global to P2's private XGamePad for one synchronous
 	// controller tick, then restore the physical P1 pad before Fly_Active runs.
@@ -87,6 +91,12 @@ public:
 	bool __fastcall HandleInputAimHoldQuery(void* input_manager,
 		void*, std::uint32_t device, std::uint32_t action,
 		std::uint32_t flags, float threshold);
+	bool __fastcall HandleInputRawPressedQuery(void* input_manager, void*,
+		void* device, std::uint32_t action, std::uint32_t flags, bool record);
+	bool __fastcall HandleInputRawReleasedQuery(void* input_manager, void*,
+		void* device, std::uint32_t action, std::uint32_t flags, bool record);
+	bool __fastcall HandleInputRawHeldQuery(void* input_manager, void*,
+		void* device, std::uint32_t action, std::uint32_t flags, bool record);
 	float __fastcall HandleInputAxisQuery(void* input_manager,
 		void*, std::uint32_t device, std::uint32_t axis,
 		std::uint32_t flags);
@@ -103,6 +113,8 @@ private:
 		std::uint32_t, float, std::uint32_t);
 	typedef bool (__thiscall* InputAimHoldQueryFn)(void*, std::uint32_t,
 		std::uint32_t, std::uint32_t, float);
+	typedef bool (__thiscall* InputRawQueryFn)(void*, void*, std::uint32_t,
+		std::uint32_t, bool);
 	typedef float (__thiscall* InputAxisQueryFn)(void*, std::uint32_t,
 		std::uint32_t, std::uint32_t);
 	typedef float (__thiscall* CameraYawFn)(void*);
@@ -110,6 +122,9 @@ private:
 	typedef void (__thiscall* DefaultModeUpdateFn)(void*, void*, void*);
 	typedef void (__thiscall* FireHandlerFn)(void*, void*, void*);
 	typedef void* (__thiscall* XGamePadCtorFn)(void*);
+	typedef std::uint32_t (__thiscall* GetCurrentWeaponIdFn)(void*);
+	typedef void* (__cdecl* ResolveItemByIdFn)(std::uint32_t);
+	static constexpr std::size_t kRemoteAmmoSnapshotWords = 256;
 
 	enum Role
 	{
@@ -128,6 +143,8 @@ private:
 	void CaptureLocalAction(std::uint32_t action, bool is_down);
 	void CaptureLocalPress(std::uint32_t action);
 	void CaptureLocalRelease(std::uint32_t action);
+	void CaptureLocalFlyRaw(std::uint32_t action, bool is_down,
+		bool pressed_edge, bool released_edge);
 	void CaptureLocalAimRay(const void* input_manager);
 	void* GetRemoteGamePad();
 	bool ApplyActiveRemoteAimRay(void* input_manager, float saved_ray[6]) const;
@@ -138,6 +155,9 @@ private:
 		void* mode_context);
 	bool GetActiveRemoteAction(std::uint32_t action) const;
 	bool GetActiveRemoteHold(std::uint32_t action, float threshold) const;
+	bool GetRemoteFlyRawHeld(std::uint32_t action) const;
+	bool ConsumeRemoteFlyRawEdge(std::uint32_t action, bool pressed);
+	bool GetRemoteFlyFireAction() const;
 	bool IsRemoteFlyControlled() const;
 	bool IsMoochAction(std::uint32_t action) const;
 	// The same logical Mooch action that enters the fly returns from it.  Once a
@@ -170,6 +190,12 @@ private:
 	void RemoveHoldDurationQueryHook();
 	bool InstallAimHoldQueryHook();
 	void RemoveAimHoldQueryHook();
+	bool InstallRawPressedQueryHook();
+	void RemoveRawPressedQueryHook();
+	bool InstallRawReleasedQueryHook();
+	void RemoveRawReleasedQueryHook();
+	bool InstallRawHeldQueryHook();
+	void RemoveRawHeldQueryHook();
 	bool InstallCameraYawHook();
 	void RemoveCameraYawHook();
 	bool InstallGPigCameraUpdateHook();
@@ -266,6 +292,18 @@ private:
 	BYTE m_original_input_aim_hold_query_bytes[5];
 	BYTE* m_input_aim_hold_trampoline;
 	InputAimHoldQueryFn m_original_input_aim_hold_query;
+	BYTE m_original_input_raw_pressed_query_bytes[5];
+	BYTE* m_input_raw_pressed_trampoline;
+	InputRawQueryFn m_original_input_raw_pressed_query;
+	BYTE m_original_input_raw_released_query_bytes[5];
+	BYTE* m_input_raw_released_trampoline;
+	InputRawQueryFn m_original_input_raw_released_query;
+	BYTE m_original_input_raw_held_query_bytes[5];
+	BYTE* m_input_raw_held_trampoline;
+	InputRawQueryFn m_original_input_raw_held_query;
+	bool m_raw_pressed_query_hooked;
+	bool m_raw_released_query_hooked;
+	bool m_raw_held_query_hooked;
 	// 0x52AD20 relocates nine bytes, 0x5BCF30 five.
 	BYTE m_original_camera_yaw_bytes[9];
 	BYTE* m_camera_yaw_trampoline;
@@ -305,5 +343,12 @@ private:
 	bool m_remote_action_held[kCoopActionCount];
 	std::uint32_t m_local_press_recorded[3];
 	std::uint32_t m_local_release_recorded[3];
+	std::uint8_t m_prev_remote_fly_raw_press_seq[kCoopFlyRawActionCount];
+	std::uint8_t m_prev_remote_fly_raw_release_seq[kCoopFlyRawActionCount];
+	void* m_remote_p2_ammo_item;
+	bool m_remote_p2_ammo_guard_active;
+	bool m_logged_remote_p2_ammo_counter;
+	std::size_t m_remote_p2_ammo_word_offset;
+	std::uint32_t m_remote_p2_ammo_snapshot[kRemoteAmmoSnapshotWords];
 };
 }

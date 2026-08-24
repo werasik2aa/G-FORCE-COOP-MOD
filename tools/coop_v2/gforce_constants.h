@@ -39,6 +39,12 @@ constexpr uintptr_t kInputHoldDurationQuery = 0x00488E50u;// hold duration >= th
 // unhooked, P2's aim branch was decided by the local physical mouse instead of
 // the remote snapshot.
 constexpr uintptr_t kInputAimHoldQuery = 0x00488B00u;     // aim hold + threshold
+// Fly_Active polls this separate raw-action family (0x4008xxxx) to select and
+// drive its scan state.  Its four stack arguments are device, action, flags,
+// and the engine's input-record flag.
+constexpr uintptr_t kInputRawPressedQuery = 0x0048AE10u;
+constexpr uintptr_t kInputRawReleasedQuery = 0x0048AF10u;
+constexpr uintptr_t kInputRawHeldQuery = 0x0048AF90u;
 // 0x5BEA00 receives the active XGamePad/input manager as argument #1.  Its
 // inner fire routine (0x5B8760) consumes that same pointer from [esp+4Ch].
 constexpr uintptr_t kDefaultModeUpdate = 0x005BEA00u;
@@ -84,6 +90,7 @@ constexpr size_t kCameraRequestedStateOffset = 0x9A0u;
 constexpr uintptr_t kGetCurrentWeaponId = 0x00544A30u;
 constexpr uintptr_t kSetSelectedWeaponType = 0x005434E0u;
 constexpr uintptr_t kWeaponTypeToItemId = 0x00543520u;
+constexpr uintptr_t kResolveItemById = 0x00472B00u;
 
 constexpr size_t kEntityHandlerOffset = 0x144u;
 constexpr size_t kEntityRotationOffset = 0xC8u;
@@ -149,6 +156,10 @@ constexpr uint32_t kFlyControlledModeId = 0x61000034u;
 constexpr uint32_t kFirstKeyboardActionId = 0x10000000u;
 constexpr uint32_t kKeyboardActionCount = 0x43u;
 constexpr uint32_t kFireActionId = 0x10000007u;
+// Return address immediately after Fly_Scan's own logical Fire level query at
+// 0x5B6B0C.  Restricting the remote override to this call site prevents a
+// remote Mooch fire from also pressing the receiver's Darwin weapon trigger.
+constexpr uintptr_t kFlyScanFireActionQueryReturn = 0x005B6B19u;
 
 // Actions that must never be driven by the remote snapshot, pinned by INDEX so a
 // rebind cannot reopen them.  The live table dumped from the shipped build
@@ -202,6 +213,10 @@ constexpr uint8_t kExpectedInputHoldDurationQuery[5] =
 // action word, which the next instruction tests against 0x10000000.
 constexpr uint8_t kExpectedInputAimHoldQuery[5] =
 	{0x56, 0x8B, 0x74, 0x24, 0x0C};
+// 0x48AE10, 0x48AF10 and 0x48AF90 begin with the complete five-byte
+// `cmp byte ptr [esp+10h], 0` instruction.
+constexpr uint8_t kExpectedInputRawQuery[5] =
+	{0x80, 0x7C, 0x24, 0x10, 0x00};
 // 0x5BEA00 starts with an MSVC SEH frame. Its first two complete instructions
 // are seven bytes and have no relative operands, so the trampoline may copy
 // them verbatim.

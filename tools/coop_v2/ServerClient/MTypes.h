@@ -51,6 +51,9 @@ struct PacketHeader
 // up to 68 so the per-action byte arrays keep the trailing uint32 fields
 // naturally 4-byte aligned.  Index range actually used is [0, 67).
 constexpr std::uint32_t kCoopActionCount = 68;
+// Fly_Active uses six fixed raw 0x4008xxxx queries in addition to the normal
+// logical action table.  They are controller semantics, not player key binds.
+constexpr std::uint32_t kCoopFlyRawActionCount = 6;
 
 struct CoopInput
 {
@@ -92,9 +95,14 @@ struct CoopInput
 	float fly_position[4];
 	std::uint32_t fly_transform_sequence;
 	std::uint32_t fly_controlled;
+	// Held and edge state for Fly_Active's raw controller queries.  Without this
+	// the remote side can enter Mooch but never reaches its native scan/fire mode.
+	std::uint32_t fly_raw_down;
+	std::uint8_t fly_raw_press_seq[kCoopFlyRawActionCount];
+	std::uint8_t fly_raw_release_seq[kCoopFlyRawActionCount];
 };
 
-static_assert(sizeof(CoopInput) == 288,
+static_assert(sizeof(CoopInput) == 304,
 	"CoopInput is the authoritative remote-player state; host and client "
 	"builds must share this exact layout");
 

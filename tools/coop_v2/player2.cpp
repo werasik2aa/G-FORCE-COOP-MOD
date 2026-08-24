@@ -792,6 +792,7 @@ void Player2Module::UpdateController(void* controller)
 	void* player2 = GetGPigEntity(2);
 	bool remote_input_active = false;
 	bool remote_gamepad_active = false;
+	bool remote_p2_ammo_guard_active = false;
 	void* primary_gamepad = NULL;
 	// P2 Default's 0x5BB1D0 writes the one shared aim/crosshair handler even
 	// though its camera update is skipped.  During local fly control preserve
@@ -854,7 +855,14 @@ void Player2Module::UpdateController(void* controller)
 		if (preserve_fly_camera)
 			fly_camera_state_saved =
 				SaveSharedCameraAimState(saved_fly_camera_state);
+		remote_p2_ammo_guard_active =
+			CoopNetGame::Instance().BeginRemoteP2AmmoGuard(player2);
 		m_original_update(controller);
+		if (remote_p2_ammo_guard_active)
+		{
+			CoopNetGame::Instance().EndRemoteP2AmmoGuard();
+			remote_p2_ammo_guard_active = false;
+		}
 		if (fly_camera_state_saved)
 		{
 			RestoreSharedCameraAimState(saved_fly_camera_state);
@@ -880,6 +888,8 @@ void Player2Module::UpdateController(void* controller)
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
+		if (remote_p2_ammo_guard_active)
+			CoopNetGame::Instance().EndRemoteP2AmmoGuard();
 		if (fly_camera_state_saved)
 			RestoreSharedCameraAimState(saved_fly_camera_state);
 		if (remote_gamepad_active)

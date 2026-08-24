@@ -10,6 +10,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <intrin.h>
 
 namespace
 {
@@ -18,6 +19,26 @@ constexpr DWORD kNetworkSpawnDelayMs = 1000;
 constexpr LONG kDeferRemotePlayerOneTick = 1;
 constexpr LONG kDeferRemotePlayerUntilFlyActive = 2;
 constexpr DWORD kFlyHandoffTimeoutMs = 1500;
+constexpr std::size_t kUnknownAmmoWordOffset = static_cast<std::size_t>(-1);
+
+const std::uint32_t kFlyRawActionIds[kCoopFlyRawActionCount] = {
+	0x40080046u,
+	0x40080047u,
+	0x40080029u,
+	0x40080034u,
+	0x40080036u,
+	0x4008000Bu
+};
+
+int FindFlyRawActionIndex(std::uint32_t action)
+{
+	for (std::uint32_t index = 0; index < kCoopFlyRawActionCount; ++index)
+	{
+		if (kFlyRawActionIds[index] == action)
+			return static_cast<int>(index);
+	}
+	return -1;
+}
 
 SHORT WINAPI HookGetAsyncKeyState(int virtual_key)
 {
@@ -81,6 +102,27 @@ bool __fastcall HookInputAimHoldQuery(void* input_manager, void* edx,
 {
 	return coop::CoopNetGame::Instance().HandleInputAimHoldQuery(
 		input_manager, edx, device, action, flags, threshold);
+}
+
+bool __fastcall HookInputRawPressedQuery(void* input_manager, void* edx,
+	void* device, std::uint32_t action, std::uint32_t flags, bool record)
+{
+	return coop::CoopNetGame::Instance().HandleInputRawPressedQuery(
+		input_manager, edx, device, action, flags, record);
+}
+
+bool __fastcall HookInputRawReleasedQuery(void* input_manager, void* edx,
+	void* device, std::uint32_t action, std::uint32_t flags, bool record)
+{
+	return coop::CoopNetGame::Instance().HandleInputRawReleasedQuery(
+		input_manager, edx, device, action, flags, record);
+}
+
+bool __fastcall HookInputRawHeldQuery(void* input_manager, void* edx,
+	void* device, std::uint32_t action, std::uint32_t flags, bool record)
+{
+	return coop::CoopNetGame::Instance().HandleInputRawHeldQuery(
+		input_manager, edx, device, action, flags, record);
 }
 
 float __fastcall HookCameraYaw(void* camera_handler, void* edx)
@@ -220,17 +262,41 @@ CoopNetGame::CoopNetGame() :
 		sizeof(m_original_input_hold_duration_query_bytes));
 	ZeroMemory(m_original_input_aim_hold_query_bytes,
 		sizeof(m_original_input_aim_hold_query_bytes));
+	ZeroMemory(m_original_input_raw_pressed_query_bytes,
+		sizeof(m_original_input_raw_pressed_query_bytes));
+	ZeroMemory(m_original_input_raw_released_query_bytes,
+		sizeof(m_original_input_raw_released_query_bytes));
+	ZeroMemory(m_original_input_raw_held_query_bytes,
+		sizeof(m_original_input_raw_held_query_bytes));
 	ZeroMemory(m_original_camera_yaw_bytes,
 		sizeof(m_original_camera_yaw_bytes));
 	ZeroMemory(m_original_gpig_camera_update_bytes,
 		sizeof(m_original_gpig_camera_update_bytes));
 	ZeroMemory(m_prev_remote_release_seq, sizeof(m_prev_remote_release_seq));
+	ZeroMemory(m_prev_remote_fly_raw_press_seq,
+		sizeof(m_prev_remote_fly_raw_press_seq));
+	ZeroMemory(m_prev_remote_fly_raw_release_seq,
+		sizeof(m_prev_remote_fly_raw_release_seq));
 	ZeroMemory(m_remote_press_edge, sizeof(m_remote_press_edge));
 	ZeroMemory(m_remote_release_edge, sizeof(m_remote_release_edge));
 	ZeroMemory(m_remote_hold_start_tick, sizeof(m_remote_hold_start_tick));
 	ZeroMemory(m_remote_action_held, sizeof(m_remote_action_held));
 	ZeroMemory(m_local_press_recorded, sizeof(m_local_press_recorded));
 	ZeroMemory(m_local_release_recorded, sizeof(m_local_release_recorded));
+	m_remote_p2_ammo_item = NULL;
+	m_remote_p2_ammo_guard_active = false;
+	m_logged_remote_p2_ammo_counter = false;
+	m_remote_p2_ammo_word_offset = kUnknownAmmoWordOffset;
+	ZeroMemory(m_remote_p2_ammo_snapshot, sizeof(m_remote_p2_ammo_snapshot));
+	m_input_raw_pressed_trampoline = NULL;
+	m_original_input_raw_pressed_query = NULL;
+	m_input_raw_released_trampoline = NULL;
+	m_original_input_raw_released_query = NULL;
+	m_input_raw_held_trampoline = NULL;
+	m_original_input_raw_held_query = NULL;
+	m_raw_pressed_query_hooked = false;
+	m_raw_released_query_hooked = false;
+	m_raw_held_query_hooked = false;
 }
 
 void CoopNetGame::SetModeHost()
@@ -684,6 +750,32 @@ void CoopNetGame::CaptureLocalRelease(std::uint32_t action)
 	ReleaseSRWLockExclusive(&m_input_lock);
 }
 
+void CoopNetGame::CaptureLocalFlyRaw(std::uint32_t action, bool is_down,
+	bool pressed_edge, bool released_edge)
+{
+	const int raw_index = FindFlyRawActionIndex(action);
+	if (raw_index < 0 || !IsLocalFlyControlled())
+		return;
+
+	const std::uint32_t bit = 1u << static_cast<std::uint32_t>(raw_index);
+	AcquireSRWLockExclusive(&m_input_lock);
+	if (is_down)
+		m_local_input.fly_raw_down |= bit;
+	else
+		m_local_input.fly_raw_down &= ~bit;
+	if (pressed_edge)
+	{
+		m_local_input.fly_raw_press_seq[raw_index]++;
+		m_local_input.fly_raw_down |= bit;
+	}
+	if (released_edge)
+	{
+		m_local_input.fly_raw_release_seq[raw_index]++;
+		m_local_input.fly_raw_down &= ~bit;
+	}
+	ReleaseSRWLockExclusive(&m_input_lock);
+}
+
 bool CoopNetGame::GetActiveRemoteAction(std::uint32_t action) const
 {
 	if (action < kFirstKeyboardActionId ||
@@ -719,6 +811,7 @@ bool CoopNetGame::ConsumeLocalMoochFlyExit()
 	{
 		m_local_input.fly_controlled = 0;
 		m_local_input.fly_transform_sequence = 0;
+		m_local_input.fly_raw_down = 0;
 		m_local_fly_active_seen = false;
 		m_local_mooch_exit_key_down = true;
 		m_logged_fly_active_entity_repair = false;
@@ -753,6 +846,50 @@ bool CoopNetGame::IsRemoteFlyControlled() const
 	CoopInput remote = {};
 	return GetRemoteInput(remote) && remote.fly_controlled != 0 &&
 		remote.fly_transform_sequence != 0;
+}
+
+bool CoopNetGame::GetRemoteFlyRawHeld(std::uint32_t action) const
+{
+	const int raw_index = FindFlyRawActionIndex(action);
+	if (raw_index < 0)
+		return false;
+	CoopInput remote = {};
+	return GetRemoteInput(remote) && remote.fly_controlled != 0 &&
+		remote.fly_transform_sequence != 0 &&
+		(remote.fly_raw_down & (1u << static_cast<std::uint32_t>(raw_index))) != 0;
+}
+
+bool CoopNetGame::ConsumeRemoteFlyRawEdge(std::uint32_t action, bool pressed)
+{
+	const int raw_index = FindFlyRawActionIndex(action);
+	if (raw_index < 0)
+		return false;
+
+	AcquireSRWLockExclusive(&m_input_lock);
+	const bool remote_controls_fly = m_remote_input.fly_controlled != 0 &&
+		m_remote_input.fly_transform_sequence != 0;
+	std::uint8_t* previous = pressed ? m_prev_remote_fly_raw_press_seq :
+		m_prev_remote_fly_raw_release_seq;
+	const std::uint8_t current = pressed ?
+		m_remote_input.fly_raw_press_seq[raw_index] :
+		m_remote_input.fly_raw_release_seq[raw_index];
+	const bool edge = remote_controls_fly && previous[raw_index] != current;
+	previous[raw_index] = current;
+	ReleaseSRWLockExclusive(&m_input_lock);
+	return edge;
+}
+
+bool CoopNetGame::GetRemoteFlyFireAction() const
+{
+	CoopInput remote = {};
+	if (!GetRemoteInput(remote) || remote.fly_controlled == 0 ||
+		remote.fly_transform_sequence == 0)
+	{
+		return false;
+	}
+	const std::uint32_t action_index = kFireActionId - kFirstKeyboardActionId;
+	return (remote.action_down[action_index / 32] &
+		(1u << (action_index % 32))) != 0;
 }
 
 bool CoopNetGame::IsLocalFlyControlled() const
@@ -800,6 +937,7 @@ void CoopNetGame::ConfirmLocalFlyControl()
 		// post-motor transform below.
 		m_local_input.fly_controlled = 1;
 		m_local_input.fly_transform_sequence = 0;
+		m_local_input.fly_raw_down = 0;
 		m_local_fly_active_seen = false;
 		// Confirm happens after the same physical Mooch press has selected
 		// 0x61000065.  The pressed-edge path can still observe that entry press
@@ -1120,6 +1258,111 @@ bool CoopNetGame::ApplyRemoteFlyTransform(void* fly)
 	}
 }
 
+bool CoopNetGame::BeginRemoteP2AmmoGuard(void* player2)
+{
+	m_remote_p2_ammo_guard_active = false;
+	if (!player2 || !IsRemoteInputActiveOnThisThread() ||
+		!GetActiveRemoteAction(kFireActionId))
+	{
+		return false;
+	}
+
+	__try
+	{
+		BYTE* const handler = *reinterpret_cast<BYTE**>(
+			reinterpret_cast<BYTE*>(player2) + kEntityHandlerOffset);
+		if (!handler)
+			return false;
+		GetCurrentWeaponIdFn get_current_weapon_id =
+			reinterpret_cast<GetCurrentWeaponIdFn>(kGetCurrentWeaponId);
+		const std::uint32_t item_id = get_current_weapon_id(handler);
+		if (item_id == 0xFFFFFFFFu)
+			return false;
+		ResolveItemByIdFn resolve_item =
+			reinterpret_cast<ResolveItemByIdFn>(kResolveItemById);
+		void* const item = resolve_item(item_id);
+		if (!item)
+			return false;
+
+		if (m_remote_p2_ammo_item != item)
+		{
+			m_remote_p2_ammo_item = item;
+			m_remote_p2_ammo_word_offset = kUnknownAmmoWordOffset;
+			m_logged_remote_p2_ammo_counter = false;
+		}
+		memcpy(m_remote_p2_ammo_snapshot, item,
+			sizeof(m_remote_p2_ammo_snapshot));
+		m_remote_p2_ammo_guard_active = true;
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		m_remote_p2_ammo_item = NULL;
+		m_remote_p2_ammo_word_offset = kUnknownAmmoWordOffset;
+		return false;
+	}
+}
+
+void CoopNetGame::EndRemoteP2AmmoGuard()
+{
+	if (!m_remote_p2_ammo_guard_active || !m_remote_p2_ammo_item)
+		return;
+
+	__try
+	{
+		std::uint32_t* const current =
+			reinterpret_cast<std::uint32_t*>(m_remote_p2_ammo_item);
+		if (m_remote_p2_ammo_word_offset != kUnknownAmmoWordOffset)
+		{
+			// The learned field is a stock count belonging to P2's selected weapon
+			// instance.  Restoring only this dword preserves the weapon's firing
+			// state, cooldown, animation and P1's unrelated inventory state.
+			current[m_remote_p2_ammo_word_offset] =
+				m_remote_p2_ammo_snapshot[m_remote_p2_ammo_word_offset];
+			m_remote_p2_ammo_guard_active = false;
+			return;
+		}
+
+		std::size_t candidate = kUnknownAmmoWordOffset;
+		std::uint32_t candidates = 0;
+		for (std::size_t index = 0; index < kRemoteAmmoSnapshotWords; ++index)
+		{
+			const std::uint32_t before = m_remote_p2_ammo_snapshot[index];
+			if (before > 0 && before <= 999 && current[index] == before - 1)
+			{
+				candidate = index;
+				++candidates;
+			}
+		}
+		if (candidates == 1)
+		{
+			m_remote_p2_ammo_word_offset = candidate;
+			current[candidate] = m_remote_p2_ammo_snapshot[candidate];
+			if (!m_logged_remote_p2_ammo_counter)
+			{
+				CoopRuntime::Instance().Log(
+					"[p2-ammo] protected shared weapon counter item=%p offset=0x%X\r\n",
+					m_remote_p2_ammo_item,
+					static_cast<unsigned>(candidate * sizeof(std::uint32_t)));
+				m_logged_remote_p2_ammo_counter = true;
+			}
+		}
+		else if (candidates > 1 && !m_logged_remote_p2_ammo_counter)
+		{
+			CoopRuntime::Instance().Log(
+				"[p2-ammo] ambiguous shared weapon decrements (%u); counter not patched\r\n",
+				static_cast<unsigned>(candidates));
+			m_logged_remote_p2_ammo_counter = true;
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		m_remote_p2_ammo_item = NULL;
+		m_remote_p2_ammo_word_offset = kUnknownAmmoWordOffset;
+	}
+	m_remote_p2_ammo_guard_active = false;
+}
+
 bool CoopNetGame::GetActiveRemoteWeaponType(uint32_t& weapon_type) const
 {
 	weapon_type = 0xFFFFFFFFu;
@@ -1377,6 +1620,14 @@ bool __fastcall CoopNetGame::HandleInputActionQuery(void* input_manager,
 	// dedicated edge hooks (0x488CE0 / 0x488C00) instead.
 	if (is_remote_thread && is_keyboard_action)
 		return GetActiveRemoteAction(action);
+	if (!is_remote_thread && action == kFireActionId &&
+		reinterpret_cast<std::uintptr_t>(_ReturnAddress()) ==
+			kFlyScanFireActionQueryReturn && IsRemoteFlyControlled())
+	{
+		// Only XControllerMode_Fly_Scan gets the remote Fire state.  Darwin's
+		// weapon paths use the same logical action and must keep physical input.
+		return GetRemoteFlyFireAction();
+	}
 	if (is_keyboard_action && IsMoochAction(action) &&
 		IsRemoteFlyControlled())
 	{
@@ -1542,6 +1793,50 @@ bool __fastcall CoopNetGame::HandleInputAimHoldQuery(void* input_manager,
 
 	return m_original_input_aim_hold_query(input_manager, device, action, flags,
 		threshold);
+}
+
+bool __fastcall CoopNetGame::HandleInputRawPressedQuery(void* input_manager,
+	void*, void* device, std::uint32_t action, std::uint32_t flags, bool record)
+{
+	if (!m_original_input_raw_pressed_query)
+		return false;
+	if (FindFlyRawActionIndex(action) >= 0 && IsRemoteFlyControlled())
+		return ConsumeRemoteFlyRawEdge(action, true);
+
+	const bool result = m_original_input_raw_pressed_query(input_manager,
+		device, action, flags, record);
+	if (result)
+		CaptureLocalFlyRaw(action, true, true, false);
+	return result;
+}
+
+bool __fastcall CoopNetGame::HandleInputRawReleasedQuery(void* input_manager,
+	void*, void* device, std::uint32_t action, std::uint32_t flags, bool record)
+{
+	if (!m_original_input_raw_released_query)
+		return false;
+	if (FindFlyRawActionIndex(action) >= 0 && IsRemoteFlyControlled())
+		return ConsumeRemoteFlyRawEdge(action, false);
+
+	const bool result = m_original_input_raw_released_query(input_manager,
+		device, action, flags, record);
+	if (result)
+		CaptureLocalFlyRaw(action, false, false, true);
+	return result;
+}
+
+bool __fastcall CoopNetGame::HandleInputRawHeldQuery(void* input_manager,
+	void*, void* device, std::uint32_t action, std::uint32_t flags, bool record)
+{
+	if (!m_original_input_raw_held_query)
+		return false;
+	if (FindFlyRawActionIndex(action) >= 0 && IsRemoteFlyControlled())
+		return GetRemoteFlyRawHeld(action);
+
+	const bool result = m_original_input_raw_held_query(input_manager, device,
+		action, flags, record);
+	CaptureLocalFlyRaw(action, result, false, false);
+	return result;
 }
 
 bool __fastcall CoopNetGame::HandleInputThresholdQuery(void* input_manager,
@@ -2098,6 +2393,95 @@ void CoopNetGame::RemoveAimHoldQueryHook()
 	m_aim_hold_query_hooked = false;
 }
 
+bool CoopNetGame::InstallRawPressedQueryHook()
+{
+	if (m_raw_pressed_query_hooked)
+		return true;
+	if (!InstallJmpHookRaw(kInputRawPressedQuery, kExpectedInputRawQuery,
+		sizeof(kExpectedInputRawQuery),
+		reinterpret_cast<void*>(&HookInputRawPressedQuery),
+		m_original_input_raw_pressed_query_bytes,
+		&m_input_raw_pressed_trampoline, "packet-backed fly raw-pressed-query"))
+	{
+		return false;
+	}
+	m_original_input_raw_pressed_query =
+		reinterpret_cast<InputRawQueryFn>(m_input_raw_pressed_trampoline);
+	m_raw_pressed_query_hooked = true;
+	return true;
+}
+
+void CoopNetGame::RemoveRawPressedQueryHook()
+{
+	if (!m_raw_pressed_query_hooked)
+		return;
+	RemoveJmpHookRaw(kInputRawPressedQuery,
+		m_original_input_raw_pressed_query_bytes,
+		sizeof(m_original_input_raw_pressed_query_bytes),
+		&m_input_raw_pressed_trampoline);
+	m_original_input_raw_pressed_query = NULL;
+	m_raw_pressed_query_hooked = false;
+}
+
+bool CoopNetGame::InstallRawReleasedQueryHook()
+{
+	if (m_raw_released_query_hooked)
+		return true;
+	if (!InstallJmpHookRaw(kInputRawReleasedQuery, kExpectedInputRawQuery,
+		sizeof(kExpectedInputRawQuery),
+		reinterpret_cast<void*>(&HookInputRawReleasedQuery),
+		m_original_input_raw_released_query_bytes,
+		&m_input_raw_released_trampoline, "packet-backed fly raw-released-query"))
+	{
+		return false;
+	}
+	m_original_input_raw_released_query =
+		reinterpret_cast<InputRawQueryFn>(m_input_raw_released_trampoline);
+	m_raw_released_query_hooked = true;
+	return true;
+}
+
+void CoopNetGame::RemoveRawReleasedQueryHook()
+{
+	if (!m_raw_released_query_hooked)
+		return;
+	RemoveJmpHookRaw(kInputRawReleasedQuery,
+		m_original_input_raw_released_query_bytes,
+		sizeof(m_original_input_raw_released_query_bytes),
+		&m_input_raw_released_trampoline);
+	m_original_input_raw_released_query = NULL;
+	m_raw_released_query_hooked = false;
+}
+
+bool CoopNetGame::InstallRawHeldQueryHook()
+{
+	if (m_raw_held_query_hooked)
+		return true;
+	if (!InstallJmpHookRaw(kInputRawHeldQuery, kExpectedInputRawQuery,
+		sizeof(kExpectedInputRawQuery),
+		reinterpret_cast<void*>(&HookInputRawHeldQuery),
+		m_original_input_raw_held_query_bytes, &m_input_raw_held_trampoline,
+		"packet-backed fly raw-held-query"))
+	{
+		return false;
+	}
+	m_original_input_raw_held_query =
+		reinterpret_cast<InputRawQueryFn>(m_input_raw_held_trampoline);
+	m_raw_held_query_hooked = true;
+	return true;
+}
+
+void CoopNetGame::RemoveRawHeldQueryHook()
+{
+	if (!m_raw_held_query_hooked)
+		return;
+	RemoveJmpHookRaw(kInputRawHeldQuery, m_original_input_raw_held_query_bytes,
+		sizeof(m_original_input_raw_held_query_bytes),
+		&m_input_raw_held_trampoline);
+	m_original_input_raw_held_query = NULL;
+	m_raw_held_query_hooked = false;
+}
+
 bool CoopNetGame::InstallCameraYawHook()
 {
 	if (m_camera_yaw_hooked)
@@ -2276,7 +2660,9 @@ bool CoopNetGame::InstallInputHook()
 				InstallThresholdQueryHook() &&
 				InstallAxisQueryHook() && InstallPressedQueryHook() &&
 				InstallReleasedQueryHook() && InstallHoldDurationQueryHook() &&
-				InstallAimHoldQueryHook() && InstallCameraYawHook() &&
+				InstallAimHoldQueryHook() && InstallRawPressedQueryHook() &&
+				InstallRawReleasedQueryHook() && InstallRawHeldQueryHook() &&
+				InstallCameraYawHook() &&
 				InstallGPigCameraUpdateHook() &&
 				InstallDefaultModeUpdateHook() && InstallFireHandlerHook();
 		}
@@ -2292,6 +2678,9 @@ void CoopNetGame::RemoveInputHook()
 	RemoveDefaultModeUpdateHook();
 	RemoveGPigCameraUpdateHook();
 	RemoveCameraYawHook();
+	RemoveRawHeldQueryHook();
+	RemoveRawReleasedQueryHook();
+	RemoveRawPressedQueryHook();
 	RemoveAimHoldQueryHook();
 	RemoveHoldDurationQueryHook();
 	RemoveReleasedQueryHook();
