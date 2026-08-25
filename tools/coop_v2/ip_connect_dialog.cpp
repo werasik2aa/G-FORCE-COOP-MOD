@@ -81,7 +81,11 @@ bool IpConnectDialog::Prompt(HWND owner, const char* default_address,
 
 	CreateControls();
 	SetWindowTextA(m_edit, default_address ? default_address : "");
-	m_owner_was_enabled = m_owner && IsWindowEnabled(m_owner);
+	// Only disable the owner if we share its thread; cross-thread
+	// EnableWindow sends a synchronous message that can deadlock the
+	// game's main thread while the worker's dialog pumps messages.
+	m_owner_was_enabled = m_owner && IsWindowEnabled(m_owner) &&
+		GetWindowThreadProcessId(m_owner, NULL) == GetCurrentThreadId();
 	if (m_owner_was_enabled)
 		EnableWindow(m_owner, FALSE);
 	ShowWindow(m_window, SW_SHOW);

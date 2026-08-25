@@ -27,9 +27,11 @@ public:
 
 	static WorldSync& Instance();
 
+	void SendToRemote(const void* data, std::uint32_t size, int flags) const;
 	void OnPeerConnected();
 	void OnPeerDisconnected();
 	void ResetForWorldLoad();
+	void ClearGameState();
 	// Called from P1's first post-load tick.  The socket worker later sends one
 	// WorldReady packet, which makes the host replay its current baseline.
 	void NotifyLocalWorldReady();
@@ -102,15 +104,25 @@ private:
 		std::int32_t result;
 	};
 
-	// Either side reports that its local player damaged a world-linked entity.
-	// The receiver finds the same entity by world id and replays the hit on it.
-	struct WorldDamagePacket : PacketHeader
+// Either side reports that its local player damaged a world-linked entity.
+ 	// The receiver finds the same entity by world id and replays the hit on it.
+ 	struct WorldDamagePacket : PacketHeader
+ 	{
+ 		std::uint32_t world_id;
+ 		std::uint32_t amount;
+ 		std::int32_t event_code;
+ 	};
+
+	// Host -> client: entity has been despawned/died.  Client removes it.
+	struct WorldDespawnPacket : PacketHeader
 	{
 		std::uint32_t world_id;
-		std::uint32_t amount;
-		std::int32_t event_code;
 	};
 
+	static_assert(sizeof(WorldDamagePacket) == 32,
+		"damage packets must keep their fixed x86 wire layout");
+	static_assert(sizeof(WorldDespawnPacket) == 24,
+		"despawn packets must keep their fixed x86 wire layout");
 	static_assert(sizeof(WorldSpawnPacket) == 72,
 		"world spawn packets must keep their fixed x86 wire layout");
 	static_assert(sizeof(WorldSnapshotPacket) == 60,
@@ -209,8 +221,12 @@ private:
 	void AddClientEntity(void* entity, const TriggerKey& key,
 		std::uint32_t world_id);
 	bool TrySpawnClientEntity(PendingSpawn& pending);
-	void SendToRemote(const void* data, std::uint32_t size, int flags) const;
-	void ClearGameState();
+// Host -> client: queues a despawn packet for a dead entity.
+	void QueueHostDespawn(std::uint32_t world_id);
+	// Removes a dead entity from tracking and notifies clients.
+	void ProcessHostDespawns();
+	// Client-side: handles incoming despawn packet.
+	void HandleIncomingDespawn(const WorldDespawnPacket& packet);
 
 	struct PendingDamage
 	{
@@ -220,11 +236,13 @@ private:
 	};
 
 	SRWLOCK m_packet_lock;
-	mutable SRWLOCK m_damage_lock;
-	std::vector<WorldDamagePacket> m_outgoing_damage;
-	std::vector<WorldDamagePacket> m_incoming_damage;
-	std::vector<PendingDamage> m_pending_damage;
-	std::vector<WorldSpawnPacket> m_outgoing_spawns;
+mutable SRWLOCK m_damage_lock;
+ 	std::vector<WorldDamagePacket> m_outgoing_damage;
+ 	std::vector<WorldDamagePacket> m_incoming_damage;
+ 	std::vector<PendingDamage> m_pending_damage;
+	std::vector<WorldDespawnPacket> m_outgoing_despawns;
+	std::vector<WorldDespawnPacket> m_incoming_despawns;
+ 	std::vector<WorldSpawnPacket> m_outgoing_spawns;
 	std::vector<WorldSnapshotPacket> m_outgoing_snapshots;
 	std::vector<WorldTriggerEventPacket> m_outgoing_trigger_events;
 	std::vector<WorldSpawnPacket> m_incoming_spawns;
