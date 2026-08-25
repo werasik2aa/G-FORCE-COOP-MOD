@@ -35,7 +35,13 @@ enum CoopPacketId : std::uint32_t
 	kCoopPacketWorldSnapshot = 31,
 	// Sent by the client after its stock save load has reached a real P1 tick.
 	// It asks the host to send the current living-world baseline again.
-	kCoopPacketWorldReady = 32
+	kCoopPacketWorldReady = 32,
+	// Sent by the host when a dynamic trigger event occurs (e.g. computer
+	// activation that spawns spiders).  The client repeats the native trigger
+	// on its matching trigger template.
+	kCoopPacketWorldTriggerEvent = 33,
+	// Either side reports local-player damage on a world-linked entity.
+	kCoopPacketWorldDamage = 34
 };
 
 struct PacketHeader

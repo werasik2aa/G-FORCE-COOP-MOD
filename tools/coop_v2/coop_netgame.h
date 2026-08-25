@@ -8,6 +8,7 @@
 
 #include "ServerClient/MTypes.h"
 
+class WorldSync;
 namespace coop
 {
 class CoopNetGame final
@@ -71,6 +72,12 @@ public:
 	// Game-thread-only replay of the exact native trigger spawn route.  WorldSync
 	// uses it only after a host event cannot be paired to a client-native entity.
 	bool SpawnWorldFromTrigger(void* trigger);
+	bool ReplayTriggerEvent(std::uint32_t family, std::uint32_t subtype,
+		std::int32_t definition_id, std::uint32_t occurrence, int event_code);
+	// Applies a remote player's damage to the local twin of a world entity by
+	// driving the stock trigger event dispatcher.
+	void ApplyRemoteDamage(void* trigger, std::uint32_t amount,
+		std::uint32_t world_id, int event_code);
 	bool GetActiveRemoteWeaponType(std::uint32_t& weapon_type) const;
 	bool __fastcall HandleInputActionQuery(void* input_manager,
 		void*, std::uint32_t device, std::uint32_t action,

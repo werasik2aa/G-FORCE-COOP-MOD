@@ -1,4 +1,4 @@
-#include "world_sync.h"
+﻿#include "world_sync.h"
 
 #include "coop_netgame.h"
 #include "coop_runtime.h"
@@ -69,6 +69,7 @@ WorldSync::WorldSync() :
 	m_forced_client_spawn_active(false)
 {
 	InitializeSRWLock(&m_packet_lock);
+	InitializeSRWLock(&m_damage_lock);
 	ZeroMemory(&m_forced_client_spawn, sizeof(m_forced_client_spawn));
 }
 
@@ -96,8 +97,10 @@ void WorldSync::OnPeerDisconnected()
 	AcquireSRWLockExclusive(&m_packet_lock);
 	m_outgoing_spawns.clear();
 	m_outgoing_snapshots.clear();
+	m_outgoing_trigger_events.clear();
 	m_incoming_spawns.clear();
 	m_incoming_snapshots.clear();
+	m_incoming_trigger_events.clear();
 	ReleaseSRWLockExclusive(&m_packet_lock);
 }
 
@@ -118,6 +121,11 @@ void WorldSync::ClearGameState()
 	InterlockedExchange(&m_client_ready_sent, 0);
 	m_forced_client_spawn_active = false;
 	ZeroMemory(&m_forced_client_spawn, sizeof(m_forced_client_spawn));
+	AcquireSRWLockExclusive(&m_damage_lock);
+	m_outgoing_damage.clear();
+	m_incoming_damage.clear();
+	m_pending_damage.clear();
+	ReleaseSRWLockExclusive(&m_damage_lock);
 }
 
 void WorldSync::ResetForWorldLoad()
@@ -126,9 +134,16 @@ void WorldSync::ResetForWorldLoad()
 	AcquireSRWLockExclusive(&m_packet_lock);
 	m_outgoing_spawns.clear();
 	m_outgoing_snapshots.clear();
+	m_outgoing_trigger_events.clear();
 	m_incoming_spawns.clear();
 	m_incoming_snapshots.clear();
+	m_incoming_trigger_events.clear();
 	ReleaseSRWLockExclusive(&m_packet_lock);
+	AcquireSRWLockExclusive(&m_damage_lock);
+	m_outgoing_damage.clear();
+	m_incoming_damage.clear();
+	m_pending_damage.clear();
+	ReleaseSRWLockExclusive(&m_damage_lock);
 	InterlockedExchange(&m_host_resync_requested, 1);
 }
 
@@ -153,6 +168,39 @@ std::uint32_t WorldSync::NextOccurrence(
 	counter.occurrence = 1;
 	counters.push_back(counter);
 	return counter.occurrence;
+}
+
+std::uint32_t WorldSync::HostOccurrence(void* trigger)
+{
+	return NextOccurrence(m_host_trigger_counters, trigger);
+}
+
+void* WorldSync::FindTemplateTrigger(std::uint32_t family,
+	std::uint32_t subtype, std::int32_t definition_id)
+{
+	TriggerKey key = {};
+	key.family = family;
+	key.subtype = subtype;
+	key.definition_id = definition_id;
+	TriggerTemplate* found = FindTriggerTemplate(key);
+	if (!found)
+	{
+		// Spawn-definition ids are per-process table indices and can differ
+		// between the two loads of the same map.  Fall back to the only
+		// stable parts of the identity: family plus subtype.
+		for (TriggerTemplate& existing : m_trigger_templates)
+		{
+			if (existing.family == family && existing.subtype == subtype)
+			{
+				found = &existing;
+				CoopRuntime::Instance().Log(
+					"[world-trigger] loose template match family=%08X subtype=%08X host_def=%d local_def=%d\r\n",
+					family, subtype, definition_id, existing.definition_id);
+				break;
+			}
+		}
+	}
+	return found ? found->trigger : NULL;
 }
 
 bool WorldSync::ReadEntityTransform(void* entity, float position[4],
@@ -349,12 +397,114 @@ void WorldSync::QueueHostSnapshot(HostEntity& entity,
 	entity.have_transform = true;
 }
 
+void WorldSync::QueueHostTriggerEvent(const TriggerKey& key, int event_code,
+	int result)
+{
+	if (!CoopNetGame::Instance().IsHost() ||
+		!CoopNetGame::Instance().HasRemotePeer() || !key.occurrence)
+		return;
+
+	CoopRuntime::Instance().Log(
+		"[world-trigger-event] host queued key=%08X/%08X/%d occ=%u event=%d result=%d\r\n",
+		key.family, key.subtype, key.definition_id, key.occurrence,
+		event_code, result);
+
+	WorldTriggerEventPacket packet = {};
+	packet.m_PacketID = kCoopPacketWorldTriggerEvent;
+	packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
+	packet.m_SizeOne = packet.m_RealSize;
+	packet.key = key;
+	packet.event_code = event_code;
+	packet.result = result;
+	AcquireSRWLockExclusive(&m_packet_lock);
+	m_outgoing_trigger_events.push_back(packet);
+	ReleaseSRWLockExclusive(&m_packet_lock);
+}
+
+std::uint32_t WorldSync::WorldIdOfEntity(void* entity) const
+{
+	if (!entity)
+		return 0;
+	if (CoopNetGame::Instance().IsHost())
+	{
+		for (const HostEntity& tracked : m_host_entities)
+		{
+			if (tracked.entity == entity && tracked.world_id)
+				return tracked.world_id;
+		}
+	}
+	else if (CoopNetGame::Instance().IsClient())
+	{
+		for (const ClientEntity& tracked : m_client_entities)
+		{
+			if (tracked.entity == entity && tracked.world_id)
+				return tracked.world_id;
+		}
+	}
+	return 0;
+}
+
+void WorldSync::ReportLocalDamage(void* entity, std::uint32_t amount,
+	int event_code)
+{
+	if (!entity || !amount || !CoopNetGame::Instance().HasRemotePeer())
+		return;
+	const std::uint32_t world_id = WorldIdOfEntity(entity);
+	if (!world_id)
+		return;
+
+	WorldDamagePacket packet = {};
+	packet.m_PacketID = kCoopPacketWorldDamage;
+	packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
+	packet.m_SizeOne = packet.m_RealSize;
+	packet.world_id = world_id;
+	packet.amount = amount;
+	packet.event_code = event_code;
+	AcquireSRWLockExclusive(&m_damage_lock);
+	if (m_outgoing_damage.size() < kMaxPendingWorldPackets)
+		m_outgoing_damage.push_back(packet);
+	ReleaseSRWLockExclusive(&m_damage_lock);
+	CoopRuntime::Instance().Log(
+		"[world-damage] sent id=%u event=%d/0x%04X\r\n",
+		world_id, event_code, static_cast<unsigned>(event_code) & 0xFFFFu);
+}
+
+void* WorldSync::EntityOfTrigger(void* trigger) const
+{
+	if (!trigger)
+		return NULL;
+	if (CoopNetGame::Instance().IsHost())
+	{
+		for (const HostEntity& tracked : m_host_entities)
+		{
+			if (tracked.trigger == trigger && tracked.entity &&
+				tracked.world_id)
+			{
+				return tracked.entity;
+			}
+		}
+	}
+	else if (CoopNetGame::Instance().IsClient())
+	{
+		for (const ClientEntity& tracked : m_client_entities)
+		{
+			void* const entity_trigger = *reinterpret_cast<void* const*>(
+				static_cast<const BYTE*>(tracked.entity) +
+				gforce::kEntityTriggerOffset);
+			if (entity_trigger == trigger && tracked.entity && tracked.world_id)
+				return tracked.entity;
+		}
+	}
+	return NULL;
+}
+
 void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 	std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id)
 {
-	if (!trigger || !entity || !IsSupportedFamily(family) || definition_id < 0)
+	if (!trigger || !entity || !IsSupportedFamily(family))
 		return;
-	RecordTriggerTemplate(trigger, family, subtype);
+	if (definition_id >= 0)
+		RecordTriggerTemplate(trigger, family, subtype);
 
 	if (CoopNetGame::Instance().IsHost())
 	{
@@ -499,9 +649,6 @@ void WorldSync::EnumerateHostEntities()
 					trigger + gforce::kTriggerSubtypeOffset);
 				const std::int32_t definition_id = *reinterpret_cast<std::int32_t*>(
 					trigger + gforce::kTriggerSpawnIdOffset);
-				if (definition_id < 0)
-					continue;
-
 				HostEntity* tracked = FindHostEntity(entity);
 				if (!tracked || tracked->trigger != trigger)
 				{
@@ -578,9 +725,6 @@ void WorldSync::EnumerateClientEntities()
 					trigger + gforce::kTriggerSubtypeOffset);
 				const std::int32_t definition_id = *reinterpret_cast<std::int32_t*>(
 					trigger + gforce::kTriggerSpawnIdOffset);
-				if (definition_id < 0)
-					continue;
-
 				RecordTriggerTemplate(trigger, family, subtype);
 				TriggerKey key = {};
 				key.family = family;
@@ -600,6 +744,12 @@ void WorldSync::EnumerateClientEntities()
 
 bool WorldSync::TrySpawnClientEntity(PendingSpawn& pending)
 {
+	// Dynamic spawns are produced by the local game itself (the computer
+	// spits spiders out on its own).  They only need proximity linking,
+	// never a native trigger replay.
+	if (pending.packet.key.definition_id < 0)
+		return false;
+
 	TriggerTemplate* const template_trigger =
 		FindTriggerTemplate(pending.packet.key);
 	if (!template_trigger)
@@ -674,6 +824,52 @@ void WorldSync::ResolvePendingSpawns()
 				candidate->key.occurrence);
 			it = m_pending_spawns.erase(it);
 			continue;
+		}
+		// Dynamic spawns (definition_id == -1) cannot be matched by key: both
+		// machines build independent trigger objects.  Match the closest local
+		// entity of the same subtype near the host-reported spawn position.
+		if (it->packet.key.definition_id < 0)
+		{
+			ClientEntity* best = NULL;
+			float best_distance_sq = 4.0f * 4.0f;
+			float existing_position[4] = {};
+			float existing_rotation[4] = {};
+			for (ClientEntity& existing : m_client_entities)
+			{
+				if (existing.world_id != 0 ||
+					existing.key.subtype != it->packet.key.subtype)
+				{
+					continue;
+				}
+				if (!ReadEntityTransform(existing.entity, existing_position,
+					existing_rotation))
+				{
+					continue;
+				}
+				const float dx = existing_position[0] - it->packet.position[0];
+				const float dy = existing_position[1] - it->packet.position[1];
+				const float dz = existing_position[2] - it->packet.position[2];
+				const float distance_sq = dx * dx + dy * dy + dz * dz;
+				if (distance_sq < best_distance_sq)
+				{
+					best_distance_sq = distance_sq;
+					best = &existing;
+				}
+			}
+			if (best)
+			{
+				best->world_id = it->packet.world_id;
+				WorldSnapshotPacket initial = {};
+				initial.world_id = it->packet.world_id;
+				memcpy(initial.position, it->packet.position, sizeof(initial.position));
+				memcpy(initial.rotation, it->packet.rotation, sizeof(initial.rotation));
+				AcceptSnapshot(*best, initial, now);
+				CoopRuntime::Instance().Log(
+					"[world-link] dynamic host id=%u -> local=%p subtype=%08X\r\n",
+					best->world_id, best->entity, best->key.subtype);
+				it = m_pending_spawns.erase(it);
+				continue;
+			}
 		}
 		if (it->last_attempt_tick == 0 ||
 			static_cast<DWORD>(now - it->last_attempt_tick) >=
@@ -822,9 +1018,11 @@ void WorldSync::ProcessClientPackets()
 {
 	std::vector<WorldSpawnPacket> spawns;
 	std::vector<WorldSnapshotPacket> snapshots;
+	std::vector<WorldTriggerEventPacket> trigger_events;
 	AcquireSRWLockExclusive(&m_packet_lock);
 	spawns.swap(m_incoming_spawns);
 	snapshots.swap(m_incoming_snapshots);
+	trigger_events.swap(m_incoming_trigger_events);
 	ReleaseSRWLockExclusive(&m_packet_lock);
 
 	for (const WorldSpawnPacket& packet : spawns)
@@ -853,6 +1051,26 @@ void WorldSync::ProcessClientPackets()
 		if (m_pending_snapshots.size() < kMaxPendingWorldPackets)
 			m_pending_snapshots.push_back(packet);
 	}
+	for (const WorldTriggerEventPacket& packet : trigger_events)
+	{
+		if (!CoopNetGame::Instance().ReplayTriggerEvent(packet.key.family,
+			packet.key.subtype, packet.key.definition_id,
+			packet.key.occurrence,
+			packet.event_code))
+		{
+			CoopRuntime::Instance().Log(
+				"[world-trigger-event] client could not replay def=%d occ=%u event=%d\r\n",
+				packet.key.definition_id, packet.key.occurrence,
+				packet.event_code);
+		}
+		else
+		{
+			CoopRuntime::Instance().Log(
+				"[world-trigger-event] client replayed def=%d occ=%u event=%d\r\n",
+				packet.key.definition_id, packet.key.occurrence,
+				packet.event_code);
+		}
+	}
 
 	ResolvePendingSpawns();
 	ApplyPendingSnapshots();
@@ -868,6 +1086,121 @@ void WorldSync::GameTick()
 	{
 		EnumerateClientEntities();
 		ProcessClientPackets();
+	}
+	ApplyIncomingDamage();
+}
+
+void WorldSync::ApplyIncomingDamage()
+{
+	std::vector<WorldDamagePacket> damage;
+	AcquireSRWLockExclusive(&m_damage_lock);
+	damage.swap(m_incoming_damage);
+	ReleaseSRWLockExclusive(&m_damage_lock);
+	if (damage.empty() && m_pending_damage.empty())
+		return;
+
+	for (const WorldDamagePacket& packet : damage)
+	{
+		void* entity = NULL;
+		if (CoopNetGame::Instance().IsHost())
+		{
+			for (HostEntity& tracked : m_host_entities)
+			{
+				if (tracked.world_id == packet.world_id)
+				{
+					entity = tracked.entity;
+					break;
+				}
+			}
+		}
+		else if (CoopNetGame::Instance().IsClient())
+		{
+			ClientEntity* const tracked = FindClientEntityById(packet.world_id);
+			if (tracked)
+				entity = tracked->entity;
+		}
+		if (!entity)
+		{
+			PendingDamage pending = {};
+			pending.world_id = packet.world_id;
+			pending.amount = packet.amount;
+			pending.event_code = packet.event_code;
+			m_pending_damage.push_back(pending);
+			continue;
+		}
+		// A dead/despawned entity may still sit in the tracked list with a
+		// dangling pointer; never dereference it for a remote hit.
+		if (!IsLiveEntity(entity))
+			continue;
+
+		BYTE* const trigger = *reinterpret_cast<BYTE**>(
+			static_cast<BYTE*>(entity) + gforce::kEntityTriggerOffset);
+		if (!trigger)
+			continue;
+		CoopRuntime::Instance().Log(
+			"[world-damage] applying remote hit id=%u event=%d trigger=%p\r\n",
+			packet.world_id, packet.event_code, trigger);
+		ApplyOneHit(trigger, packet.amount, packet.world_id,
+			packet.event_code);
+	}
+	// Hits that arrived before the local twin was linked are replayed as soon
+	// as the link exists, in order, so a kill cannot be lost to streaming.
+	for (std::vector<PendingDamage>::iterator it = m_pending_damage.begin();
+		it != m_pending_damage.end();)
+	{
+		void* entity = NULL;
+		if (CoopNetGame::Instance().IsHost())
+		{
+			for (HostEntity& tracked : m_host_entities)
+			{
+				if (tracked.world_id == it->world_id)
+				{
+					entity = tracked.entity;
+					break;
+				}
+			}
+		}
+		else if (CoopNetGame::Instance().IsClient())
+		{
+			ClientEntity* const tracked = FindClientEntityById(it->world_id);
+			if (tracked)
+				entity = tracked->entity;
+		}
+		if (!entity)
+		{
+			++it;
+			continue;
+		}
+		if (!IsLiveEntity(entity))
+		{
+			it = m_pending_damage.erase(it);
+			continue;
+		}
+		BYTE* const trigger = *reinterpret_cast<BYTE**>(
+			static_cast<BYTE*>(entity) + gforce::kEntityTriggerOffset);
+		if (trigger)
+		{
+			CoopRuntime::Instance().Log(
+				"[world-damage] applying deferred hit id=%u event=%d\r\n",
+				it->world_id, it->event_code);
+			ApplyOneHit(trigger, it->amount, it->world_id, it->event_code);
+		}
+		it = m_pending_damage.erase(it);
+	}
+}
+
+void WorldSync::ApplyOneHit(void* trigger, std::uint32_t amount,
+	std::uint32_t world_id, int event_code)
+{
+	__try
+	{
+		CoopNetGame::Instance().ApplyRemoteDamage(trigger, amount,
+			world_id, event_code);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		CoopRuntime::Instance().Log(
+			"[world-damage] hit fault id=%u; entity skipped\r\n", world_id);
 	}
 }
 
@@ -898,7 +1231,9 @@ bool WorldSync::OnRemotePacket(const void* data, std::uint32_t size)
 	const PacketHeader* const header = static_cast<const PacketHeader*>(data);
 	if (header->m_PacketID != kCoopPacketWorldSpawn &&
 		header->m_PacketID != kCoopPacketWorldSnapshot &&
-		header->m_PacketID != kCoopPacketWorldReady)
+		header->m_PacketID != kCoopPacketWorldReady &&
+		header->m_PacketID != kCoopPacketWorldTriggerEvent &&
+		header->m_PacketID != kCoopPacketWorldDamage)
 	{
 		return false;
 	}
@@ -922,6 +1257,29 @@ bool WorldSync::OnRemotePacket(const void* data, std::uint32_t size)
 		return true;
 	}
 
+	// Damage flows in BOTH directions: the client's hits must kill host-side
+	// mobs too.  Handle it before the client-only filter below.
+	if (header->m_PacketID == kCoopPacketWorldDamage)
+	{
+		if (size != sizeof(WorldDamagePacket) || header->m_CompressSize != 0 ||
+			header->Size() != size)
+		{
+			return true;
+		}
+		const WorldDamagePacket* const packet =
+			static_cast<const WorldDamagePacket*>(data);
+		if (!packet->world_id || !packet->amount)
+			return true;
+		CoopRuntime::Instance().Log(
+			"[world-damage] received id=%u event=%d\r\n",
+			packet->world_id, packet->event_code);
+		AcquireSRWLockExclusive(&m_damage_lock);
+		if (m_incoming_damage.size() < kMaxPendingWorldPackets)
+			m_incoming_damage.push_back(*packet);
+		ReleaseSRWLockExclusive(&m_damage_lock);
+		return true;
+	}
+
 	if (!CoopNetGame::Instance().IsClient() ||
 		CoopNetGame::Instance().IsHost())
 	{
@@ -939,8 +1297,11 @@ bool WorldSync::OnRemotePacket(const void* data, std::uint32_t size)
 			return true;
 		const WorldSpawnPacket* const packet =
 			static_cast<const WorldSpawnPacket*>(data);
+		// Dynamic spawns (definition_id == -1) have no occurrence counter;
+		// their identity is world_id alone.  Map spawns keep the old rules.
+		const bool dynamic = packet->key.definition_id < 0;
 		if (!packet->world_id || !IsSupportedFamily(packet->key.family) ||
-			packet->key.definition_id < 0 || !packet->key.occurrence)
+			(!dynamic && !packet->key.occurrence))
 		{
 			CoopRuntime::Instance().Log("[world-sync] rejected invalid spawn event\r\n");
 			return true;
@@ -948,6 +1309,24 @@ bool WorldSync::OnRemotePacket(const void* data, std::uint32_t size)
 		AcquireSRWLockExclusive(&m_packet_lock);
 		if (m_incoming_spawns.size() < kMaxPendingWorldPackets)
 			m_incoming_spawns.push_back(*packet);
+		ReleaseSRWLockExclusive(&m_packet_lock);
+		return true;
+	}
+
+	if (header->m_PacketID == kCoopPacketWorldTriggerEvent)
+	{
+		if (size != sizeof(WorldTriggerEventPacket))
+			return true;
+		const WorldTriggerEventPacket* const packet =
+			static_cast<const WorldTriggerEventPacket*>(data);
+		if (!IsSupportedFamily(packet->key.family) || !packet->key.occurrence)
+			return true;
+		CoopRuntime::Instance().Log(
+			"[world-trigger-event] client received key=%08X/%08X/%d occ=%u event=%d\r\n",
+			packet->key.family, packet->key.subtype, packet->key.definition_id,
+			packet->key.occurrence, packet->event_code);
+		AcquireSRWLockExclusive(&m_packet_lock);
+		m_incoming_trigger_events.push_back(*packet);
 		ReleaseSRWLockExclusive(&m_packet_lock);
 		return true;
 	}
@@ -1008,14 +1387,25 @@ void WorldSync::NetworkTick()
 	}
 	std::vector<WorldSpawnPacket> spawns;
 	std::vector<WorldSnapshotPacket> snapshots;
+	std::vector<WorldTriggerEventPacket> trigger_events;
 	AcquireSRWLockExclusive(&m_packet_lock);
 	spawns.swap(m_outgoing_spawns);
 	snapshots.swap(m_outgoing_snapshots);
+	trigger_events.swap(m_outgoing_trigger_events);
 	ReleaseSRWLockExclusive(&m_packet_lock);
 
 	for (const WorldSpawnPacket& packet : spawns)
 		SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 	for (const WorldSnapshotPacket& packet : snapshots)
 		SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Unreliable);
+	for (const WorldTriggerEventPacket& packet : trigger_events)
+		SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
+
+	std::vector<WorldDamagePacket> damage;
+	AcquireSRWLockExclusive(&m_damage_lock);
+	damage.swap(m_outgoing_damage);
+	ReleaseSRWLockExclusive(&m_damage_lock);
+	for (const WorldDamagePacket& packet : damage)
+		SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 }
 }

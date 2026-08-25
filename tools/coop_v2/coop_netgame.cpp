@@ -1442,8 +1442,24 @@ int CoopNetGame::HandleTriggerEvent(void* trigger, int event_code)
 			bytes + kTriggerSubtypeOffset);
 		const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
 			bytes + kTriggerSpawnIdOffset);
+		if (IsHost() && definition_id >= 0)
+		{
+			WorldSync::TriggerKey key = {};
+			key.family = family;
+			key.subtype = subtype;
+			key.definition_id = definition_id;
+			key.occurrence = WorldSync::Instance().HostOccurrence(trigger);
+			WorldSync::Instance().QueueHostTriggerEvent(key, event_code, result);
+		}
 		const unsigned sequence = static_cast<unsigned>(
 			InterlockedIncrement(&m_trigger_event_sequence));
+		// A gameplay event on a world-linked entity (a whip hit, a shot) is the
+		// damage channel: forward it so the peer replays the same hit locally.
+		void* const linked_entity = WorldSync::Instance().EntityOfTrigger(
+			trigger);
+		if (linked_entity)
+			WorldSync::Instance().ReportLocalDamage(linked_entity, 1,
+				event_code);
 		CoopRuntime::Instance().Log(
 			"[world-trigger-event] seq=%u role=%s trigger=%p family=0x%08X subtype=0x%08X def=%d event=%d/0x%04X result=%d\r\n",
 			sequence, IsHost() ? "host" : "client", trigger, family, subtype,
@@ -1465,6 +1481,41 @@ bool CoopNetGame::SpawnWorldFromTrigger(void* trigger)
 		return false;
 	HandleTriggerSpawnFromDefinition(trigger);
 	return true;
+}
+
+bool CoopNetGame::ReplayTriggerEvent(std::uint32_t family,
+	std::uint32_t subtype, std::int32_t definition_id,
+	std::uint32_t occurrence,
+	int event_code)
+{
+	// The client replays a host trigger event on its own matching template.
+	// The native dispatcher is called with the recorded event code so dynamic
+	// children (spiders) spawn through the stock path.
+	void* const template_trigger = WorldSync::Instance().FindTemplateTrigger(
+		family, subtype, definition_id);
+	if (!template_trigger)
+		return false;
+	if (m_original_trigger_event)
+	{
+		m_original_trigger_event(template_trigger, event_code);
+		return true;
+	}
+	return SpawnWorldFromTrigger(template_trigger);
+}
+
+void CoopNetGame::ApplyRemoteDamage(void* trigger, std::uint32_t amount,
+	std::uint32_t world_id, int event_code)
+{
+	if (!trigger || !m_original_trigger_event)
+		return;
+	// The stock dispatcher routes the hit into the entity's own damage state
+	// machine; the amount word rides along for logging until a per-amount
+	// entry point is mapped.
+	CoopRuntime::Instance().Log(
+		"[world-damage] applying remote hit id=%u event=%d/0x%04X trigger=%p\r\n",
+		world_id, event_code, static_cast<unsigned>(event_code) & 0xFFFFu,
+		trigger);
+	m_original_trigger_event(trigger, event_code);
 }
 
 void CoopNetGame::HandleWeaponAmmoConsume(void* weapon_record)
@@ -2928,6 +2979,7 @@ bool CoopNetGame::InstallTriggerEventTraceHook()
 {
 	if (m_trigger_event_trace_hooked)
 		return true;
+	CoopRuntime::Instance().Log("[netgame] installing trigger-event hook at 0x%08X...\r\n", kTriggerEventDispatcher);
 	if (!InstallJmpHookRaw(kTriggerEventDispatcher,
 		kExpectedTriggerEventDispatcher,
 		sizeof(kExpectedTriggerEventDispatcher),
@@ -2940,6 +2992,7 @@ bool CoopNetGame::InstallTriggerEventTraceHook()
 	m_original_trigger_event = reinterpret_cast<TriggerEventFn>(
 		m_trigger_event_trampoline);
 	m_trigger_event_trace_hooked = true;
+	CoopRuntime::Instance().Log("[netgame] trigger-event hook installed OK\r\n");
 	return true;
 }
 
@@ -2957,6 +3010,7 @@ bool CoopNetGame::InstallInputHook()
 {
 	if (m_input_hooked)
 		return true;
+	CoopRuntime::Instance().Log("[netgame] installing input hooks...\r\n");
 	BYTE* image = reinterpret_cast<BYTE*>(GetModuleHandleW(NULL));
 	if (!image)
 		return false;

@@ -33,6 +33,24 @@ public:
 	// Called from P1's first post-load tick.  The socket worker later sends one
 	// WorldReady packet, which makes the host replay its current baseline.
 	void NotifyLocalWorldReady();
+	// Returns the host-side occurrence counter for a native trigger pointer,
+	// assigning a new one on first sight.  Only meaningful on the host.
+	std::uint32_t HostOccurrence(void* trigger);
+	// Returns the local trigger object matching a process-neutral trigger key,
+	// or NULL when this process has not built that template yet.
+	void* FindTemplateTrigger(std::uint32_t family,
+		std::uint32_t subtype, std::int32_t definition_id);
+	// Host-only: queues one reliable trigger-event packet for the client.
+	void QueueHostTriggerEvent(const TriggerKey& key, int event_code,
+		int result);
+	// Game-thread: the local player damaged a world-linked entity.  Broadcasts
+	// a reliable damage packet; both roles may call this.
+	void ReportLocalDamage(void* entity, std::uint32_t amount,
+		int event_code);
+	// Returns the world id of a linked entity, or zero when untracked.
+	std::uint32_t WorldIdOfEntity(void* entity) const;
+	// Returns the live entity currently bound to a native trigger object.
+	void* EntityOfTrigger(void* trigger) const;
 
 	// These methods run only on the game thread, from the already verified
 	// trigger factory/spawn hooks and P1's post-update tick.
@@ -73,12 +91,36 @@ private:
 		std::uint32_t sequence;
 	};
 
+	// Host -> client notification that a native trigger received a gameplay
+	// event (activation, hit, timer).  The receiver replays the same event on
+	// its own matching trigger template so dynamic children (spiders) spawn
+	// locally through the stock code path.
+	struct WorldTriggerEventPacket : PacketHeader
+	{
+		TriggerKey key;
+		std::int32_t event_code;
+		std::int32_t result;
+	};
+
+	// Either side reports that its local player damaged a world-linked entity.
+	// The receiver finds the same entity by world id and replays the hit on it.
+	struct WorldDamagePacket : PacketHeader
+	{
+		std::uint32_t world_id;
+		std::uint32_t amount;
+		std::int32_t event_code;
+	};
+
 	static_assert(sizeof(WorldSpawnPacket) == 72,
 		"world spawn packets must keep their fixed x86 wire layout");
 	static_assert(sizeof(WorldSnapshotPacket) == 60,
 		"world snapshot packets must keep their fixed x86 wire layout");
 	static_assert(sizeof(WorldReadyPacket) == 24,
 		"world-ready packets must keep their fixed x86 wire layout");
+	static_assert(sizeof(WorldTriggerEventPacket) == 44,
+		"trigger-event packets must keep their fixed x86 wire layout");
+	static_assert(sizeof(WorldDamagePacket) == 32,
+		"damage packets must keep their fixed x86 wire layout");
 
 	struct TriggerCounter
 	{
@@ -145,6 +187,10 @@ private:
 	void EnumerateClientEntities();
 	void ProcessClientPackets();
 	void ResolvePendingSpawns();
+	void ApplyIncomingDamage();
+	// SEH-isolated: the native dispatcher may fault on a dying entity.
+	static void ApplyOneHit(void* trigger, std::uint32_t amount,
+		std::uint32_t world_id, int event_code);
 	void ApplyPendingSnapshots();
 	void AcceptSnapshot(ClientEntity& entity,
 		const WorldSnapshotPacket& snapshot, DWORD received_tick);
@@ -166,11 +212,24 @@ private:
 	void SendToRemote(const void* data, std::uint32_t size, int flags) const;
 	void ClearGameState();
 
+	struct PendingDamage
+	{
+		std::uint32_t world_id;
+		std::uint32_t amount;
+		std::int32_t event_code;
+	};
+
 	SRWLOCK m_packet_lock;
+	mutable SRWLOCK m_damage_lock;
+	std::vector<WorldDamagePacket> m_outgoing_damage;
+	std::vector<WorldDamagePacket> m_incoming_damage;
+	std::vector<PendingDamage> m_pending_damage;
 	std::vector<WorldSpawnPacket> m_outgoing_spawns;
 	std::vector<WorldSnapshotPacket> m_outgoing_snapshots;
+	std::vector<WorldTriggerEventPacket> m_outgoing_trigger_events;
 	std::vector<WorldSpawnPacket> m_incoming_spawns;
 	std::vector<WorldSnapshotPacket> m_incoming_snapshots;
+	std::vector<WorldTriggerEventPacket> m_incoming_trigger_events;
 	std::vector<TriggerCounter> m_host_trigger_counters;
 	std::vector<TriggerCounter> m_client_trigger_counters;
 	std::vector<TriggerTemplate> m_trigger_templates;

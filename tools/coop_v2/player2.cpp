@@ -543,6 +543,8 @@ void Player2Module::SpawnPlayer2FromSnapshot(const char* trigger)
 				reinterpret_cast<BYTE*>(player1) + kEntityPositionOffset);
 			player2_rotation = *reinterpret_cast<Vec4*>(
 				reinterpret_cast<BYTE*>(player1) + kEntityRotationOffset);
+			// Keep the pigs out of each other during cutscenes and shared spawns.
+			player2_position.x += 0.5f;
 			used_live_transform = true;
 		}
 	}
