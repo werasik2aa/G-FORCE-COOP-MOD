@@ -16,7 +16,7 @@ namespace coop
 	constexpr DWORD kWorldSnapshotIntervalMs = 350;
 	constexpr DWORD kMissingSpawnRetryMs = 1000;
 	constexpr size_t kWorldRegistryWalkLimit = 512;
-	constexpr size_t kMaxPendingWorldPackets = 1024;
+		constexpr size_t kMaxPendingWorldPackets = 1024;
 
 	bool SameTriggerKey(const WorldSync::TriggerKey& left, const WorldSync::TriggerKey& right)
 	{
@@ -32,21 +32,21 @@ namespace coop
 			key.definition_id == definition_id;
 	}
 
-	bool TransformChanged(const float old_position[4], const float old_rotation[4],
-		const float position[4], const float rotation[4])
-	{
-		for (size_t index = 0; index != 3; ++index)
+		bool TransformChanged(const float old_position[4], const float old_rotation[4],
+			const float position[4], const float rotation[4])
 		{
-			if (fabsf(old_position[index] - position[index]) > 0.015f)
-				return true;
+			for (size_t index = 0; index != 3; ++index)
+			{
+				if (fabsf(old_position[index] - position[index]) > 0.015f)
+					return true;
+			}
+			for (size_t index = 0; index != 4; ++index)
+			{
+				if (fabsf(old_rotation[index] - rotation[index]) > 0.0025f)
+					return true;
+			}
+			return false;
 		}
-		for (size_t index = 0; index != 4; ++index)
-		{
-			if (fabsf(old_rotation[index] - rotation[index]) > 0.0025f)
-				return true;
-		}
-		return false;
-	}
 
 	WorldSync& WorldSync::Instance()
 	{
@@ -216,6 +216,27 @@ namespace coop
 			memcpy(position, bytes + gforce::kEntityPositionOffset, sizeof(float) * 4);
 			memcpy(rotation, bytes + gforce::kEntityRotationOffset, sizeof(float) * 4);
 			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+	}
+
+	bool WorldSync::ReadEntityHealth(void* entity, float& health) const
+	{
+		if (!entity)
+			return false;
+		__try
+		{
+			const BYTE* const entity_bytes = static_cast<const BYTE*>(entity);
+			const BYTE* const handler = *reinterpret_cast<const BYTE* const*>(
+				entity_bytes + gforce::kEntityHandlerOffset);
+			if (!handler)
+				return false;
+			health = *reinterpret_cast<const float*>(handler +
+				gforce::kHandlerHealthOffset);
+			return health == health && health >= 0.0f && health <= 100000.0f;
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
@@ -424,11 +445,6 @@ namespace coop
 			!CoopNetGame::Instance().HasRemotePeer() || !key.occurrence)
 			return;
 
-		CoopRuntime::Instance().Log(
-			"[world-trigger-event] host queued key=%08X/%08X/%d occ=%u event=%d result=%d\r\n",
-			key.family, key.subtype, key.definition_id, key.occurrence,
-			event_code, result);
-
 		WorldTriggerEventPacket packet = {};
 		packet.m_PacketID = kCoopPacketWorldTriggerEvent;
 		packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
@@ -464,30 +480,34 @@ namespace coop
 		return 0;
 	}
 
-	void WorldSync::ReportLocalDamage(void* entity, std::uint32_t amount,
-		int event_code)
-	{
-		if (!entity || !amount || !CoopNetGame::Instance().HasRemotePeer())
-			return;
-		const std::uint32_t world_id = WorldIdOfEntity(entity);
-		if (!world_id)
-			return;
+		bool WorldSync::ReportLocalDamage(void* entity, int event_code)
+		{
+			if (!entity || !CoopNetGame::Instance().HasRemotePeer())
+				return false;
+			const std::uint32_t world_id = WorldIdOfEntity(entity);
+			if (!world_id)
+				return false;
+			float health = 0.0f;
+			if (!ReadEntityHealth(entity, health))
+				return false;
 
-		WorldDamagePacket packet = {};
-		packet.m_PacketID = kCoopPacketWorldDamage;
-		packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
-		packet.m_SizeOne = packet.m_RealSize;
-		packet.world_id = world_id;
-		packet.amount = amount;
-		packet.event_code = event_code;
-		AcquireSRWLockExclusive(&m_damage_lock);
-		if (m_outgoing_damage.size() < kMaxPendingWorldPackets)
-			m_outgoing_damage.push_back(packet);
-		ReleaseSRWLockExclusive(&m_damage_lock);
-		CoopRuntime::Instance().Log(
-			"[world-damage] sent id=%u event=%d/0x%04X\r\n",
-			world_id, event_code, static_cast<unsigned>(event_code) & 0xFFFFu);
-	}
+			WorldDamagePacket packet = {};
+			packet.m_PacketID = kCoopPacketWorldDamage;
+			packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
+			packet.m_SizeOne = packet.m_RealSize;
+			packet.world_id = world_id;
+			memcpy(&packet.hp_bits, &health, sizeof(packet.hp_bits));
+			packet.event_code = event_code;
+			AcquireSRWLockExclusive(&m_damage_lock);
+			bool queued = false;
+			if (m_outgoing_damage.size() < kMaxPendingWorldPackets)
+			{
+				m_outgoing_damage.push_back(packet);
+				queued = true;
+			}
+			ReleaseSRWLockExclusive(&m_damage_lock);
+			return queued;
+		}
 
 	void* WorldSync::EntityOfTrigger(void* trigger) const
 	{
@@ -706,18 +726,14 @@ namespace coop
 				"[world-sync] host registry read fault; frame skipped\r\n");
 		}
 
-		// Detect dead/despawned entities: any tracked entity no longer in the
-		// registry is considered dead.  Queue a despawn packet for it.
+		// A missing host-registry entry is not a native removal instruction for the
+		// other process.  The legacy world-despawn packet only removed bookkeeping
+		// on the client and could arrive before the final HP=0 update.  Let each
+		// game's own death path remove its local object after synchronized HP.
 		for (auto it = m_host_entities.begin(); it != m_host_entities.end();)
 		{
 			if (!IsLiveEntity(it->entity))
 			{
-				if (it->announced)
-				{
-					QueueHostDespawn(it->world_id);
-					CoopRuntime::Instance().Log(
-						"[world-despawn] host queued id=%u\n", it->world_id);
-				}
 				it = m_host_entities.erase(it);
 			}
 			else
@@ -1103,13 +1119,7 @@ namespace coop
 					packet.key.definition_id, packet.key.occurrence,
 					packet.event_code);
 			}
-			else
-			{
-				CoopRuntime::Instance().Log(
-					"[world-trigger-event] client replayed def=%d occ=%u event=%d\r\n",
-					packet.key.definition_id, packet.key.occurrence,
-					packet.event_code);
-			}
+
 		}
 
 		std::vector<WorldDespawnPacket> despawns;
@@ -1134,7 +1144,114 @@ namespace coop
 			EnumerateClientEntities();
 			ProcessClientPackets();
 		}
+		// Capture the post-hit local HP before applying incoming peer state.  The
+		// receive path refreshes this baseline, so remote HP never bounces back.
+		DetectLocalHealthChanges();
 		ApplyIncomingDamage();
+	}
+
+	void WorldSync::SetTrackedHealth(void* entity, float health)
+	{
+		if (!entity)
+			return;
+		if (CoopNetGame::Instance().IsHost())
+		{
+			for (HostEntity& tracked : m_host_entities)
+			{
+				if (tracked.entity == entity)
+				{
+					tracked.last_health = health;
+					tracked.have_health = true;
+					return;
+				}
+			}
+		}
+		else if (CoopNetGame::Instance().IsClient())
+		{
+			for (ClientEntity& tracked : m_client_entities)
+			{
+				if (tracked.entity == entity)
+				{
+					tracked.last_health = health;
+					tracked.have_health = true;
+					return;
+				}
+			}
+		}
+	}
+
+	void WorldSync::DetectLocalHealthChanges()
+	{
+		if (CoopNetGame::Instance().IsHost())
+		{
+			for (HostEntity& tracked : m_host_entities)
+			{
+				float health = 0.0f;
+				if (!tracked.entity || !tracked.world_id || !IsLiveEntity(tracked.entity) ||
+					!ReadEntityHealth(tracked.entity, health))
+				{
+					continue;
+				}
+				if (!tracked.have_health)
+				{
+					tracked.last_health = health;
+					tracked.have_health = true;
+					continue;
+				}
+				if (fabsf(tracked.last_health - health) > 0.01f)
+				{
+					tracked.last_health = health;
+					ReportLocalDamage(tracked.entity, 1);
+				}
+			}
+		}
+		else if (CoopNetGame::Instance().IsClient())
+		{
+			for (ClientEntity& tracked : m_client_entities)
+			{
+				float health = 0.0f;
+				if (!tracked.entity || !tracked.world_id || !IsLiveEntity(tracked.entity) ||
+					!ReadEntityHealth(tracked.entity, health))
+				{
+					continue;
+				}
+				if (!tracked.have_health)
+				{
+					tracked.last_health = health;
+					tracked.have_health = true;
+					continue;
+				}
+				if (fabsf(tracked.last_health - health) > 0.01f)
+				{
+					tracked.last_health = health;
+					ReportLocalDamage(tracked.entity, 1);
+				}
+			}
+		}
+	}
+
+	bool WorldSync::ApplyHealthToEntity(void* entity, std::uint32_t hp_bits) const
+	{
+		if (!entity)
+			return false;
+		float health = 0.0f;
+		memcpy(&health, &hp_bits, sizeof(health));
+		if (health != health || health < 0.0f || health > 100000.0f)
+			return false;
+		__try
+		{
+			BYTE* const entity_bytes = static_cast<BYTE*>(entity);
+			BYTE* const handler = *reinterpret_cast<BYTE**>(entity_bytes +
+				gforce::kEntityHandlerOffset);
+			if (!handler)
+				return false;
+			*reinterpret_cast<float*>(handler + gforce::kHandlerHealthOffset) = health;
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
 	}
 
 	void WorldSync::ApplyIncomingDamage()
@@ -1169,9 +1286,9 @@ namespace coop
 			if (!entity)
 			{
 				PendingDamage pending = {};
-				pending.world_id = packet.world_id;
-				pending.amount = packet.amount;
-				pending.event_code = packet.event_code;
+					pending.world_id = packet.world_id;
+					pending.hp_bits = packet.hp_bits;
+					pending.event_code = packet.event_code;
 				m_pending_damage.push_back(pending);
 				continue;
 			}
@@ -1180,41 +1297,20 @@ namespace coop
 			if (!IsLiveEntity(entity))
 				continue;
 
-			// Directly set the death flag on the enemy controller instead of
-			// replaying the trigger event (0x42FAB0), which is a notification
-			// dispatcher that does NOT reduce HP.
-			BYTE* const entityBytes = static_cast<BYTE*>(entity);
-			// Diagnostic: dump entity bytes around handler+0x144
-			CoopRuntime::Instance().Log(
-				"[world-damage] ENT_DIAG id=%u entity=%p "
-				"ent+140=%02X%02X%02X%02X ent+144=%02X%02X%02X%02X ent+148=%02X%02X%02X%02X\r\n",
-				packet.world_id, entity,
-				entityBytes[0x140], entityBytes[0x141], entityBytes[0x142], entityBytes[0x143],
-				entityBytes[0x144], entityBytes[0x145], entityBytes[0x146], entityBytes[0x147],
-				entityBytes[0x148], entityBytes[0x149], entityBytes[0x14A], entityBytes[0x14B]);
-			BYTE* const handler = *reinterpret_cast<BYTE**>(entityBytes + gforce::kEntityHandlerOffset);
-			if (!handler)
-				continue;
-			BYTE* const controller = *reinterpret_cast<BYTE**>(handler + gforce::kHandlerControllerOffset);
-			if (!controller)
-				continue;
-			// Diagnostic: dump controller bytes around the expected offsets
-			CoopRuntime::Instance().Log(
-				"[world-damage] DIAG id=%u entity=%p handler=%p controller=%p "
-				"ctrl+A8=%02X%02X%02X%02X ctrl+AC=%02X ctrl+C0=%02X%02X%02X%02X\r\n",
-				packet.world_id, entity, handler, controller,
-				controller[0xA8], controller[0xA9], controller[0xAA], controller[0xAB],
-				controller[0xAC],
-				controller[0xC0], controller[0xC1], controller[0xC2], controller[0xC3]);
-			// Set accumulated hits high enough to exceed any threshold
-			*reinterpret_cast<std::uint32_t*>(controller + gforce::kControllerAccumulatedHitsOffset) = 999;
-			// Set death flag
-			*(controller + gforce::kControllerDeathFlagOffset) = 1;
-			// Clear invulnerability timer
-			*reinterpret_cast<float*>(controller + gforce::kControllerInvulnTimerOffset) = 0.0f;
-			CoopRuntime::Instance().Log(
-				"[world-damage] killed entity id=%u entity=%p controller=%p\r\n",
-				packet.world_id, entity, controller);
+					const bool applied = ApplyHealthToEntity(entity, packet.hp_bits);
+					if (applied)
+					{
+						float received_health = 0.0f;
+						memcpy(&received_health, &packet.hp_bits, sizeof(received_health));
+						SetTrackedHealth(entity, received_health);
+					}
+					if (packet.event_code == 0)
+					{
+						CoopRuntime::Instance().Log(
+							"[combat] F9 sync: %s\r\n",
+							applied ? "applied" : "target unavailable");
+					}
+
 		}
 		// Hits that arrived before the local twin was linked are replayed as soon
 		// as the link exists, in order, so a kill cannot be lost to streaming.
@@ -1249,20 +1345,14 @@ namespace coop
 				it = m_pending_damage.erase(it);
 				continue;
 			}
-			{
-				BYTE* const entityBytes = static_cast<BYTE*>(entity);
-				BYTE* const handler = *reinterpret_cast<BYTE**>(entityBytes + gforce::kEntityHandlerOffset);
-				BYTE* const controller = handler ? *reinterpret_cast<BYTE**>(handler + gforce::kHandlerControllerOffset) : NULL;
-				if (controller)
+				const bool applied = ApplyHealthToEntity(entity, it->hp_bits);
+				if (applied)
 				{
-					*reinterpret_cast<std::uint32_t*>(controller + gforce::kControllerAccumulatedHitsOffset) = 999;
-					*(controller + gforce::kControllerDeathFlagOffset) = 1;
-					*reinterpret_cast<float*>(controller + gforce::kControllerInvulnTimerOffset) = 0.0f;
-					CoopRuntime::Instance().Log(
-						"[world-damage] killed deferred entity id=%u entity=%p\r\n",
-						it->world_id, entity);
+					float received_health = 0.0f;
+					memcpy(&received_health, &it->hp_bits, sizeof(received_health));
+					SetTrackedHealth(entity, received_health);
 				}
-			}
+
 			it = m_pending_damage.erase(it);
 		}
 	}
@@ -1284,24 +1374,34 @@ namespace coop
 
 	void WorldSync::DebugKillNearest()
 	{
+		constexpr float kDebugKillRange = 6.0f;
+		constexpr float kDebugKillRangeSq = kDebugKillRange * kDebugKillRange;
+
 		static DWORD last_kill_tick = 0;
 		const DWORD now = GetTickCount();
 		if (last_kill_tick != 0 && now - last_kill_tick < 500)
 			return;
 		last_kill_tick = now;
 
-		BYTE* p1 = static_cast<BYTE*>(
-			reinterpret_cast<void**>(gforce::kGPigEntityArray)[1]);
+		// The native NPC/monster registry also contains player-controlled objects
+		// in some modes.  P1 is necessarily at zero distance from itself; Darwin
+		// may be co-located as well.  Neither is a valid F9 target.
+		void* const p1 = reinterpret_cast<void**>(gforce::kGPigEntityArray)[1];
+		void* const p2 = reinterpret_cast<void**>(gforce::kGPigEntityArray)[2];
+		void* const p3 = reinterpret_cast<void**>(gforce::kGPigEntityArray)[3];
+		void* const darwin = *reinterpret_cast<void**>(gforce::kFlyEntity);
 		if (!p1)
 		{
 			CoopRuntime::Instance().Log("[debug-kill] P1 not found\r\n");
 			return;
 		}
 		float p1_pos[4] = {};
-		memcpy(p1_pos, p1 + gforce::kEntityPositionOffset, sizeof(p1_pos));
+		memcpy(p1_pos, static_cast<const BYTE*>(p1) +
+			gforce::kEntityPositionOffset, sizeof(p1_pos));
 
 		void* best_entity = NULL;
-		float best_dist_sq = 1.0e12f;
+		const BYTE* best_trigger = NULL;
+		float best_dist_sq = kDebugKillRangeSq;
 		__try
 		{
 			BYTE* const registry = *reinterpret_cast<BYTE**>(gforce::kEntityRegistry);
@@ -1317,23 +1417,38 @@ namespace coop
 				for (size_t visited = 0; node && visited != kWorldRegistryWalkLimit;
 					++visited)
 				{
-					void* entity = *reinterpret_cast<void**>(
+					void* const entity = *reinterpret_cast<void**>(
 						node + gforce::kIntrusiveListValueOffset);
 					node = *reinterpret_cast<BYTE**>(
 						node + gforce::kIntrusiveListNextOffset);
-					if (!entity || !IsLiveEntity(entity))
+					if (!entity || entity == p1 || entity == p2 || entity == p3 ||
+						entity == darwin || !IsLiveEntity(entity))
+					{
 						continue;
-					const BYTE* bytes = static_cast<const BYTE*>(entity);
-					float pos[4];
+					}
+
+					const BYTE* const bytes = static_cast<const BYTE*>(entity);
+					const BYTE* const trigger = *reinterpret_cast<const BYTE* const*>(
+						bytes + gforce::kEntityTriggerOffset);
+					// Do not rely only on the registry list: it can contain helper/player
+					// objects.  A genuine target must own a supported enemy trigger.
+					if (!trigger || !IsSupportedFamily(*reinterpret_cast<const std::uint32_t*>(
+						trigger + gforce::kTriggerFamilyOffset)))
+					{
+						continue;
+					}
+
+					float pos[4] = {};
 					memcpy(pos, bytes + gforce::kEntityPositionOffset, sizeof(pos));
 					const float dx = pos[0] - p1_pos[0];
 					const float dy = pos[1] - p1_pos[1];
 					const float dz = pos[2] - p1_pos[2];
 					const float dist_sq = dx * dx + dy * dy + dz * dz;
-					if (dist_sq < best_dist_sq)
+					if (dist_sq <= best_dist_sq)
 					{
 						best_dist_sq = dist_sq;
 						best_entity = entity;
+						best_trigger = trigger;
 					}
 				}
 			}
@@ -1344,36 +1459,35 @@ namespace coop
 			return;
 		}
 
-		if (!best_entity)
+		if (!best_entity || !best_trigger)
 		{
-			CoopRuntime::Instance().Log("[debug-kill] no live NPC found\r\n");
+			CoopRuntime::Instance().Log(
+				"[combat] F9: no enemy within %.1f units\r\n", kDebugKillRange);
 			return;
 		}
 
-		BYTE* handler = *reinterpret_cast<BYTE**>(
+		BYTE* const handler = *reinterpret_cast<BYTE**>(
 			static_cast<BYTE*>(best_entity) + gforce::kEntityHandlerOffset);
-		BYTE* controller = handler ? *reinterpret_cast<BYTE**>(
-			handler + gforce::kHandlerControllerOffset) : NULL;
-		CoopRuntime::Instance().Log(
-			"[debug-kill] target=%p dist=%.2f handler=%p controller=%p\r\n",
-			best_entity, sqrtf(best_dist_sq), handler, controller);
-		if (!controller)
+		if (!handler)
+		{
+			CoopRuntime::Instance().Log("[combat] F9: target has no combat state\r\n");
 			return;
+		}
 		__try
 		{
-			// Same kill state the remote-damage path applies: overflow hit count,
-			// raise the death flag and drop any invulnerability timer.
-			*reinterpret_cast<std::uint32_t*>(controller +
-				gforce::kControllerAccumulatedHitsOffset) = 999;
-			*(controller + gforce::kControllerDeathFlagOffset) = 1;
-			*reinterpret_cast<float*>(controller +
-				gforce::kControllerInvulnTimerOffset) = 0.0f;
+			const float hp_before = *reinterpret_cast<const float*>(handler +
+				gforce::kHandlerHealthOffset);
+			*reinterpret_cast<float*>(handler + gforce::kHandlerHealthOffset) = 0.0f;
+			SetTrackedHealth(best_entity, 0.0f);
+			const bool queued_for_peer = ReportLocalDamage(best_entity, 0);
 			CoopRuntime::Instance().Log(
-				"[debug-kill] killed nearest entity %p\r\n", best_entity);
+				"[combat] F9: enemy %.1f units away, HP %.0f -> 0, killed; sync=%s\r\n",
+				sqrtf(best_dist_sq), hp_before,
+				queued_for_peer ? "queued" : "not-linked");
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
-			CoopRuntime::Instance().Log("[debug-kill] kill faulted\r\n");
+			CoopRuntime::Instance().Log("[combat] F9: could not damage target\r\n");
 		}
 	}
 
@@ -1460,11 +1574,9 @@ namespace coop
 			}
 			const WorldDamagePacket* const packet =
 				static_cast<const WorldDamagePacket*>(data);
-			if (!packet->world_id || !packet->amount)
+			if (!packet->world_id)
 				return true;
-			CoopRuntime::Instance().Log(
-				"[world-damage] received id=%u event=%d\r\n",
-				packet->world_id, packet->event_code);
+
 			AcquireSRWLockExclusive(&m_damage_lock);
 			if (m_incoming_damage.size() < kMaxPendingWorldPackets)
 				m_incoming_damage.push_back(*packet);
@@ -1472,27 +1584,11 @@ namespace coop
 			return true;
 		}
 
-		// Host -> client despawn notification (client-only reception).
+		// Legacy world-despawn never destroyed the native client object; it only
+		// removed its mapping and could race the final HP=0 packet.  Ignore it until
+		// a verified native removal entry point is mapped.
 		if (header->m_PacketID == kCoopPacketWorldDespawn)
-		{
-			if (size != sizeof(WorldSync::WorldDespawnPacket) || header->m_CompressSize != 0 ||
-				header->Size() != size)
-			{
-				return true;
-			}
-			const WorldDespawnPacket* const packet =
-				static_cast<const WorldDespawnPacket*>(data);
-			if (!packet->world_id)
-				return true;
-			CoopRuntime::Instance().Log(
-				"[world-despawn] received id=%u\r\n",
-				packet->world_id);
-			AcquireSRWLockExclusive(&m_packet_lock);
-			if (m_incoming_despawns.size() < kMaxPendingWorldPackets)
-				m_incoming_despawns.push_back(*packet);
-			ReleaseSRWLockExclusive(&m_packet_lock);
 			return true;
-		}
 
 		if (!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
 		{

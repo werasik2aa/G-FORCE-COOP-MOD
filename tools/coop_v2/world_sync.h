@@ -45,10 +45,9 @@ namespace coop
 		// Host-only: queues one reliable trigger-event packet for the client.
 		void QueueHostTriggerEvent(const TriggerKey& key, int event_code,
 			int result);
-		// Game-thread: the local player damaged a world-linked entity.  Broadcasts
-		// a reliable damage packet; both roles may call this.
-		void ReportLocalDamage(void* entity, std::uint32_t amount,
-			int event_code);
+		// Game-thread: publishes the entity's current absolute HP through a reliable
+		// packet.  Both roles may call this after a local hit or HP change.
+		bool ReportLocalDamage(void* entity, int event_code);
 		// Returns the world id of a linked entity, or zero when untracked.
 		std::uint32_t WorldIdOfEntity(void* entity) const;
 		// Returns the live entity currently bound to a native trigger object.
@@ -109,7 +108,9 @@ namespace coop
 		struct WorldDamagePacket : PacketHeader
 		{
 			std::uint32_t world_id;
-			std::uint32_t amount;
+			// IEEE-754 bits of the source entity's post-hit HP.  The layout remains
+			// 32 bytes, so both peers must use the same DLL revision.
+			std::uint32_t hp_bits;
 			std::int32_t event_code;
 		};
 
@@ -156,8 +157,10 @@ namespace coop
 			std::uint32_t world_id;
 			float last_position[4];
 			float last_rotation[4];
+			float last_health;
 			bool announced;
 			bool have_transform;
+			bool have_health;
 		};
 
 		struct ClientEntity
@@ -177,6 +180,8 @@ namespace coop
 			float blend_start_rotation[4];
 			DWORD blend_started_tick;
 			DWORD blend_duration_ms;
+			float last_health;
+			bool have_health;
 		};
 
 		struct PendingSpawn
@@ -194,12 +199,17 @@ namespace coop
 		bool IsSupportedFamily(std::uint32_t family) const;
 		bool ReadEntityTransform(void* entity, float position[4],
 			float rotation[4]) const;
+		bool ReadEntityHealth(void* entity, float& health) const;
 		bool IsLiveEntity(void* entity) const;
 		void EnumerateHostEntities();
 		void EnumerateClientEntities();
 		void ProcessClientPackets();
 		void ResolvePendingSpawns();
 		void ApplyIncomingDamage();
+		void DetectLocalHealthChanges();
+		void SetTrackedHealth(void* entity, float health);
+		// Applies an incoming packet's authoritative HP to the matching local entity.
+		bool ApplyHealthToEntity(void* entity, std::uint32_t hp_bits) const;
 		// SEH-isolated: the native dispatcher may fault on a dying entity.
 		static void ApplyOneHit(void* trigger, std::uint32_t amount,
 			std::uint32_t world_id, int event_code);
@@ -229,14 +239,13 @@ namespace coop
 		void HandleIncomingDespawn(const WorldDespawnPacket& packet);
 
 	public:
-		// F9 debug: kills the live NPC/monster nearest to P1 by setting the same
-		// controller death state the remote-damage path uses.  Diagnostic tool.
+		// F9 debug: kills the nearest live NPC/monster close to P1.
 		void DebugKillNearest();
 
 		struct PendingDamage
 		{
 			std::uint32_t world_id;
-			std::uint32_t amount;
+			std::uint32_t hp_bits;
 			std::int32_t event_code;
 		};
 

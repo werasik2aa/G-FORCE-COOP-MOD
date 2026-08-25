@@ -1455,20 +1455,12 @@ namespace coop
 				key.occurrence = WorldSync::Instance().HostOccurrence(trigger);
 				WorldSync::Instance().QueueHostTriggerEvent(key, event_code, result);
 			}
-			const unsigned sequence = static_cast<unsigned>(
-				InterlockedIncrement(&m_trigger_event_sequence));
 			// A gameplay event on a world-linked entity (a whip hit, a shot) is the
-			// damage channel: forward it so the peer replays the same hit locally.
+			// damage channel: forward one confirmed hit to the peer.
 			void* const linked_entity = WorldSync::Instance().EntityOfTrigger(
 				trigger);
 			if (linked_entity)
-				WorldSync::Instance().ReportLocalDamage(linked_entity, 1,
-					event_code);
-			CoopRuntime::Instance().Log(
-				"[world-trigger-event] seq=%u role=%s trigger=%p family=0x%08X subtype=0x%08X def=%d event=%d/0x%04X result=%d\r\n",
-				sequence, IsHost() ? "host" : "client", trigger, family, subtype,
-				definition_id, event_code, static_cast<unsigned>(event_code) & 0xFFFFu,
-				result);
+				WorldSync::Instance().ReportLocalDamage(linked_entity, event_code);
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
@@ -1512,13 +1504,8 @@ namespace coop
 	{
 		if (!trigger || !m_original_trigger_event)
 			return;
-		// The stock dispatcher routes the hit into the entity's own damage state
-		// machine; the amount word rides along for logging until a per-amount
-		// entry point is mapped.
-		CoopRuntime::Instance().Log(
-			"[world-damage] applying remote hit id=%u event=%d/0x%04X trigger=%p\r\n",
-			world_id, event_code, static_cast<unsigned>(event_code) & 0xFFFFu,
-			trigger);
+		// Replay the original trigger event for local scripted side effects.  HP
+		// itself is changed by WorldSync through the confirmed handler field.
 		m_original_trigger_event(trigger, event_code);
 	}
 
