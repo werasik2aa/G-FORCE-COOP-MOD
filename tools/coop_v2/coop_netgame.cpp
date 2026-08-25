@@ -317,6 +317,11 @@ CoopNetGame::CoopNetGame() :
 	m_raw_pressed_query_hooked = false;
 	m_raw_released_query_hooked = false;
 	m_raw_held_query_hooked = false;
+	InterlockedExchange(&m_resolver_spy_idx, 0);
+	m_resolver_spy_hooked = false;
+	ZeroMemory(m_resolver_spy_buf, sizeof(m_resolver_spy_buf));
+	m_resolver_trampoline = NULL;
+	m_original_resolve_item_by_id = NULL;
 }
 
 void CoopNetGame::SetModeHost()
@@ -1086,6 +1091,17 @@ void CoopNetGame::NetworkTick()
 
 void CoopNetGame::GameTick()
 {
+	// Auto-install the ResolveItemById spy hook on first tick.
+	if (!m_resolver_spy_hooked)
+		InstallResolverSpyHook();
+
+	// Debug-kill (F9) must work even without a remote peer.
+	if ((GetAsyncKeyState(VK_F9) & 0x8000) != 0)
+	{
+		DumpResolverSpyLog();
+		WorldSync::Instance().DebugKillNearest();
+	}
+
 	if (!HasRemotePeer())
 		return;
 	// Runs after P1's native controller tick.  It is the only place WorldSync
@@ -1590,6 +1606,13 @@ void CoopNetGame::HandleWeaponAmmoConsume(void* weapon_record)
 		CoopRuntime::Instance().Log(
 			"[p2-ammo-error] unable to restore post-shot ammunition\r\n");
 	}
+}
+
+int CoopNetGame::CallNativeTriggerEvent(void* trigger, int event_code)
+{
+	if (!m_original_trigger_event || !trigger)
+		return 0;
+	return m_original_trigger_event(trigger, event_code);
 }
 
 bool CoopNetGame::GetActiveRemoteWeaponType(uint32_t& weapon_type) const
@@ -3141,4 +3164,94 @@ void CoopNetGame::RemoveInputHook()
 	m_async_key_state_iat_slot = NULL;
 	m_original_get_async_key_state = NULL;
 }
+
+// ===== sub_472B00 (ResolveItemById) spy hook =====
+
+void* __cdecl CoopNetGame::HookResolveItemById(std::uint32_t arg)
+{
+	auto& self = Instance();
+	const void* ret_addr = _ReturnAddress();
+
+	void* result = NULL;
+	if (self.m_original_resolve_item_by_id)
+		result = self.m_original_resolve_item_by_id(arg);
+
+	const LONG idx = InterlockedIncrement(&self.m_resolver_spy_idx) - 1;
+	const int slot = idx % kResolverSpyCapacity;
+	self.m_resolver_spy_buf[slot].caller_ret_addr =
+		const_cast<void*>(ret_addr);
+	self.m_resolver_spy_buf[slot].input = arg;
+	self.m_resolver_spy_buf[slot].output =
+		reinterpret_cast<std::uint32_t>(result);
+
+	return result;
+}
+
+bool CoopNetGame::InstallResolverSpyHook()
+{
+	if (m_resolver_spy_hooked)
+		return true;
+
+	const BYTE expected[] = {
+		0x8B, 0x44, 0x24, 0x04,  // mov eax, [esp+4]
+		0x50,                      // push eax
+		0xE8, 0x86, 0xE3, 0xFF, 0xFF  // call <real>
+	};
+
+	if (!InstallJmpHookRaw(kResolveItemByIdAddr, expected,
+		sizeof(expected),
+		reinterpret_cast<void*>(&HookResolveItemById),
+		m_original_resolver_bytes, &m_resolver_trampoline,
+		"ResolveItemById spy"))
+		return false;
+
+	m_original_resolve_item_by_id =
+		reinterpret_cast<ResolveItemByIdFn>(m_resolver_trampoline);
+	m_resolver_spy_hooked = true;
+	InterlockedExchange(&m_resolver_spy_idx, 0);
+	CoopRuntime::Instance().Log(
+		"[netgame] ResolveItemById spy hook installed\r\n");
+	return true;
+}
+
+void CoopNetGame::RemoveResolverSpyHook()
+{
+	if (!m_resolver_spy_hooked)
+		return;
+	RemoveJmpHookRaw(kResolveItemByIdAddr, m_original_resolver_bytes,
+		sizeof(m_original_resolver_bytes), &m_resolver_trampoline);
+	m_original_resolve_item_by_id = NULL;
+	m_resolver_spy_hooked = false;
+	CoopRuntime::Instance().Log(
+		"[netgame] ResolveItemById spy hook removed\r\n");
+}
+
+void CoopNetGame::DumpResolverSpyLog()
+{
+	const LONG total = m_resolver_spy_idx;
+	const int count = (total < kResolverSpyCapacity)
+		? static_cast<int>(total) : kResolverSpyCapacity;
+	if (count == 0)
+	{
+		CoopRuntime::Instance().Log(
+			"[resolver-spy] no calls logged\r\n");
+		return;
+	}
+
+	CoopRuntime::Instance().Log(
+		"[resolver-spy] === last %d calls (of %ld total) ===\r\n",
+		count, static_cast<long>(total));
+
+	const int start = (total < kResolverSpyCapacity)
+		? 0 : static_cast<int>(total - kResolverSpyCapacity);
+	for (int i = start; i < start + count; ++i)
+	{
+		const auto& e = m_resolver_spy_buf[i % kResolverSpyCapacity];
+		CoopRuntime::Instance().Log(
+			"[resolver-spy] [%d] caller=%p in=%08X out=%08X\r\n",
+			i - start, e.caller_ret_addr, e.input, e.output);
+	}
+	CoopRuntime::Instance().Log("[resolver-spy] === end ===\r\n");
+}
+
 }

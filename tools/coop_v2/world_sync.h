@@ -61,6 +61,8 @@ public:
 	void RecordNativeSpawn(void* trigger, void* entity, std::uint32_t family,
 		std::uint32_t subtype, std::int32_t definition_id);
 	void GameTick();
+	// F9 debug-kill — works without a remote peer.
+	void DebugKillNearest();
 	// Called from the already-installed D3D Present hook, after game simulation.
 	// A client applies the latest host sample here every rendered frame, so local
 	// AI may calculate but cannot leave a linked entity visually elsewhere.

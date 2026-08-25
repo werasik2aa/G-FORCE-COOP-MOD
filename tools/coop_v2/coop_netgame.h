@@ -78,6 +78,10 @@ public:
 	// driving the stock trigger event dispatcher.
 	void ApplyRemoteDamage(void* trigger, std::uint32_t amount,
 		std::uint32_t world_id, int event_code);
+	// Directly invokes the game's own trigger event handler (hooked 0x42FAB0)
+	// for an arbitrary trigger.  Used by WorldSync::DebugKillNearest to attempt
+	// a kill via the native event path (event_code 280 = kill).
+	int CallNativeTriggerEvent(void* trigger, int event_code);
 	bool GetActiveRemoteWeaponType(std::uint32_t& weapon_type) const;
 	bool __fastcall HandleInputActionQuery(void* input_manager,
 		void*, std::uint32_t device, std::uint32_t action,
@@ -403,5 +407,26 @@ private:
 	std::uint8_t m_prev_remote_fly_raw_release_seq[kCoopFlyRawActionCount];
 	bool m_logged_remote_p2_ammo_restore;
 	void* m_remote_p2_weapon_record;
+
+	// ---- sub_472B00 (ResolveItemById) spy hook ----
+	static constexpr std::uintptr_t kResolveItemByIdAddr = 0x00472B00u;
+	static constexpr int kResolverSpyCapacity = 128;
+	struct ResolverSpyEntry
+	{
+		void* caller_ret_addr;
+		std::uint32_t input;
+		std::uint32_t output;
+	};
+	ResolverSpyEntry m_resolver_spy_buf[kResolverSpyCapacity];
+	volatile LONG m_resolver_spy_idx;
+	bool m_resolver_spy_hooked;
+	BYTE m_original_resolver_bytes[10];
+	BYTE* m_resolver_trampoline;
+	typedef void* (__cdecl* ResolveItemByIdFn)(std::uint32_t);
+	ResolveItemByIdFn m_original_resolve_item_by_id;
+	bool InstallResolverSpyHook();
+	void RemoveResolverSpyHook();
+	void DumpResolverSpyLog();
+	static void* __cdecl HookResolveItemById(std::uint32_t arg);
 };
 }

@@ -123,6 +123,10 @@ constexpr size_t kAmmoEntryCurrentOffset = 0x0Cu;
 constexpr size_t kEntityHandlerOffset = 0x144u;
 constexpr size_t kEntityRotationOffset = 0xC8u;
 constexpr size_t kEntityPositionOffset = 0xE8u;
+// Entity reference slot used by sub_472B00 resolver; found in ammo trace at
+// 0x5B8A1A where a hit-result entity's [edi+0x658] is passed to sub_472B00
+// to obtain the target entity for distance checks.
+constexpr size_t kEntityResolverSlotOffset = 0x658u;
 // Live NPC/monster entity -> source trigger.  The trigger retains the exact
 // map archetype and spawn data, so cloning it is safer than guessing a subtype
 // from the very large factory switch at 0x423830.
@@ -143,6 +147,9 @@ constexpr size_t kTriggerPositionOffset = 0xA4u;
 constexpr size_t kTriggerRotationOffset = 0xB4u;
 constexpr size_t kTriggerSpawnVtableOffset = 0x30u;
 constexpr size_t kTriggerCloneVtableOffset = 0x3Cu;
+// Trigger reference slot used by sub_472B00 resolver; found at line 6728 of
+// ida_trace_npc.txt where trigger[90] = *(trigger + 0x168) is resolved.
+constexpr size_t kTriggerResolverSlotOffset = 0x168u;
 constexpr uint32_t kMonsterTriggerFamily = 0x1E000002u;
 constexpr uint32_t kNpcTriggerFamily = 0x1E00000Cu;
 constexpr uint32_t kTriggerHasSpawnDefinition = 0x04000000u;
