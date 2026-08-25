@@ -1282,6 +1282,101 @@ namespace coop
 		}
 	}
 
+	void WorldSync::DebugKillNearest()
+	{
+		static DWORD last_kill_tick = 0;
+		const DWORD now = GetTickCount();
+		if (last_kill_tick != 0 && now - last_kill_tick < 500)
+			return;
+		last_kill_tick = now;
+
+		BYTE* p1 = static_cast<BYTE*>(
+			reinterpret_cast<void**>(gforce::kGPigEntityArray)[1]);
+		if (!p1)
+		{
+			CoopRuntime::Instance().Log("[debug-kill] P1 not found\r\n");
+			return;
+		}
+		float p1_pos[4] = {};
+		memcpy(p1_pos, p1 + gforce::kEntityPositionOffset, sizeof(p1_pos));
+
+		void* best_entity = NULL;
+		float best_dist_sq = 1.0e12f;
+		__try
+		{
+			BYTE* const registry = *reinterpret_cast<BYTE**>(gforce::kEntityRegistry);
+			const size_t list_offsets[] = {
+				gforce::kEntityRegistryMonsterListOffset,
+				gforce::kEntityRegistryNpcListOffset
+			};
+			for (size_t list_index = 0; registry &&
+				list_index != _countof(list_offsets); ++list_index)
+			{
+				BYTE* node = *reinterpret_cast<BYTE**>(
+					registry + list_offsets[list_index]);
+				for (size_t visited = 0; node && visited != kWorldRegistryWalkLimit;
+					++visited)
+				{
+					void* entity = *reinterpret_cast<void**>(
+						node + gforce::kIntrusiveListValueOffset);
+					node = *reinterpret_cast<BYTE**>(
+						node + gforce::kIntrusiveListNextOffset);
+					if (!entity || !IsLiveEntity(entity))
+						continue;
+					const BYTE* bytes = static_cast<const BYTE*>(entity);
+					float pos[4];
+					memcpy(pos, bytes + gforce::kEntityPositionOffset, sizeof(pos));
+					const float dx = pos[0] - p1_pos[0];
+					const float dy = pos[1] - p1_pos[1];
+					const float dz = pos[2] - p1_pos[2];
+					const float dist_sq = dx * dx + dy * dy + dz * dz;
+					if (dist_sq < best_dist_sq)
+					{
+						best_dist_sq = dist_sq;
+						best_entity = entity;
+					}
+				}
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log("[debug-kill] scan faulted\r\n");
+			return;
+		}
+
+		if (!best_entity)
+		{
+			CoopRuntime::Instance().Log("[debug-kill] no live NPC found\r\n");
+			return;
+		}
+
+		BYTE* handler = *reinterpret_cast<BYTE**>(
+			static_cast<BYTE*>(best_entity) + gforce::kEntityHandlerOffset);
+		BYTE* controller = handler ? *reinterpret_cast<BYTE**>(
+			handler + gforce::kHandlerControllerOffset) : NULL;
+		CoopRuntime::Instance().Log(
+			"[debug-kill] target=%p dist=%.2f handler=%p controller=%p\r\n",
+			best_entity, sqrtf(best_dist_sq), handler, controller);
+		if (!controller)
+			return;
+		__try
+		{
+			// Same kill state the remote-damage path applies: overflow hit count,
+			// raise the death flag and drop any invulnerability timer.
+			*reinterpret_cast<std::uint32_t*>(controller +
+				gforce::kControllerAccumulatedHitsOffset) = 999;
+			*(controller + gforce::kControllerDeathFlagOffset) = 1;
+			*reinterpret_cast<float*>(controller +
+				gforce::kControllerInvulnTimerOffset) = 0.0f;
+			CoopRuntime::Instance().Log(
+				"[debug-kill] killed nearest entity %p\r\n", best_entity);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log("[debug-kill] kill faulted\r\n");
+		}
+	}
+
 	// Client-side: processes a despawn packet by removing the entity from tracking.
 	void WorldSync::HandleIncomingDespawn(const WorldDespawnPacket& packet)
 	{

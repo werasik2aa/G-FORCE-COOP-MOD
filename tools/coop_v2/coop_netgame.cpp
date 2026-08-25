@@ -1086,6 +1086,10 @@ namespace coop
 
 	void CoopNetGame::GameTick()
 	{
+		// F9 debug-kill must work even without a remote peer.
+		if ((GetAsyncKeyState(VK_F9) & 0x8000) != 0)
+			WorldSync::Instance().DebugKillNearest();
+
 		if (!HasRemotePeer())
 			return;
 		// Runs after P1's native controller tick.  It is the only place WorldSync
@@ -1899,6 +1903,14 @@ namespace coop
 			// The same Fire action drives both Darwin weapons and Mooch.  While the
 			// sender owns Mooch, reserve Fire for Fly_Scan's explicit call-site below;
 			// feeding it into P2 here makes the remote Darwin attack at the same time.
+			// The Fly_Scan fire path (0x5B6B0C) polls 0x488A70 with this return
+			// address on both threads, so serve the remote laser trigger there too.
+			if (action == kFireActionId && IsRemoteFlyControlled() &&
+				reinterpret_cast<std::uintptr_t>(_ReturnAddress()) ==
+				kFlyScanFireActionQueryReturn)
+			{
+				return GetRemoteFlyFireAction();
+			}
 			if (action == kFireActionId && IsRemoteFlyControlled())
 				return false;
 			return GetActiveRemoteAction(action);

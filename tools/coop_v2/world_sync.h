@@ -228,6 +228,11 @@ namespace coop
 		// Client-side: handles incoming despawn packet.
 		void HandleIncomingDespawn(const WorldDespawnPacket& packet);
 
+	public:
+		// F9 debug: kills the live NPC/monster nearest to P1 by setting the same
+		// controller death state the remote-damage path uses.  Diagnostic tool.
+		void DebugKillNearest();
+
 		struct PendingDamage
 		{
 			std::uint32_t world_id;
