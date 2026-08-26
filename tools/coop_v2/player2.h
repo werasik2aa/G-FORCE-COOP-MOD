@@ -103,8 +103,9 @@ private:
 	// packet input, but must not occupy the one exclusive Default ownership bit
 	// that the stock single-player Mooch hand-off needs for P1.
 	void ConfigurePlayer2DefaultMode(void* controller);
-	void UpdateController(void* controller);
-	void* SpawnGPig(const Vec4* position, const Vec4* rotation,
+			void UpdateController(void* controller);
+		bool RunStockControllerUpdate(void* controller, const char* context);
+		void* SpawnGPig(const Vec4* position, const Vec4* rotation,
 		uint32_t gpig_id, void* context);
 	bool PatchSpawnCall(
 		uintptr_t address, const BYTE expected[5], BYTE original[5]);

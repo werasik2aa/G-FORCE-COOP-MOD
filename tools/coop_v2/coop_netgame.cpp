@@ -2,6 +2,7 @@
 
 #include "coop_runtime.h"
 #include "gforce_constants.h"
+#include "protocol/packet_view.h"
 #include "player2.h"
 #include "world_sync.h"
 #include "ServerClient/MClient.h"
@@ -377,43 +378,43 @@ namespace coop
 		CoopRuntime::Instance().Log("[netgame] remote peer disconnected\r\n");
 	}
 
-	void CoopNetGame::OnRemotePacket(
-		const void* data, std::uint32_t size)
-	{
-		if (!data || size < sizeof(CoopInputPacket))
-			return;
-		const CoopInputPacket* packet =
-			static_cast<const CoopInputPacket*>(data);
-		if (packet->m_PacketID != kCoopPacketInput ||
-			packet->Size() != sizeof(CoopInputPacket))
-			return;
+		void CoopNetGame::OnRemotePacket(
+			const void* data, std::uint32_t size)
+		{
+			const protocol::PacketView view(data, size);
+			CoopInputPacket packet = {};
+			if (view.Kind() != protocol::PacketKind::Input ||
+				!view.CopyUncompressedExact(packet))
+			{
+				return;
+							}
 
-		// This is a state buffer, not a one-frame input event.  It deliberately
-		// remains valid until a later packet replaces it, so held keys survive
-		// packet pacing and the remote controller sees a stable input state.
-		const bool remote_fly_controlled = packet->input.fly_controlled != 0 &&
-			packet->input.fly_transform_sequence != 0;
-		bool client_yielded_fly = false;
-		AcquireSRWLockExclusive(&m_input_lock);
-		m_remote_input = packet->input;
-		// Mooch is a single world object.  If both peers obtain the local hand-off
-		// in the same network window, the client yields to the host.  In all normal
-		// cases only one side has fly_controlled set, so this branch is untouched.
-		if (remote_fly_controlled && m_local_input.fly_controlled != 0 &&
-			IsClient())
-		{
-			m_local_input.fly_controlled = 0;
-			m_local_input.fly_transform_sequence = 0;
-			m_local_fly_active_seen = false;
-			client_yielded_fly = true;
+				// This is a state buffer, not a one-frame input event.  It deliberately
+			// remains valid until a later packet replaces it, so held keys survive
+			// packet pacing and the remote controller sees a stable input state.
+			const bool remote_fly_controlled = packet.input.fly_controlled != 0 &&
+				packet.input.fly_transform_sequence != 0;
+			bool client_yielded_fly = false;
+			AcquireSRWLockExclusive(&m_input_lock);
+			m_remote_input = packet.input;
+			// Mooch is a single world object.  If both peers obtain the local hand-off
+			// in the same network window, the client yields to the host.  In all normal
+			// cases only one side has fly_controlled set, so this branch is untouched.
+			if (remote_fly_controlled && m_local_input.fly_controlled != 0 &&
+				IsClient())
+			{
+				m_local_input.fly_controlled = 0;
+				m_local_input.fly_transform_sequence = 0;
+				m_local_fly_active_seen = false;
+				client_yielded_fly = true;
+			}
+			ReleaseSRWLockExclusive(&m_input_lock);
+			if (client_yielded_fly)
+			{
+				CoopRuntime::Instance().Log(
+					"[fly] simultaneous claim: client yielded Mooch to host\r\n");
+			}
 		}
-		ReleaseSRWLockExclusive(&m_input_lock);
-		if (client_yielded_fly)
-		{
-			CoopRuntime::Instance().Log(
-				"[fly] simultaneous claim: client yielded Mooch to host\r\n");
-		}
-	}
 
 	bool CoopNetGame::IsGameForeground() const
 	{
@@ -1045,10 +1046,8 @@ namespace coop
 
 	void CoopNetGame::SendLocalInput()
 	{
-		CoopInputPacket packet = {};
-		packet.m_PacketID = kCoopPacketInput;
-		packet.m_RealSize = sizeof(CoopInputPacket) - sizeof(PacketHeader);
-		packet.m_SizeOne = packet.m_RealSize;
+			CoopInputPacket packet = {};
+			protocol::InitializeFixedPacket(packet, protocol::PacketKind::Input);
 		AcquireSRWLockShared(&m_input_lock);
 		packet.input = m_local_input;
 		ReleaseSRWLockShared(&m_input_lock);
@@ -1545,9 +1544,10 @@ namespace coop
 		std::uint32_t subtype, std::int32_t definition_id,
 		std::uint32_t occurrence,
 		int event_code)
-	{
-		// The client replays a host trigger event on its own matching template.
-		// The native dispatcher is called with the recorded event code so dynamic
+		{
+			(void)occurrence;
+			// The client replays a host trigger event on its own matching template.
+			// The native dispatcher is called with the recorded event code so dynamic
 		// children (spiders) spawn through the stock path.
 		void* const template_trigger = WorldSync::Instance().FindTemplateTrigger(
 			family, subtype, definition_id);
@@ -1563,10 +1563,12 @@ namespace coop
 
 	void CoopNetGame::ApplyRemoteDamage(void* trigger, std::uint32_t amount,
 		std::uint32_t world_id, int event_code)
-	{
-		if (!trigger || !m_original_trigger_event)
-			return;
-		// Replay the original trigger event for local scripted side effects.  HP
+			{
+			(void)amount;
+			(void)world_id;
+			if (!trigger || !m_original_trigger_event)
+				return;
+			// Replay the original trigger event for local scripted side effects.  HP
 		// itself is changed by WorldSync through the confirmed handler field.
 		m_original_trigger_event(trigger, event_code);
 	}
@@ -2255,8 +2257,8 @@ namespace coop
 	{
 		if (!m_original_camera_yaw)
 			return 0.0f;
-		// Only P2's own tick is diverted.  Everything else — P1's controller, the
-		// scan/fly/mooch modes, the camera itself — keeps reading the real handler.
+		// Only P2's own tick is diverted.  Everything else вЂ” P1's controller, the
+		// scan/fly/mooch modes, the camera itself вЂ” keeps reading the real handler.
 		if (IsRemoteInputActiveOnThisThread())
 		{
 			float remote_yaw = 0.0f;
@@ -2302,54 +2304,20 @@ namespace coop
 	{
 		if (m_action_query_hooked)
 			return true;
-		BYTE* target = reinterpret_cast<BYTE*>(kInputActionQuery);
-		if (memcmp(target, kExpectedInputActionQuery,
-			sizeof(m_original_input_action_query_bytes)) != 0)
+		if (!InstallJmpHookRaw(kInputActionQuery, kExpectedInputActionQuery,
+			sizeof(kExpectedInputActionQuery),
+			reinterpret_cast<void*>(&HookInputActionQuery),
+			m_original_input_action_query_bytes, &m_input_action_trampoline,
+			"packet-backed action-query"))
 		{
-			CoopRuntime::Instance().Log(
-				"[netgame-error] action-query bytes do not match at 0x%08X\r\n",
-				static_cast<unsigned>(kInputActionQuery));
 			return false;
 		}
-
-		BYTE* trampoline = static_cast<BYTE*>(VirtualAlloc(NULL, 10,
-			MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
-		if (!trampoline)
-			return false;
-		memcpy(m_original_input_action_query_bytes, target,
-			sizeof(m_original_input_action_query_bytes));
-		memcpy(trampoline, m_original_input_action_query_bytes,
-			sizeof(m_original_input_action_query_bytes));
-		trampoline[5] = 0xE9;
-		*reinterpret_cast<int32_t*>(trampoline + 6) = static_cast<int32_t>(
-			reinterpret_cast<intptr_t>(target + 5) -
-			reinterpret_cast<intptr_t>(trampoline + 10));
-
-		BYTE patch[5] = { 0xE9, 0, 0, 0, 0 };
-		*reinterpret_cast<int32_t*>(patch + 1) = static_cast<int32_t>(
-			reinterpret_cast<intptr_t>(&HookInputActionQuery) -
-			reinterpret_cast<intptr_t>(target + sizeof(patch)));
-		DWORD old_protection = 0;
-		if (!VirtualProtect(target, sizeof(patch), PAGE_EXECUTE_READWRITE,
-			&old_protection))
-		{
-			VirtualFree(trampoline, 0, MEM_RELEASE);
-			return false;
-		}
-		memcpy(target, patch, sizeof(patch));
-		DWORD ignored = 0;
-		VirtualProtect(target, sizeof(patch), old_protection, &ignored);
-		FlushInstructionCache(GetCurrentProcess(), target, sizeof(patch));
-		m_input_action_trampoline = trampoline;
 		m_original_input_action_query =
-			reinterpret_cast<InputActionQueryFn>(trampoline);
+			reinterpret_cast<InputActionQueryFn>(m_input_action_trampoline);
 		m_action_query_hooked = true;
-		CoopRuntime::Instance().Log(
-			"[netgame] packet-backed action-query hook installed\r\n");
 		return true;
 	}
-
-	bool CoopNetGame::InstallActionUpQueryHook()
+bool CoopNetGame::InstallActionUpQueryHook()
 	{
 		if (m_action_up_query_hooked)
 			return true;
@@ -2372,128 +2340,46 @@ namespace coop
 	{
 		if (m_axis_query_hooked)
 			return true;
-		BYTE* target = reinterpret_cast<BYTE*>(kInputAxisQuery);
-		if (memcmp(target, kExpectedInputAxisQuery,
-			sizeof(m_original_input_axis_query_bytes)) != 0)
+		if (!InstallJmpHookRaw(kInputAxisQuery, kExpectedInputAxisQuery,
+			sizeof(kExpectedInputAxisQuery),
+			reinterpret_cast<void*>(&HookInputAxisQuery),
+			m_original_input_axis_query_bytes, &m_input_axis_trampoline,
+			"packet-backed motor-axis"))
 		{
-			CoopRuntime::Instance().Log(
-				"[netgame-error] axis-query bytes do not match at 0x%08X\r\n",
-				static_cast<unsigned>(kInputAxisQuery));
 			return false;
 		}
-
-		BYTE* trampoline = static_cast<BYTE*>(VirtualAlloc(NULL, 10,
-			MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
-		if (!trampoline)
-			return false;
-		memcpy(m_original_input_axis_query_bytes, target,
-			sizeof(m_original_input_axis_query_bytes));
-		memcpy(trampoline, m_original_input_axis_query_bytes,
-			sizeof(m_original_input_axis_query_bytes));
-		trampoline[5] = 0xE9;
-		*reinterpret_cast<int32_t*>(trampoline + 6) = static_cast<int32_t>(
-			reinterpret_cast<intptr_t>(target + 5) -
-			reinterpret_cast<intptr_t>(trampoline + 10));
-
-		BYTE patch[5] = { 0xE9, 0, 0, 0, 0 };
-		*reinterpret_cast<int32_t*>(patch + 1) = static_cast<int32_t>(
-			reinterpret_cast<intptr_t>(&HookInputAxisQuery) -
-			reinterpret_cast<intptr_t>(target + sizeof(patch)));
-		DWORD old_protection = 0;
-		if (!VirtualProtect(target, sizeof(patch), PAGE_EXECUTE_READWRITE,
-			&old_protection))
-		{
-			VirtualFree(trampoline, 0, MEM_RELEASE);
-			return false;
-		}
-		memcpy(target, patch, sizeof(patch));
-		DWORD ignored = 0;
-		VirtualProtect(target, sizeof(patch), old_protection, &ignored);
-		FlushInstructionCache(GetCurrentProcess(), target, sizeof(patch));
-		m_input_axis_trampoline = trampoline;
-		m_original_input_axis_query = reinterpret_cast<InputAxisQueryFn>(trampoline);
+		m_original_input_axis_query =
+			reinterpret_cast<InputAxisQueryFn>(m_input_axis_trampoline);
 		m_axis_query_hooked = true;
-		CoopRuntime::Instance().Log(
-			"[netgame] packet-backed motor-axis hook installed\r\n");
 		return true;
 	}
-
-	bool CoopNetGame::InstallThresholdQueryHook()
+bool CoopNetGame::InstallThresholdQueryHook()
 	{
 		if (m_threshold_query_hooked)
 			return true;
-		BYTE* target = reinterpret_cast<BYTE*>(kInputThresholdQuery);
-		if (memcmp(target, kExpectedInputThresholdQuery,
-			sizeof(m_original_input_threshold_query_bytes)) != 0)
+		if (!InstallJmpHookRaw(kInputThresholdQuery, kExpectedInputThresholdQuery,
+			sizeof(kExpectedInputThresholdQuery),
+			reinterpret_cast<void*>(&HookInputThresholdQuery),
+			m_original_input_threshold_query_bytes, &m_input_threshold_trampoline,
+			"packet-backed threshold-query"))
 		{
-			CoopRuntime::Instance().Log(
-				"[netgame-error] threshold-query bytes do not match at 0x%08X\r\n",
-				static_cast<unsigned>(kInputThresholdQuery));
 			return false;
 		}
-
-		BYTE* trampoline = static_cast<BYTE*>(VirtualAlloc(NULL, 10,
-			MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
-		if (!trampoline)
-			return false;
-		memcpy(m_original_input_threshold_query_bytes, target,
-			sizeof(m_original_input_threshold_query_bytes));
-		memcpy(trampoline, m_original_input_threshold_query_bytes,
-			sizeof(m_original_input_threshold_query_bytes));
-		trampoline[5] = 0xE9;
-		*reinterpret_cast<int32_t*>(trampoline + 6) = static_cast<int32_t>(
-			reinterpret_cast<intptr_t>(target + 5) -
-			reinterpret_cast<intptr_t>(trampoline + 10));
-
-		BYTE patch[5] = { 0xE9, 0, 0, 0, 0 };
-		*reinterpret_cast<int32_t*>(patch + 1) = static_cast<int32_t>(
-			reinterpret_cast<intptr_t>(&HookInputThresholdQuery) -
-			reinterpret_cast<intptr_t>(target + sizeof(patch)));
-		DWORD old_protection = 0;
-		if (!VirtualProtect(target, sizeof(patch), PAGE_EXECUTE_READWRITE,
-			&old_protection))
-		{
-			VirtualFree(trampoline, 0, MEM_RELEASE);
-			return false;
-		}
-		memcpy(target, patch, sizeof(patch));
-		DWORD ignored = 0;
-		VirtualProtect(target, sizeof(patch), old_protection, &ignored);
-		FlushInstructionCache(GetCurrentProcess(), target, sizeof(patch));
-		m_input_threshold_trampoline = trampoline;
 		m_original_input_threshold_query =
-			reinterpret_cast<InputThresholdQueryFn>(trampoline);
+			reinterpret_cast<InputThresholdQueryFn>(m_input_threshold_trampoline);
 		m_threshold_query_hooked = true;
-		CoopRuntime::Instance().Log(
-			"[netgame] packet-backed threshold-query hook installed\r\n");
 		return true;
 	}
-
-	void CoopNetGame::RemoveActionQueryHook()
+void CoopNetGame::RemoveActionQueryHook()
 	{
 		if (!m_action_query_hooked)
 			return;
-		BYTE* target = reinterpret_cast<BYTE*>(kInputActionQuery);
-		DWORD old_protection = 0;
-		if (VirtualProtect(target, sizeof(m_original_input_action_query_bytes),
-			PAGE_EXECUTE_READWRITE, &old_protection))
-		{
-			memcpy(target, m_original_input_action_query_bytes,
-				sizeof(m_original_input_action_query_bytes));
-			DWORD ignored = 0;
-			VirtualProtect(target, sizeof(m_original_input_action_query_bytes),
-				old_protection, &ignored);
-			FlushInstructionCache(GetCurrentProcess(), target,
-				sizeof(m_original_input_action_query_bytes));
-		}
-		if (m_input_action_trampoline)
-			VirtualFree(m_input_action_trampoline, 0, MEM_RELEASE);
-		m_input_action_trampoline = NULL;
+		RemoveJmpHookRaw(kInputActionQuery, m_original_input_action_query_bytes,
+			sizeof(m_original_input_action_query_bytes), &m_input_action_trampoline);
 		m_original_input_action_query = NULL;
 		m_action_query_hooked = false;
 	}
-
-	void CoopNetGame::RemoveActionUpQueryHook()
+void CoopNetGame::RemoveActionUpQueryHook()
 	{
 		if (!m_action_up_query_hooked)
 			return;
@@ -2509,51 +2395,22 @@ namespace coop
 	{
 		if (!m_threshold_query_hooked)
 			return;
-		BYTE* target = reinterpret_cast<BYTE*>(kInputThresholdQuery);
-		DWORD old_protection = 0;
-		if (VirtualProtect(target, sizeof(m_original_input_threshold_query_bytes),
-			PAGE_EXECUTE_READWRITE, &old_protection))
-		{
-			memcpy(target, m_original_input_threshold_query_bytes,
-				sizeof(m_original_input_threshold_query_bytes));
-			DWORD ignored = 0;
-			VirtualProtect(target, sizeof(m_original_input_threshold_query_bytes),
-				old_protection, &ignored);
-			FlushInstructionCache(GetCurrentProcess(), target,
-				sizeof(m_original_input_threshold_query_bytes));
-		}
-		if (m_input_threshold_trampoline)
-			VirtualFree(m_input_threshold_trampoline, 0, MEM_RELEASE);
-		m_input_threshold_trampoline = NULL;
+		RemoveJmpHookRaw(kInputThresholdQuery, m_original_input_threshold_query_bytes,
+			sizeof(m_original_input_threshold_query_bytes),
+			&m_input_threshold_trampoline);
 		m_original_input_threshold_query = NULL;
 		m_threshold_query_hooked = false;
 	}
-
-	void CoopNetGame::RemoveAxisQueryHook()
+void CoopNetGame::RemoveAxisQueryHook()
 	{
 		if (!m_axis_query_hooked)
 			return;
-		BYTE* target = reinterpret_cast<BYTE*>(kInputAxisQuery);
-		DWORD old_protection = 0;
-		if (VirtualProtect(target, sizeof(m_original_input_axis_query_bytes),
-			PAGE_EXECUTE_READWRITE, &old_protection))
-		{
-			memcpy(target, m_original_input_axis_query_bytes,
-				sizeof(m_original_input_axis_query_bytes));
-			DWORD ignored = 0;
-			VirtualProtect(target, sizeof(m_original_input_axis_query_bytes),
-				old_protection, &ignored);
-			FlushInstructionCache(GetCurrentProcess(), target,
-				sizeof(m_original_input_axis_query_bytes));
-		}
-		if (m_input_axis_trampoline)
-			VirtualFree(m_input_axis_trampoline, 0, MEM_RELEASE);
-		m_input_axis_trampoline = NULL;
+		RemoveJmpHookRaw(kInputAxisQuery, m_original_input_axis_query_bytes,
+			sizeof(m_original_input_axis_query_bytes), &m_input_axis_trampoline);
 		m_original_input_axis_query = NULL;
 		m_axis_query_hooked = false;
 	}
-
-	bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
+bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 		const std::uint8_t* expected, std::size_t relocate_len, void* hook,
 		BYTE* saved_bytes, BYTE** trampoline_out, const char* label)
 	{

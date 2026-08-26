@@ -4,6 +4,7 @@
 #include "../coop_netgame.h"
 #include "../save_sync.h"
 #include "../world_sync.h"
+#include "../protocol/packet_dispatch.h"
 
 #include <algorithm>
 #include <string.h>
@@ -187,22 +188,10 @@ void CSteamOfflineSocketServer::OnRemotePacket(
 		return;
 	}
 
-	if (message->m_cbSize >= sizeof(PacketHeader))
+	if (coop::protocol::DispatchInboundPacket(message->m_pData,
+		static_cast<std::uint32_t>(message->m_cbSize)))
 	{
-		const PacketHeader* hdr =
-			static_cast<const PacketHeader*>(message->m_pData);
-		if (hdr->m_PacketID == kCoopPacketInput)
-		{
-			coop::CoopNetGame::Instance().OnRemotePacket(
-				message->m_pData, static_cast<std::uint32_t>(message->m_cbSize));
-			return;
-		}
-		if (coop::SaveSync::Instance().OnRemotePacket(message->m_pData,
-			static_cast<std::uint32_t>(message->m_cbSize)))
-			return;
-		if (coop::WorldSync::Instance().OnRemotePacket(message->m_pData,
-			static_cast<std::uint32_t>(message->m_cbSize)))
-			return;
+		return;
 	}
 	Msg("[network-server] ignored unknown packet from %u: %d bytes",
 		message->m_conn, message->m_cbSize);

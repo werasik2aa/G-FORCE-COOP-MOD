@@ -1,8 +1,10 @@
-﻿#include "world_sync.h"
+#include "world_sync.h"
 
 #include "coop_netgame.h"
 #include "coop_runtime.h"
 #include "gforce_constants.h"
+#include "retail/retail_views.h"
+#include "protocol/packet_view.h"
 #include "ServerClient/MClient.h"
 #include "ServerClient/MServer.h"
 #include "ServerClient/MServerONLINE.h"
@@ -229,44 +231,29 @@ namespace coop
 		return found ? found->trigger : NULL;
 	}
 
-	bool WorldSync::ReadEntityTransform(void* entity, float position[4],
-		float rotation[4]) const
-	{
-		if (!entity || !position || !rotation)
-			return false;
-		__try
+		bool WorldSync::ReadEntityTransform(void* entity, float position[4],
+			float rotation[4]) const
 		{
-			const BYTE* const bytes = static_cast<const BYTE*>(entity);
-			memcpy(position, bytes + gforce::kEntityPositionOffset, sizeof(float) * 4);
-			memcpy(rotation, bytes + gforce::kEntityRotationOffset, sizeof(float) * 4);
+			if (!entity || !position || !rotation)
+				return false;
+
+			retail::Transform transform = {};
+			const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
+			if (!retail::EntityView(entity_ref).ReadTransform(transform))
+				return false;
+
+			memcpy(position, &transform.position, sizeof(transform.position));
+			memcpy(rotation, &transform.rotation, sizeof(transform.rotation));
 			return true;
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			return false;
-		}
-	}
 
-	bool WorldSync::ReadEntityHealth(void* entity, float& health) const
-	{
-		if (!entity)
-			return false;
-		__try
+		bool WorldSync::ReadEntityHealth(void* entity, float& health) const
 		{
-			const BYTE* const entity_bytes = static_cast<const BYTE*>(entity);
-			const BYTE* const handler = *reinterpret_cast<const BYTE* const*>(
-				entity_bytes + gforce::kEntityHandlerOffset);
-			if (!handler)
+			if (!entity)
 				return false;
-			health = *reinterpret_cast<const float*>(handler +
-				gforce::kHandlerHealthOffset);
-			return health == health && health >= 0.0f && health <= 100000.0f;
+			const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
+			return retail::EntityView(entity_ref).ReadHealth(health);
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			return false;
-		}
-	}
 
 	bool WorldSync::IsLiveEntity(void* entity) const
 	{
@@ -406,10 +393,8 @@ namespace coop
 		if (!CoopNetGame::Instance().HasRemotePeer())
 			return;
 
-		WorldSpawnPacket packet = {};
-		packet.m_PacketID = kCoopPacketWorldSpawn;
-		packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
-		packet.m_SizeOne = packet.m_RealSize;
+			WorldSpawnPacket packet = {};
+			protocol::InitializeFixedPacket(packet, protocol::PacketKind::WorldSpawn);
 		packet.world_id = entity.world_id;
 		packet.key = entity.key;
 		memcpy(packet.position, entity.last_position, sizeof(packet.position));
@@ -430,10 +415,9 @@ namespace coop
 			!CoopNetGame::Instance().HasRemotePeer())
 			return;
 
-		WorldDespawnPacket packet = {};
-		packet.m_PacketID = kCoopPacketWorldDespawn;
-		packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
-		packet.m_SizeOne = packet.m_RealSize;
+			WorldDespawnPacket packet = {};
+			protocol::InitializeFixedPacket(packet,
+				protocol::PacketKind::WorldDespawn);
 		packet.world_id = world_id;
 		AcquireSRWLockExclusive(&m_packet_lock);
 		m_outgoing_despawns.push_back(packet);
@@ -447,10 +431,9 @@ namespace coop
 	{
 		if (!entity.announced)
 			return;
-		WorldSnapshotPacket packet = {};
-		packet.m_PacketID = kCoopPacketWorldSnapshot;
-		packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
-		packet.m_SizeOne = packet.m_RealSize;
+			WorldSnapshotPacket packet = {};
+			protocol::InitializeFixedPacket(packet,
+				protocol::PacketKind::WorldSnapshot);
 		packet.world_id = entity.world_id;
 		packet.sequence = ++m_snapshot_sequence;
 		memcpy(packet.position, position, sizeof(packet.position));
@@ -470,10 +453,9 @@ namespace coop
 			!CoopNetGame::Instance().HasRemotePeer() || !key.occurrence)
 			return;
 
-		WorldTriggerEventPacket packet = {};
-		packet.m_PacketID = kCoopPacketWorldTriggerEvent;
-		packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
-		packet.m_SizeOne = packet.m_RealSize;
+			WorldTriggerEventPacket packet = {};
+			protocol::InitializeFixedPacket(packet,
+				protocol::PacketKind::WorldTriggerEvent);
 		packet.key = key;
 		packet.event_code = event_code;
 		packet.result = result;
@@ -516,10 +498,9 @@ namespace coop
 			if (!ReadEntityHealth(entity, health))
 				return false;
 
-			WorldDamagePacket packet = {};
-			packet.m_PacketID = kCoopPacketWorldDamage;
-			packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
-			packet.m_SizeOne = packet.m_RealSize;
+				WorldDamagePacket packet = {};
+				protocol::InitializeFixedPacket(packet,
+					protocol::PacketKind::WorldDamage);
 			packet.world_id = world_id;
 			memcpy(&packet.hp_bits, &health, sizeof(packet.hp_bits));
 			packet.event_code = event_code;
@@ -564,68 +545,68 @@ namespace coop
 	}
 
 		void WorldSync::ObserveLocalP1Trigger(void* trigger, bool require_p1_proximity)
-	{
-		constexpr float kTriggerProximityRange = 4.0f;
-		constexpr float kTriggerProximityRangeSq =
-			kTriggerProximityRange * kTriggerProximityRange;
-		if (!trigger || !CoopNetGame::Instance().HasRemotePeer())
-			return;
-		// The temporary P1 move deliberately makes local triggers fire.  Those
-		// effects must stay local; otherwise the receiver would echo the same pulse
-		// back and create a cross-process trigger loop.
-		if (m_remote_p1_teleport_active)
-			return;
-		// A hit event on a linked NPC is not a map proximity trigger.  Never pulse
-		// the peer's camera for ordinary combat damage.
-		if (EntityOfTrigger(trigger))
-			return;
-
-		if (std::find(m_activated_local_p1_triggers.begin(),
-			m_activated_local_p1_triggers.end(), trigger) !=
-			m_activated_local_p1_triggers.end())
 		{
-			return;
-		}
-
-		__try
-		{
-			void* const p1 = reinterpret_cast<void**>(gforce::kGPigEntityArray)[1];
-			if (!p1)
+			constexpr float kTriggerProximityRange = 4.0f;
+			constexpr float kTriggerProximityRangeSq =
+				kTriggerProximityRange * kTriggerProximityRange;
+			if (!trigger || !CoopNetGame::Instance().HasRemotePeer() ||
+				m_remote_p1_teleport_active || EntityOfTrigger(trigger))
+			{
 				return;
-			const float* const p1_position = reinterpret_cast<const float*>(
-				static_cast<const BYTE*>(p1) + gforce::kEntityPositionOffset);
-			const float* const trigger_position = reinterpret_cast<const float*>(
-				static_cast<const BYTE*>(trigger) + gforce::kTriggerPositionOffset);
-			const float dx = p1_position[0] - trigger_position[0];
-			const float dy = p1_position[1] - trigger_position[1];
-			const float dz = p1_position[2] - trigger_position[2];
+			}
+			if (std::find(m_activated_local_p1_triggers.begin(),
+				m_activated_local_p1_triggers.end(), trigger) !=
+				m_activated_local_p1_triggers.end())
+			{
+				return;
+			}
+
+			retail::PlayerRepository players;
+			retail::EntityRef local_p1 = {};
+			retail::Transform player_transform = {};
+			const retail::TriggerRef trigger_ref = { retail::ToAddress(trigger) };
+			retail::Transform trigger_transform = {};
+			if (!players.Get(retail::PlayerSlot::LocalP1, local_p1) ||
+				!retail::EntityView(local_p1).ReadTransform(player_transform) ||
+				!retail::TriggerView(trigger_ref).ReadTransform(trigger_transform))
+			{
+				CoopRuntime::Instance().Log(
+					"[trigger-p1-teleport] source trigger read fault\r\n");
+				return;
+			}
+
+			const float dx = player_transform.position.x - trigger_transform.position.x;
+			const float dy = player_transform.position.y - trigger_transform.position.y;
+			const float dz = player_transform.position.z - trigger_transform.position.z;
 			const float distance_sq = dx * dx + dy * dy + dz * dz;
 			if (require_p1_proximity && distance_sq > kTriggerProximityRangeSq)
 				return;
 
 			TriggerP1TeleportPacket packet = {};
-			packet.m_PacketID = kCoopPacketTriggerP1Teleport;
-			packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
-			packet.m_SizeOne = packet.m_RealSize;
+			protocol::InitializeFixedPacket(packet,
+				protocol::PacketKind::TriggerP1Teleport);
 			packet.sequence = ++m_trigger_p1_teleport_sequence;
-			memcpy(packet.position, trigger_position, sizeof(packet.position));
+			memcpy(packet.position, &trigger_transform.position,
+				sizeof(packet.position));
+
+			bool queued = false;
 			AcquireSRWLockExclusive(&m_packet_lock);
 			if (m_outgoing_p1_teleports.size() < kMaxPendingWorldPackets)
+			{
 				m_outgoing_p1_teleports.push_back(packet);
+				queued = true;
+			}
 			ReleaseSRWLockExclusive(&m_packet_lock);
+			if (!queued)
+				return;
+
 			m_activated_local_p1_triggers.push_back(trigger);
 			CoopRuntime::Instance().Log(
 				"[trigger-p1-teleport] queued seq=%u pos=(%.2f,%.2f,%.2f) dist=%.2f\r\n",
 				packet.sequence, packet.position[0], packet.position[1], packet.position[2],
 				sqrtf(distance_sq));
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			CoopRuntime::Instance().Log("[trigger-p1-teleport] source trigger read fault\r\n");
-		}
-	}
-
-	void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
+void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 
 		std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id)
 	{
@@ -1221,46 +1202,39 @@ namespace coop
 		ApplyPendingSnapshots();
 	}
 
-	bool WorldSync::ReadP1Transform(float position[4], float rotation[4]) const
-	{
-		if (!position || !rotation)
-			return false;
-		__try
+		bool WorldSync::ReadP1Transform(float position[4], float rotation[4]) const
 		{
-			void* const p1 = reinterpret_cast<void**>(gforce::kGPigEntityArray)[1];
-			if (!p1)
+			if (!position || !rotation)
 				return false;
-			const BYTE* const bytes = static_cast<const BYTE*>(p1);
-			memcpy(position, bytes + gforce::kEntityPositionOffset, sizeof(float) * 4);
-			memcpy(rotation, bytes + gforce::kEntityRotationOffset, sizeof(float) * 4);
-			return true;
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			return false;
-		}
-	}
 
-	bool WorldSync::WriteP1Transform(const float position[4],
-		const float rotation[4]) const
-	{
-		if (!position || !rotation)
-			return false;
-		__try
-		{
-			void* const p1 = reinterpret_cast<void**>(gforce::kGPigEntityArray)[1];
-			if (!p1)
+			retail::PlayerRepository players;
+			retail::EntityRef p1 = {};
+			retail::Transform transform = {};
+			if (!players.Get(retail::PlayerSlot::LocalP1, p1) ||
+				!retail::EntityView(p1).ReadTransform(transform))
+			{
 				return false;
-			BYTE* const bytes = static_cast<BYTE*>(p1);
-			memcpy(bytes + gforce::kEntityPositionOffset, position, sizeof(float) * 4);
-			memcpy(bytes + gforce::kEntityRotationOffset, rotation, sizeof(float) * 4);
+			}
+
+			memcpy(position, &transform.position, sizeof(transform.position));
+			memcpy(rotation, &transform.rotation, sizeof(transform.rotation));
 			return true;
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
+
+		bool WorldSync::WriteP1Transform(const float position[4],
+			const float rotation[4]) const
 		{
-			return false;
+			if (!position || !rotation)
+				return false;
+
+			retail::PlayerRepository players;
+			retail::EntityRef p1 = {};
+			retail::Transform transform = {};
+			memcpy(&transform.position, position, sizeof(transform.position));
+			memcpy(&transform.rotation, rotation, sizeof(transform.rotation));
+			return players.Get(retail::PlayerSlot::LocalP1, p1) &&
+				retail::EntityView(p1).WriteTransform(transform);
 		}
-	}
 
 	void WorldSync::ApplyPendingP1Teleports()
 	{
@@ -1421,29 +1395,15 @@ namespace coop
 		}
 	}
 
-	bool WorldSync::ApplyHealthToEntity(void* entity, std::uint32_t hp_bits) const
-	{
-		if (!entity)
-			return false;
-		float health = 0.0f;
-		memcpy(&health, &hp_bits, sizeof(health));
-		if (health != health || health < 0.0f || health > 100000.0f)
-			return false;
-		__try
+		bool WorldSync::ApplyHealthToEntity(void* entity, std::uint32_t hp_bits) const
 		{
-			BYTE* const entity_bytes = static_cast<BYTE*>(entity);
-			BYTE* const handler = *reinterpret_cast<BYTE**>(entity_bytes +
-				gforce::kEntityHandlerOffset);
-			if (!handler)
+			if (!entity)
 				return false;
-			*reinterpret_cast<float*>(handler + gforce::kHandlerHealthOffset) = health;
-			return true;
+			float health = 0.0f;
+			memcpy(&health, &hp_bits, sizeof(health));
+			const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
+			return retail::EntityView(entity_ref).SetHealth(health);
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			return false;
-		}
-	}
 
 	void WorldSync::ApplyIncomingDamage()
 	{
@@ -1834,34 +1794,13 @@ namespace coop
 		}
 	}
 
-	bool WorldSync::OnRemotePacket(const void* data, std::uint32_t size)
-	{
-		if (!data || size < sizeof(PacketHeader))
-			return false;
-		const PacketHeader* const header = static_cast<const PacketHeader*>(data);
-		if (header->m_PacketID != kCoopPacketWorldSpawn &&
-			header->m_PacketID != kCoopPacketWorldSnapshot &&
-			header->m_PacketID != kCoopPacketWorldReady &&
-						header->m_PacketID != kCoopPacketWorldTriggerEvent &&
-			header->m_PacketID != kCoopPacketWorldDamage &&
-			header->m_PacketID != kCoopPacketWorldDespawn &&
-			header->m_PacketID != kCoopPacketTriggerP1Teleport)
-
+			bool WorldSync::HandleWorldReadyPacket(const protocol::PacketView& view)
 		{
-			return false;
-		}
-
-		if (header->m_PacketID == kCoopPacketWorldReady)
-		{
-			if (size != sizeof(WorldSync::WorldReadyPacket) || header->m_CompressSize != 0 ||
-				header->Size() != size)
-			{
+			WorldReadyPacket packet = {};
+			if (!view.CopyUncompressedExact(packet))
 				return true;
-			}
-			const WorldReadyPacket* const packet =
-				static_cast<const WorldReadyPacket*>(data);
 			if (CoopNetGame::Instance().IsHost() &&
-				!CoopNetGame::Instance().IsClient() && packet->sequence != 0)
+				!CoopNetGame::Instance().IsClient() && packet.sequence != 0)
 			{
 				InterlockedExchange(&m_host_resync_requested, 1);
 				CoopRuntime::Instance().Log(
@@ -1870,115 +1809,124 @@ namespace coop
 			return true;
 		}
 
-		// Damage flows in BOTH directions: the client's hits must kill host-side
-		// mobs too.  Handle it before the client-only filter below.
-		if (header->m_PacketID == kCoopPacketWorldDamage)
+		bool WorldSync::HandleWorldDamagePacket(const protocol::PacketView& view)
 		{
-			if (size != sizeof(WorldSync::WorldDamagePacket) || header->m_CompressSize != 0 ||
-				header->Size() != size)
-			{
+			WorldDamagePacket packet = {};
+			if (!view.CopyUncompressedExact(packet) || !packet.world_id)
 				return true;
-			}
-			const WorldDamagePacket* const packet =
-				static_cast<const WorldDamagePacket*>(data);
-			if (!packet->world_id)
-				return true;
-
 			AcquireSRWLockExclusive(&m_damage_lock);
 			if (m_incoming_damage.size() < kMaxPendingWorldPackets)
-				m_incoming_damage.push_back(*packet);
+				m_incoming_damage.push_back(packet);
 			ReleaseSRWLockExclusive(&m_damage_lock);
 			return true;
 		}
 
-		if (header->m_PacketID == kCoopPacketTriggerP1Teleport)
+		bool WorldSync::HandleTriggerP1TeleportPacket(const protocol::PacketView& view)
 		{
-			if (size != sizeof(WorldSync::TriggerP1TeleportPacket) ||
-				header->m_CompressSize != 0 || header->Size() != size)
-			{
-				return true;
-			}
-			const TriggerP1TeleportPacket* const packet =
-				static_cast<const TriggerP1TeleportPacket*>(data);
-			if (!packet->sequence)
+			TriggerP1TeleportPacket packet = {};
+			if (!view.CopyUncompressedExact(packet) || !packet.sequence)
 				return true;
 			AcquireSRWLockExclusive(&m_packet_lock);
 			if (m_incoming_p1_teleports.size() < kMaxPendingWorldPackets)
-				m_incoming_p1_teleports.push_back(*packet);
+				m_incoming_p1_teleports.push_back(packet);
 			ReleaseSRWLockExclusive(&m_packet_lock);
 			return true;
 		}
 
-		// Legacy world-despawn never destroyed the native client object; it only
-		// removed its mapping and could race the final HP=0 packet.  Ignore it until
-		// a verified native removal entry point is mapped.
-		if (header->m_PacketID == kCoopPacketWorldDespawn)
-			return true;
-
-		if (!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
+		bool WorldSync::HandleWorldSpawnPacket(const protocol::PacketView& view)
 		{
-			return true;
-		}
-		if (header->m_CompressSize != 0 || header->Size() != size)
-		{
-			CoopRuntime::Instance().Log("[world-sync] rejected malformed packet\r\n");
-			return true;
-		}
-
-		if (header->m_PacketID == kCoopPacketWorldSpawn)
-		{
-			if (size != sizeof(WorldSync::WorldSpawnPacket))
+			WorldSpawnPacket packet = {};
+			if (!view.CopyUncompressedExact(packet) ||
+				!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
+			{
 				return true;
-			const WorldSpawnPacket* const packet =
-				static_cast<const WorldSpawnPacket*>(data);
-			// Dynamic spawns (definition_id == -1) have no occurrence counter;
-			// their identity is world_id alone.  Map spawns keep the old rules.
-			const bool dynamic = packet->key.definition_id < 0;
-			if (!packet->world_id || !IsSupportedFamily(packet->key.family) ||
-				(!dynamic && !packet->key.occurrence))
+			}
+
+			const bool dynamic = packet.key.definition_id < 0;
+			if (!packet.world_id || !IsSupportedFamily(packet.key.family) ||
+				(!dynamic && !packet.key.occurrence))
 			{
 				CoopRuntime::Instance().Log("[world-sync] rejected invalid spawn event\r\n");
 				return true;
 			}
+
 			AcquireSRWLockExclusive(&m_packet_lock);
 			if (m_incoming_spawns.size() < kMaxPendingWorldPackets)
-				m_incoming_spawns.push_back(*packet);
+				m_incoming_spawns.push_back(packet);
 			ReleaseSRWLockExclusive(&m_packet_lock);
 			return true;
 		}
 
-		if (header->m_PacketID == kCoopPacketWorldTriggerEvent)
+		bool WorldSync::HandleWorldTriggerEventPacket(const protocol::PacketView& view)
 		{
-			if (size != sizeof(WorldSync::WorldTriggerEventPacket))
+			WorldTriggerEventPacket packet = {};
+			if (!view.CopyUncompressedExact(packet) ||
+				!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
+			{
 				return true;
-			const WorldTriggerEventPacket* const packet =
-				static_cast<const WorldTriggerEventPacket*>(data);
-			if (!IsSupportedFamily(packet->key.family) || !packet->key.occurrence)
+			}
+			if (!IsSupportedFamily(packet.key.family) || !packet.key.occurrence)
 				return true;
+
 			CoopRuntime::Instance().Log(
 				"[world-trigger-event] client received key=%08X/%08X/%d occ=%u event=%d\r\n",
-				packet->key.family, packet->key.subtype, packet->key.definition_id,
-				packet->key.occurrence, packet->event_code);
+				packet.key.family, packet.key.subtype, packet.key.definition_id,
+				packet.key.occurrence, packet.event_code);
 			AcquireSRWLockExclusive(&m_packet_lock);
-			m_incoming_trigger_events.push_back(*packet);
+			if (m_incoming_trigger_events.size() < kMaxPendingWorldPackets)
+				m_incoming_trigger_events.push_back(packet);
 			ReleaseSRWLockExclusive(&m_packet_lock);
 			return true;
 		}
 
-		if (size != sizeof(WorldSync::WorldSnapshotPacket))
-			return true;
-		const WorldSnapshotPacket* const packet =
-			static_cast<const WorldSnapshotPacket*>(data);
-		if (!packet->world_id || !packet->sequence)
-			return true;
-		AcquireSRWLockExclusive(&m_packet_lock);
-		if (m_incoming_snapshots.size() < kMaxPendingWorldPackets)
-			m_incoming_snapshots.push_back(*packet);
-		ReleaseSRWLockExclusive(&m_packet_lock);
-		return true;
-	}
+		bool WorldSync::HandleWorldSnapshotPacket(const protocol::PacketView& view)
+		{
+			WorldSnapshotPacket packet = {};
+			if (!view.CopyUncompressedExact(packet) ||
+				!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
+			{
+				return true;
+			}
+			if (!packet.world_id || !packet.sequence)
+				return true;
 
-	void WorldSync::SendToRemote(const void* data, std::uint32_t size, int flags) const
+			AcquireSRWLockExclusive(&m_packet_lock);
+			if (m_incoming_snapshots.size() < kMaxPendingWorldPackets)
+				m_incoming_snapshots.push_back(packet);
+			ReleaseSRWLockExclusive(&m_packet_lock);
+			return true;
+		}
+
+		bool WorldSync::OnRemotePacket(const void* data, std::uint32_t size)
+		{
+			const protocol::PacketView view(data, size);
+			PacketHeader header = {};
+			if (!view.ReadHeader(header))
+				return false;
+
+			switch (view.Kind())
+			{
+			case protocol::PacketKind::WorldReady:
+				return HandleWorldReadyPacket(view);
+			case protocol::PacketKind::WorldSpawn:
+				return HandleWorldSpawnPacket(view);
+			case protocol::PacketKind::WorldSnapshot:
+				return HandleWorldSnapshotPacket(view);
+			case protocol::PacketKind::WorldTriggerEvent:
+				return HandleWorldTriggerEventPacket(view);
+			case protocol::PacketKind::WorldDamage:
+				return HandleWorldDamagePacket(view);
+			case protocol::PacketKind::TriggerP1Teleport:
+				return HandleTriggerP1TeleportPacket(view);
+			case protocol::PacketKind::WorldDespawn:
+				// Legacy despawn has no verified native destruction entry point.  Keep
+				// consuming it for wire compatibility, but do not drop a live local object.
+				return true;
+			default:
+				return false;
+			}
+		}
+void WorldSync::SendToRemote(const void* data, std::uint32_t size, int flags) const
 	{
 		if (!data || !size)
 			return;
@@ -2008,10 +1956,8 @@ namespace coop
 		if (CoopNetGame::Instance().IsClient() &&
 			InterlockedExchange(&m_client_ready_pending, 0) != 0)
 		{
-			WorldSync::WorldReadyPacket ready = {};
-			ready.m_PacketID = kCoopPacketWorldReady;
-			ready.m_RealSize = sizeof(ready) - sizeof(PacketHeader);
-			ready.m_SizeOne = ready.m_RealSize;
+				WorldSync::WorldReadyPacket ready = {};
+				protocol::InitializeFixedPacket(ready, protocol::PacketKind::WorldReady);
 			ready.sequence = ++m_client_ready_sequence;
 			SendToRemote(&ready, sizeof(ready), k_nSteamNetworkingSend_Reliable);
 			InterlockedExchange(&m_client_ready_sent, 1);

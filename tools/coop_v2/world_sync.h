@@ -6,24 +6,24 @@
 #include <cstdint>
 #include <vector>
 
-#include "ServerClient/MTypes.h"
+#include "protocol/world_packets.h"
 
 namespace coop
 {
-	// A local game pointer is meaningful only in its owning process.  WorldSync
+			namespace protocol
+		{
+			class PacketView;
+		}
+
+		// A local game pointer is meaningful only in its owning process.  WorldSync
 	// assigns the host a small process-neutral id, then binds it to the matching
 	// native object on the client.  It deliberately does not own NPC AI, damage or
 	// despawn yet; this first layer proves matching and transform replication.
 	class WorldSync final
 	{
 	public:
-		struct TriggerKey
-		{
-			std::uint32_t family;
-			std::uint32_t subtype;
-			std::int32_t definition_id;
-			std::uint32_t occurrence;
-		};
+		// Process-neutral trigger identity used by every world wire packet.
+		using TriggerKey = protocol::WorldTriggerKey;
 
 		static WorldSync& Instance();
 
@@ -74,79 +74,15 @@ namespace coop
 		void NetworkTick();
 
 	private:
-		struct WorldSpawnPacket : PacketHeader
-		{
-			std::uint32_t world_id;
-			TriggerKey key;
-			float position[4];
-			float rotation[4];
-		};
+		using WorldSpawnPacket = protocol::WorldSpawnPacket;
+		using WorldSnapshotPacket = protocol::WorldSnapshotPacket;
+		using WorldReadyPacket = protocol::WorldReadyPacket;
+		using WorldTriggerEventPacket = protocol::WorldTriggerEventPacket;
+		using TriggerP1TeleportPacket = protocol::TriggerP1TeleportPacket;
+		using WorldDamagePacket = protocol::WorldDamagePacket;
+			using WorldDespawnPacket = protocol::WorldDespawnPacket;
 
-		struct WorldSnapshotPacket : PacketHeader
-		{
-			std::uint32_t world_id;
-			std::uint32_t sequence;
-			float position[4];
-			float rotation[4];
-		};
-
-		struct WorldReadyPacket : PacketHeader
-		{
-			std::uint32_t sequence;
-		};
-
-		// Host -> client notification that a native trigger received a gameplay
-		// event (activation, hit, timer).  The receiver replays the same event on
-		// its own matching trigger template so dynamic children (spiders) spawn
-		// locally through the stock code path.
-		struct WorldTriggerEventPacket : PacketHeader
-		{
-			TriggerKey key;
-			std::int32_t event_code;
-			std::int32_t result;
-		};
-
-		// Either direction, reliable.  It intentionally contains only a level-space
-		// transform and a sequence number, never an address from the source process.
-		struct TriggerP1TeleportPacket : PacketHeader
-		{
-			std::uint32_t sequence;
-			float position[4];
-		};
-
-		// Either side reports that its local player damaged a world-linked entity.
-			// The receiver finds the same entity by world id and replays the hit on it.
-		struct WorldDamagePacket : PacketHeader
-		{
-			std::uint32_t world_id;
-			// IEEE-754 bits of the source entity's post-hit HP.  The layout remains
-			// 32 bytes, so both peers must use the same DLL revision.
-			std::uint32_t hp_bits;
-			std::int32_t event_code;
-		};
-
-		// Host -> client: entity has been despawned/died.  Client removes it.
-		struct WorldDespawnPacket : PacketHeader
-		{
-			std::uint32_t world_id;
-		};
-
-		static_assert(sizeof(WorldDamagePacket) == 32,
-			"damage packets must keep their fixed x86 wire layout");
-		static_assert(sizeof(WorldDespawnPacket) == 24,
-			"despawn packets must keep their fixed x86 wire layout");
-		static_assert(sizeof(WorldSpawnPacket) == 72,
-			"world spawn packets must keep their fixed x86 wire layout");
-		static_assert(sizeof(WorldSnapshotPacket) == 60,
-			"world snapshot packets must keep their fixed x86 wire layout");
-		static_assert(sizeof(WorldReadyPacket) == 24,
-			"world-ready packets must keep their fixed x86 wire layout");
-		static_assert(sizeof(WorldTriggerEventPacket) == 44,
-			"trigger-event packets must keep their fixed x86 wire layout");
-		static_assert(sizeof(WorldDamagePacket) == 32,
-			"damage packets must keep their fixed x86 wire layout");
-
-		struct TriggerCounter
+			struct TriggerCounter
 		{
 			void* trigger;
 			std::uint32_t occurrence;
@@ -208,6 +144,12 @@ namespace coop
 		WorldSync& operator=(const WorldSync&) = delete;
 
 		bool IsSupportedFamily(std::uint32_t family) const;
+		bool HandleWorldReadyPacket(const protocol::PacketView& view);
+		bool HandleWorldSpawnPacket(const protocol::PacketView& view);
+		bool HandleWorldSnapshotPacket(const protocol::PacketView& view);
+		bool HandleWorldTriggerEventPacket(const protocol::PacketView& view);
+		bool HandleWorldDamagePacket(const protocol::PacketView& view);
+		bool HandleTriggerP1TeleportPacket(const protocol::PacketView& view);
 		bool ReadEntityTransform(void* entity, float position[4],
 			float rotation[4]) const;
 		bool ReadEntityHealth(void* entity, float& health) const;

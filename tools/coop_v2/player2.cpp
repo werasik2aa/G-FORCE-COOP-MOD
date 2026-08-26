@@ -3,6 +3,7 @@
 #include "coop_netgame.h"
 #include "coop_runtime.h"
 #include "gforce_constants.h"
+#include "retail/retail_views.h"
 #include "save_sync.h"
 #include "world_sync.h"
 #include "ServerClient/SteamManager.h"
@@ -12,6 +13,54 @@
 namespace coop
 {
 using namespace gforce;
+
+namespace
+{
+	class RemoteInputScope final
+	{
+	public:
+		explicit RemoteInputScope(CoopNetGame& netgame) : netgame_(netgame)
+		{
+			netgame_.BeginRemoteInput();
+		}
+
+		~RemoteInputScope()
+		{
+			netgame_.EndRemoteInput();
+		}
+
+	private:
+		RemoteInputScope(const RemoteInputScope&);
+		RemoteInputScope& operator=(const RemoteInputScope&);
+
+		CoopNetGame& netgame_;
+	};
+
+	class PrimaryGamePadScope final
+	{
+	public:
+		explicit PrimaryGamePadScope(CoopNetGame& netgame, bool activate) :
+			netgame_(netgame), original_(NULL), active_(false)
+		{
+			if (activate)
+				active_ = netgame_.BeginRemoteGamePadScope(original_);
+		}
+
+		~PrimaryGamePadScope()
+		{
+			if (active_)
+				netgame_.EndRemoteGamePadScope(original_);
+		}
+
+	private:
+		PrimaryGamePadScope(const PrimaryGamePadScope&);
+		PrimaryGamePadScope& operator=(const PrimaryGamePadScope&);
+
+		CoopNetGame& netgame_;
+		void* original_;
+		bool active_;
+	};
+}
 
 Player2Module& Player2Module::Instance()
 {
@@ -49,46 +98,48 @@ Player2Module::Player2Module() :
 
 void* Player2Module::GetGPigEntity(int slot)
 {
-	if (slot < 1 || slot > 3)
-		return NULL;
-	__try
-	{
-		return reinterpret_cast<void**>(kGPigEntityArray)[slot];
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
+	if (slot < static_cast<int>(retail::PlayerSlot::LocalP1) ||
+		slot > static_cast<int>(retail::PlayerSlot::AuxiliaryP3))
 	{
 		return NULL;
 	}
+
+	retail::PlayerRepository players;
+	retail::EntityRef entity = {};
+	return players.Get(static_cast<retail::PlayerSlot>(slot), entity) ?
+		retail::ToPointer(entity.value) : NULL;
 }
 
 void* Player2Module::GetFlyEntity()
 {
-	__try
-	{
-		return *reinterpret_cast<void**>(kFlyEntity);
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		return NULL;
-	}
+	retail::PlayerRepository players;
+	retail::EntityRef fly = {};
+	return players.Get(retail::PlayerSlot::Mooch, fly) ?
+		retail::ToPointer(fly.value) : NULL;
 }
 
 void Player2Module::PublishDefaultModeActiveEntity(void* entity)
 {
-	if (entity == GetGPigEntity(2))
+	const retail::EntityRef published = { retail::ToAddress(entity) };
+	retail::PlayerRepository players;
+	retail::EntityRef player2 = {};
+	if (players.Get(retail::PlayerSlot::RemoteP2, player2) && published == player2)
 	{
 		if (!m_logged_blocked_active_publish)
 		{
-			CoopRuntime::Instance().Log("[active-guard] blocked Default-mode publish for P2 entity=%p; active remains (%p,%p)\r\n",
-				entity, *reinterpret_cast<void**>(kActiveEntityA),
-				*reinterpret_cast<void**>(kActiveEntityB));
+			retail::EntityRef active_a = {};
+			retail::EntityRef active_b = {};
+			retail::ActiveEntityStore().Read(active_a, active_b);
+			CoopRuntime::Instance().Log(
+				"[active-guard] blocked Default-mode publish for P2 entity=%p; active remains (%p,%p)\r\n",
+				entity, retail::ToPointer(active_a.value),
+				retail::ToPointer(active_b.value));
 			m_logged_blocked_active_publish = true;
 		}
 		return;
 	}
 
-	*reinterpret_cast<void**>(kActiveEntityA) = entity;
-	*reinterpret_cast<void**>(kActiveEntityB) = entity;
+	retail::ActiveEntityStore().Set(published);
 }
 
 extern "C" void __cdecl Player2PublishDefaultModeActiveEntity(void* entity)
@@ -115,58 +166,56 @@ void* Player2Module::GetController(void* entity)
 {
 	if (!entity)
 		return NULL;
-	__try
-	{
-		BYTE* handler = *reinterpret_cast<BYTE**>(
-			reinterpret_cast<BYTE*>(entity) + kEntityHandlerOffset);
-		return handler ? *reinterpret_cast<void**>(handler + kHandlerControllerOffset) : NULL;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		return NULL;
-	}
+
+	const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
+	retail::HandlerRef handler = {};
+	retail::ControllerRef controller = {};
+	return retail::EntityView(entity_ref).Handler(handler) &&
+		retail::HandlerView(handler).Controller(controller) ?
+		retail::ToPointer(controller.value) : NULL;
 }
 
-	uint32_t Player2Module::GetModeId(void* controller)
-	{
-		if (!controller)
-			return 0;
-		__try
+		uint32_t Player2Module::GetModeId(void* controller)
 		{
-			BYTE* mode = *reinterpret_cast<BYTE**>(
-				reinterpret_cast<BYTE*>(controller) + kControllerModeOffset);
-			return mode ? *reinterpret_cast<uint32_t*>(mode + kModeIdOffset) : 0;
+			if (!controller)
+				return 0;
+
+			const retail::ControllerRef controller_ref = {
+				retail::ToAddress(controller)
+			};
+			retail::ModeId mode_id = 0;
+			return retail::ControllerView(controller_ref).CurrentMode(mode_id) ?
+				mode_id : 0;
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			return 0;
-		}
-	}
 
 	
 
-	int Player2Module::FindGPigSlot(void* controller)
-
-{
-	if (!controller)
-		return 0;
-	__try
-	{
-		void* owner = *reinterpret_cast<void**>(
-			reinterpret_cast<BYTE*>(controller) + kControllerOwnerOffset);
-		for (int slot = 1; slot <= 3; ++slot)
+		int Player2Module::FindGPigSlot(void* controller)
 		{
-			BYTE* entity = static_cast<BYTE*>(GetGPigEntity(slot));
-			if (entity && *reinterpret_cast<void**>(entity + kEntityHandlerOffset) == owner)
-				return slot;
+			if (!controller)
+				return 0;
+
+			const retail::ControllerRef controller_ref = {
+				retail::ToAddress(controller)
+			};
+			retail::HandlerRef owner = {};
+			if (!retail::ControllerView(controller_ref).Owner(owner))
+				return 0;
+
+			retail::PlayerRepository players;
+			for (int slot = static_cast<int>(retail::PlayerSlot::LocalP1);
+				slot <= static_cast<int>(retail::PlayerSlot::AuxiliaryP3); ++slot)
+			{
+				retail::EntityRef entity = {};
+				retail::HandlerRef handler = {};
+				if (players.Get(static_cast<retail::PlayerSlot>(slot), entity) &&
+					retail::EntityView(entity).Handler(handler) && handler == owner)
+				{
+					return slot;
+				}
+			}
+			return 0;
 		}
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		return 0;
-	}
-	return 0;
-}
 
 void Player2Module::SelectMode(void* controller, uint32_t mode_id)
 {
@@ -320,7 +369,7 @@ bool Player2Module::SaveSharedCameraAimState(SharedCameraAimState& saved)
 	// argument, and that handler is a single process-wide object, so everything it
 	// writes there belongs to whichever entity happens to be ticking.  P1 ticks
 	// first, so without this save/restore P2's tick is what P1's camera and P1's
-	// own aim-mode turn consume on the next frame — the same class of defect the
+	// own aim-mode turn consume on the next frame вЂ” the same class of defect the
 	// inactive mode 0x5B7D60 had with handler+0x91C/+0x920.
 	saved.has_assist = false;
 	saved.has_yaw_state = false;
@@ -412,27 +461,21 @@ void Player2Module::RestoreSharedCameraAimState(
 
 bool Player2Module::SyncPlayer2WeaponSelection(void* player2)
 {
-	void* player1 = GetGPigEntity(1);
-	if (!player1 || !player2)
+	if (!player2)
 		return false;
 
-	__try
+	retail::PlayerRepository players;
+	retail::EntityRef player1 = {};
+	retail::HandlerRef player1_handler = {};
+	uint32_t player1_weapon_type = 0xFFFFFFFFu;
+	if (!players.Get(retail::PlayerSlot::LocalP1, player1) ||
+		!retail::EntityView(player1).Handler(player1_handler) ||
+		!retail::HandlerView(player1_handler).SelectedWeaponType(
+			player1_weapon_type))
 	{
-		BYTE* player1_handler = *reinterpret_cast<BYTE**>(
-			reinterpret_cast<BYTE*>(player1) + kEntityHandlerOffset);
-		if (!player1_handler)
-			return false;
-
-		const uint32_t player1_weapon_type = *reinterpret_cast<uint32_t*>(
-			player1_handler + kHandlerSelectedWeaponTypeOffset);
-		return ApplyPlayer2WeaponSelection(player2, player1_weapon_type,
-			"local P1");
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		CoopRuntime::Instance().Log("[error] exception while reading P1 weapon selection\r\n");
 		return false;
 	}
+	return ApplyPlayer2WeaponSelection(player2, player1_weapon_type, "local P1");
 }
 
 bool Player2Module::ApplyPlayer2WeaponSelection(void* player2,
@@ -441,24 +484,24 @@ bool Player2Module::ApplyPlayer2WeaponSelection(void* player2,
 	if (!player2 || weapon_type == 0xFFFFFFFFu)
 		return false;
 
+	const retail::EntityRef player2_ref = { retail::ToAddress(player2) };
+	retail::HandlerRef player2_handler = {};
+	uint32_t player2_weapon_type = 0xFFFFFFFFu;
+	if (!retail::EntityView(player2_ref).Handler(player2_handler) ||
+		!retail::HandlerView(player2_handler).SelectedWeaponType(player2_weapon_type))
+	{
+		return false;
+	}
+
+	// The handler temporarily reports melee/holster while a draw, jump or attack
+	// animation is in progress.  A source sequence, not a transient local handler
+	// value, is the authority for a real player selection.
+	if (m_last_weapon_type == weapon_type)
+		return false;
+
+	m_last_weapon_type = weapon_type;
 	__try
 	{
-		BYTE* player2_handler = *reinterpret_cast<BYTE**>(
-			reinterpret_cast<BYTE*>(player2) + kEntityHandlerOffset);
-		if (!player2_handler)
-			return false;
-
-		const uint32_t player2_weapon_type = *reinterpret_cast<uint32_t*>(
-			player2_handler + kHandlerSelectedWeaponTypeOffset);
-		// The handler temporarily reports melee/holster while a draw, jump or
-		// attack animation is in progress.  Re-sending a full selected-type change
-		// on every such transient restarts expensive weapon state work and freezes
-		// both windows.  The remote source sequence is the authority for a real
-		// player selection, so send the setter only when that source type changed.
-		if (m_last_weapon_type == weapon_type)
-			return false;
-
-		m_last_weapon_type = weapon_type;
 		WeaponTypeToItemIdFn weapon_type_to_item_id =
 			reinterpret_cast<WeaponTypeToItemIdFn>(kWeaponTypeToItemId);
 		const uint32_t item_id = weapon_type_to_item_id(weapon_type);
@@ -467,12 +510,12 @@ bool Player2Module::ApplyPlayer2WeaponSelection(void* player2,
 
 		SetSelectedWeaponTypeFn set_selected_weapon_type =
 			reinterpret_cast<SetSelectedWeaponTypeFn>(kSetSelectedWeaponType);
-		set_selected_weapon_type(player2_handler, weapon_type);
+		set_selected_weapon_type(retail::ToPointer(player2_handler.value), weapon_type);
 
 		GetCurrentWeaponIdFn get_current_weapon_id =
 			reinterpret_cast<GetCurrentWeaponIdFn>(kGetCurrentWeaponId);
 		const uint32_t player2_current =
-			get_current_weapon_id(player2_handler);
+			get_current_weapon_id(retail::ToPointer(player2_handler.value));
 		CoopRuntime::Instance().Log("[weapon-selection] source=%s type=0x%08X item=0x%08X P2.old_type=0x%08X P2.current_before=0x%08X action=%s\r\n",
 			source ? source : "unknown", weapon_type, item_id,
 			player2_weapon_type, player2_current,
@@ -822,11 +865,12 @@ void Player2Module::TickPlayer1(void* player1_controller)
 		GetModeId(player1_controller) == kDefaultModeId)
 		RefreshCameraForController(player1_controller);
 	CoopNetGame::Instance().BeginLocalInputCapture();
-	m_original_update(player1_controller);
+	if (!RunStockControllerUpdate(player1_controller, "local-player1"))
+		return;
 	CoopNetGame::Instance().PublishLocalPlayerTransform(GetGPigEntity(1));
 	// P1's 0x5BCF30 and 0x5BB1D0 have just finished driving the single shared
 	// camera, so this is the only frame point where 0x52AD20 reports P1's own yaw.
-	// The remote machine cannot read its P2's camera because P2 owns none there —
+	// The remote machine cannot read its P2's camera because P2 owns none there вЂ”
 	// it consumes this value.
 	float local_camera_yaw = 0.0f;
 	const bool local_camera_yaw_valid = ReadLocalCameraYaw(local_camera_yaw);
@@ -923,120 +967,90 @@ void Player2Module::ConfigurePlayer2DefaultMode(void* controller)
 	}
 }
 
-void Player2Module::UpdateController(void* controller)
-{
-	// Every controller is ticked exactly once, exactly where the game asked for
-	// it.  The previous build deferred P1's tick out of P1's own array slot into
-	// P2's, and that is what broke the fly: the tick was re-issued on whatever
-	// [[entity+0x144]+0x510] resolved to at that later point, which on the frame
-	// Mooch (0x61000065) is selected is no longer the object holding that mode.
-	// So 0x5BC050 - the only code in the EXE that ever selects 0x6100003B again -
-	// never ran, and the log shows exactly that: the 0x6100003B -> 0x61000065 edge
-	// appears and the return edge never does.  Nothing below may skip, relocate or
-	// synthesise a stock tick for a controller the player drives.
-	const int slot = FindGPigSlot(controller);
-	const uint32_t controller_mode = GetModeId(controller);
-	if (controller_mode == kMoochSwitchModeId &&
-		m_last_logged_mooch_controller != controller)
+	bool Player2Module::RunStockControllerUpdate(void* controller,
+		const char* context)
 	{
-		m_last_logged_mooch_controller = controller;
-		CoopRuntime::Instance().Log(
-			"[mooch-route] controller=%p slot=%d p1.controller=%p p2.controller=%p fly.controller=%p\r\n",
-			controller, slot, GetController(GetGPigEntity(1)),
-			GetController(GetGPigEntity(2)), GetController(GetFlyEntity()));
+		if (!controller || !m_original_update)
+			return false;
+		__try
+		{
+			m_original_update(controller);
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log(
+				"[controller] stock update fault context=%s controller=%p\r\n",
+				context ? context : "unknown", controller);
+			return false;
+		}
 	}
-	else if (controller_mode != kMoochSwitchModeId &&
-		m_last_logged_mooch_controller == controller)
-	{
-		m_last_logged_mooch_controller = NULL;
-	}
-	const bool player2_slot = slot == 2 &&
-		CoopRuntime::Instance().Config().enabled &&
-		InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
 
-	if (!player2_slot)
+	void Player2Module::UpdateController(void* controller)
 	{
-		// Slot 1 is P1: its stock tick plus the local half of the network bracket,
-		// in its own slot and nowhere else.  Everything else - the fly's own
-		// controller included, which FindGPigSlot reports as 0 because it is entity
-		// slot 4 (0x9128E8) and not a guinea pig - gets the stock tick untouched.
-			if (slot == 1)
+		const int slot = FindGPigSlot(controller);
+		const uint32_t controller_mode = GetModeId(controller);
+		if (controller_mode == kMoochSwitchModeId &&
+			m_last_logged_mooch_controller != controller)
+		{
+			m_last_logged_mooch_controller = controller;
+			CoopRuntime::Instance().Log(
+				"[mooch-route] controller=%p slot=%d p1.controller=%p p2.controller=%p fly.controller=%p\r\n",
+				controller, slot, GetController(GetGPigEntity(1)),
+				GetController(GetGPigEntity(2)), GetController(GetFlyEntity()));
+		}
+		else if (controller_mode != kMoochSwitchModeId &&
+			m_last_logged_mooch_controller == controller)
+		{
+			m_last_logged_mooch_controller = NULL;
+		}
+
+		const bool is_ready_player2 = slot ==
+			static_cast<int>(retail::PlayerSlot::RemoteP2) &&
+			CoopRuntime::Instance().Config().enabled &&
+			InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
+		if (!is_ready_player2)
+		{
+			if (slot == static_cast<int>(retail::PlayerSlot::LocalP1))
+			{
 				TickPlayer1(controller);
+			}
 			else if (controller == GetController(GetFlyEntity()))
 			{
 				void* const fly = GetFlyEntity();
-				const uint32_t fly_mode_before = GetModeId(controller);
-				m_original_update(controller);
-				// Keep only the previously working shared-Mooch transform presentation.
-				// Remote native tick/fire replay is intentionally removed.
-				CoopNetGame::Instance().ObserveLocalFlyMode(fly_mode_before,
-					GetModeId(controller));
-				CoopNetGame::Instance().MaintainLocalFlyActiveEntity(fly);
-				CoopNetGame::Instance().PublishLocalFlyTransform(fly);
-				if (!CoopNetGame::Instance().IsLocalFlyControlled())
-					CoopNetGame::Instance().ApplyRemoteFlyTransform(fly);
+				const uint32_t mode_before = GetModeId(controller);
+				if (RunStockControllerUpdate(controller, "fly"))
+				{
+					CoopNetGame::Instance().ObserveLocalFlyMode(mode_before,
+						GetModeId(controller));
+					CoopNetGame::Instance().MaintainLocalFlyActiveEntity(fly);
+					CoopNetGame::Instance().PublishLocalFlyTransform(fly);
+					if (!CoopNetGame::Instance().IsLocalFlyControlled())
+						CoopNetGame::Instance().ApplyRemoteFlyTransform(fly);
+				}
+			}
+			else
+			{
+				RunStockControllerUpdate(controller, "non-player");
 			}
 
-		else
-			m_original_update(controller);
-		// Edge-triggered on the key itself, so polling it from whichever controller
-		// the game happens to visit is free and keeps F6 alive even in the frames
-		// where P1's own array slot is not reached at all.
-		PollPlayer2SpawnKey();
-		PollRandomNpcSpawnKey();
-		return;
-	}
-
-	// P2 is driven entirely by the packet: read the keys, run the stock tick with
-	// them, then set the position.  Nothing else.  The active-entity swap, the
-	// input-device override, the shared-camera aim save/restore, the peer/mode
-	// freezes and the camera-target restore that used to live here were all
-	// scaffolding for the old locally mirrored P2, which took P1's camera and
-	// active-entity slot because it shared P1's input.  A packet-driven P2 needs
-	// none of it.
-	// The Q edge is local-only: the engine hands Darwin's active entity to Mooch
-	// through process-global state.  P2's full stock tick must not run inside
-	// that hand-off, because its packet input context also covers nested calls on
-	// this same main thread.  This skips one P2 tick only; normal packet-driven
-	// movement and animation resume on the following frame.
-	if (CoopNetGame::Instance().ConsumeRemotePlayerTickDeferral())
-		return;
-
-	void* player2 = GetGPigEntity(2);
-	bool remote_input_active = false;
-	bool remote_gamepad_active = false;
-	void* primary_gamepad = NULL;
-	// P2 Default still writes the one shared aim/crosshair handler even though
-	// its camera update is skipped.  Preserve only the fly-owned state around
-	// the otherwise normal P2 tick; P2 still consumes its packet and animates.
-	SharedCameraAimState saved_fly_camera_state = {};
-	const bool preserve_fly_camera =
-		CoopNetGame::Instance().IsLocalFlyControlled();
-	bool fly_camera_state_saved = false;
-
-	__try
-	{
-		// Read the packet.  For the length of P2's tick the stock keyboard action
-		// code consumes the remote snapshot while P1 keeps reading the physical
-		// keyboard.  With no packet the snapshot is zeroed, so P2 simply idles -
-		// BuildRemoteScanCodeState reports every key up and no edge is forged.
-		CoopNetGame::Instance().BeginRemoteInput();
-		remote_input_active = true;
-		// GPig_Default::main Update reloads [0x9905CC] in several inner state
-		// machines.  The private pad deliberately has no fabricated raw action
-		// state, so exposing it for every P2 tick suppresses ordinary remote
-		// movement, attacks and weapon transitions.  It is needed only while the
-		// local player drives Mooch: then P2 must not reset the physical P1 pad
-		// before Fly_Active uses its turn axes.
-		if (preserve_fly_camera)
-		{
-			remote_gamepad_active =
-				CoopNetGame::Instance().BeginRemoteGamePadScope(primary_gamepad);
+			// The keys are edge-triggered and independent of which controller was
+			// visited.  This keeps F5/F6 available during native mode transitions.
+			PollPlayer2SpawnKey();
+			PollRandomNpcSpawnKey();
+			return;
 		}
-		// P2's stock update can return it to Inactive after consuming a remote
-		// frame.  It must re-enter Default before the next packet frame or the
-		// native motor stops polling every action.  This is also safe while Mooch
-		// is active: the hand-off itself still defers the P2 tick above.
+
+		CoopNetGame& netgame = CoopNetGame::Instance();
+		if (netgame.ConsumeRemotePlayerTickDeferral())
+			return;
+
+		void* const player2 = GetGPigEntity(
+			static_cast<int>(retail::PlayerSlot::RemoteP2));
+		const bool preserve_fly_camera = netgame.IsLocalFlyControlled();
+		RemoteInputScope remote_input(netgame);
+		PrimaryGamePadScope remote_gamepad(netgame, preserve_fly_camera);
+
 		if (GetModeId(controller) == kInactiveModeId)
 		{
 			SharedCameraAimState saved_camera_state = {};
@@ -1057,48 +1071,29 @@ void Player2Module::UpdateController(void* controller)
 		}
 
 		uint32_t remote_weapon_type = 0xFFFFFFFFu;
-		if (CoopNetGame::Instance().GetActiveRemoteWeaponType(remote_weapon_type))
+		if (netgame.GetActiveRemoteWeaponType(remote_weapon_type))
 			ApplyPlayer2WeaponSelection(player2, remote_weapon_type, "remote P1");
-		CoopNetGame::Instance().ArmRemoteP2AmmoOwner(player2);
-		if (preserve_fly_camera)
-			fly_camera_state_saved =
-				SaveSharedCameraAimState(saved_fly_camera_state);
-		m_original_update(controller);
-		if (fly_camera_state_saved)
-		{
-			RestoreSharedCameraAimState(saved_fly_camera_state);
-			fly_camera_state_saved = false;
-		}
-		// Set the position.  A correction toward the sender's own transform, and a
-		// no-op until a packet with a non-zero sequence has arrived.
-		CoopNetGame::Instance().ApplyRemotePlayerTransform(player2);
-		if (remote_gamepad_active)
-		{
-			CoopNetGame::Instance().EndRemoteGamePadScope(primary_gamepad);
-			remote_gamepad_active = false;
-		}
-		CoopNetGame::Instance().EndRemoteInput();
-		remote_input_active = false;
+		netgame.ArmRemoteP2AmmoOwner(player2);
 
+		SharedCameraAimState saved_fly_camera_state = {};
+		const bool restore_fly_camera = preserve_fly_camera &&
+			SaveSharedCameraAimState(saved_fly_camera_state);
+		const bool stock_update_completed =
+			RunStockControllerUpdate(controller, "remote-player2");
+		if (restore_fly_camera)
+			RestoreSharedCameraAimState(saved_fly_camera_state);
+		if (!stock_update_completed)
+			return;
+
+		netgame.ApplyRemotePlayerTransform(player2);
 		if (!m_logged_player2)
 		{
-			CoopRuntime::Instance().Log("[player2] packet-driven update entity=%p controller=%p mode=0x%08X\r\n",
+			CoopRuntime::Instance().Log(
+				"[player2] packet-driven update entity=%p controller=%p mode=0x%08X\r\n",
 				player2, controller, GetModeId(controller));
 			m_logged_player2 = true;
 		}
 	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		if (fly_camera_state_saved)
-			RestoreSharedCameraAimState(saved_fly_camera_state);
-		if (remote_gamepad_active)
-			CoopNetGame::Instance().EndRemoteGamePadScope(primary_gamepad);
-		if (remote_input_active)
-			CoopNetGame::Instance().EndRemoteInput();
-		CoopRuntime::Instance().Log("[error] exception in player 2 controller update\r\n");
-	}
-}
-
 void* __cdecl Player2Module::HookSpawnGPig(
 	const Vec4* position, const Vec4* rotation, uint32_t gpig_id, void* context)
 {
