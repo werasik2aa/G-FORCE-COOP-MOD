@@ -204,18 +204,13 @@ namespace coop
 		m_weapon_ammo_consume_hooked(false),
 		m_trigger_spawn_trampoline(NULL),
 		m_original_trigger_spawn(NULL),
-		m_trigger_spawn_trace_hooked(false),
-		m_trigger_spawn_sequence(0),
+		m_trigger_spawn_hooked(false),
 		m_trigger_factory_trampoline(NULL),
 		m_original_trigger_factory(NULL),
-		m_trigger_factory_trace_hooked(false),
-		m_trigger_factory_sequence(0),
+		m_trigger_factory_hooked(false),
 		m_trigger_event_trampoline(NULL),
 		m_original_trigger_event(NULL),
-		m_trigger_event_trace_hooked(false),
-		m_trigger_event_sequence(0),
-		m_observed_world_trigger_count(0),
-		m_logged_world_trigger_observation_limit(false),
+		m_trigger_event_hooked(false),
 		m_remote_input_thread_id(0),
 		m_local_transform_sequence(0),
 				m_local_fly_transform_sequence(0),
@@ -231,7 +226,6 @@ namespace coop
 		ZeroMemory(&m_remote_input, sizeof(m_remote_input));
 		ZeroMemory(&m_active_remote_input, sizeof(m_active_remote_input));
 		ZeroMemory(&m_local_input, sizeof(m_local_input));
-		ZeroMemory(m_observed_world_triggers, sizeof(m_observed_world_triggers));
 		ZeroMemory(m_saved_keyboard_state, sizeof(m_saved_keyboard_state));
 		ZeroMemory(m_saved_keyboard_state_secondary,
 			sizeof(m_saved_keyboard_state_secondary));
@@ -245,7 +239,7 @@ namespace coop
 			sizeof(m_original_input_threshold_query_bytes));
 		ZeroMemory(m_original_input_axis_query_bytes,
 			sizeof(m_original_input_axis_query_bytes));
-		ZeroMemory(m_logged_axis_queries, sizeof(m_logged_axis_queries));
+
 		ZeroMemory(m_prev_local_action_down, sizeof(m_prev_local_action_down));
 		ZeroMemory(m_prev_remote_action_down, sizeof(m_prev_remote_action_down));
 		ZeroMemory(m_prev_remote_press_seq, sizeof(m_prev_remote_press_seq));
@@ -255,8 +249,7 @@ namespace coop
 		m_aim_hold_query_hooked = false;
 		m_camera_yaw_hooked = false;
 		m_gpig_camera_update_hooked = false;
-		m_logged_camera_yaw_override = false;
-		m_logged_camera_update_skip = false;
+
 		m_default_mode_update_hooked = false;
 		m_input_pressed_trampoline = NULL;
 		m_original_input_pressed_query = NULL;
@@ -1311,8 +1304,7 @@ namespace coop
 	void* __cdecl CoopNetGame::HookTriggerFactory(std::uint32_t family,
 		std::uint32_t subtype, void* output)
 	{
-		return Instance().HandleTriggerFactory(family, subtype, output,
-			reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
+		return Instance().HandleTriggerFactory(family, subtype, output);
 	}
 
 	int __fastcall CoopNetGame::HookTriggerEvent(void* trigger, void*,
@@ -1330,9 +1322,6 @@ namespace coop
 		if (!trigger)
 			return;
 
-		// Do not emit noise for every scripted object in the level.  The two
-		// families below are the exact shared path for live NPCs and monster/
-		// appliance enemies, which is the population the co-op layer needs to own.
 		__try
 		{
 			const BYTE* const bytes = static_cast<const BYTE*>(trigger);
@@ -1341,132 +1330,59 @@ namespace coop
 			if (family != kMonsterTriggerFamily && family != kNpcTriggerFamily)
 				return;
 
-			const char* role = IsHost() ? "host" :
-				(IsClient() ? "client" : "none");
-			const unsigned sequence = static_cast<unsigned>(
-				InterlockedIncrement(&m_trigger_spawn_sequence));
 			const std::uint32_t subtype = *reinterpret_cast<const std::uint32_t*>(
 				bytes + kTriggerSubtypeOffset);
 			const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
 				bytes + kTriggerSpawnIdOffset);
-			// Factory construction precedes assignment of definition_id.  At this later
-			// point the trigger can be retained as a client-side native spawn template
-			// even though its entity is not in the live registry quite yet.
 			WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
-			const void* const spawned_object = *reinterpret_cast<void* const*>(
-				bytes + kTriggerSpawnedObjectOffset);
-			const float* const position = reinterpret_cast<const float*>(
-				bytes + kTriggerPositionOffset);
-			const void* live_entity = NULL;
-			const float* live_position = NULL;
+
+			void* live_entity = NULL;
 			BYTE* const registry = *reinterpret_cast<BYTE**>(kEntityRegistry);
 			const size_t list_offsets[] = {
-				kEntityRegistryMonsterListOffset, kEntityRegistryNpcListOffset
+				kEntityRegistryMonsterListOffset,
+				kEntityRegistryNpcListOffset
 			};
 			for (size_t list_index = 0; registry &&
 				list_index < _countof(list_offsets) && !live_entity; ++list_index)
 			{
-				BYTE* node = *reinterpret_cast<BYTE**>(registry +
-					list_offsets[list_index]);
+				BYTE* node = *reinterpret_cast<BYTE**>(registry + list_offsets[list_index]);
 				for (size_t visited = 0; node && visited != 512; ++visited)
 				{
-					BYTE* const entity = *reinterpret_cast<BYTE**>(node +
-						kIntrusiveListValueOffset);
+					BYTE* const entity = *reinterpret_cast<BYTE**>(
+						node + kIntrusiveListValueOffset);
 					if (entity && *reinterpret_cast<void**>(entity +
 						kEntityTriggerOffset) == trigger)
 					{
 						live_entity = entity;
-						live_position = reinterpret_cast<const float*>(entity +
-							kEntityPositionOffset);
 						break;
 					}
-					node = *reinterpret_cast<BYTE**>(node +
-						kIntrusiveListNextOffset);
+					node = *reinterpret_cast<BYTE**>(node + kIntrusiveListNextOffset);
 				}
 			}
-			CoopRuntime::Instance().Log(
-				"[world-spawn-trace] seq=%u role=%s peer=%d trigger=%p family=0x%08X subtype=0x%08X def=%d object=%p live=%p trigger_pos=(%.2f,%.2f,%.2f) entity_pos=(%.2f,%.2f,%.2f)\r\n",
-				sequence, role, HasRemotePeer() ? 1 : 0, trigger, family, subtype,
-				definition_id, spawned_object, live_entity, position[0], position[1],
-				position[2], live_position ? live_position[0] : 0.0f,
-				live_position ? live_position[1] : 0.0f,
-				live_position ? live_position[2] : 0.0f);
 			if (live_entity)
 			{
-				WorldSync::Instance().RecordNativeSpawn(trigger,
-					const_cast<void*>(live_entity), family,
+				WorldSync::Instance().RecordNativeSpawn(trigger, live_entity, family,
 					subtype, definition_id);
 			}
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
 			CoopRuntime::Instance().Log(
-				"[world-spawn-trace] trigger read fault after native spawn\r\n");
+				"[world] native NPC/monster spawn registration fault\r\n");
 		}
 	}
 
 	void* CoopNetGame::HandleTriggerFactory(std::uint32_t family,
-		std::uint32_t subtype, void* output, std::uintptr_t caller)
+		std::uint32_t subtype, void* output)
 	{
 		if (!m_original_trigger_factory)
 			return NULL;
 
 		void* const trigger = m_original_trigger_factory(family, subtype, output);
-		if (family != kMonsterTriggerFamily && family != kNpcTriggerFamily)
-			return trigger;
-
-		const char* role = IsHost() ? "host" :
-			(IsClient() ? "client" : "none");
-		const unsigned sequence = static_cast<unsigned>(
-			InterlockedIncrement(&m_trigger_factory_sequence));
-		WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
-		CoopRuntime::Instance().Log(
-			"[world-trigger-trace] seq=%u role=%s peer=%d caller=0x%08X family=0x%08X subtype=0x%08X trigger=%p output=%p\r\n",
-			sequence, role, HasRemotePeer() ? 1 : 0,
-			static_cast<unsigned>(caller), family, subtype, trigger, output);
+		if (family == kMonsterTriggerFamily || family == kNpcTriggerFamily)
+			WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
 		return trigger;
 	}
-
-		void CoopNetGame::ObserveHostWorldTrigger(std::uint32_t family,
-			std::uint32_t subtype, std::int32_t definition_id, int event_code,
-			int result)
-		{
-					if (!IsHost() && !IsClient())
-			return;
-
-			for (std::size_t index = 0; index < m_observed_world_trigger_count;
-				++index)
-			{
-				const ObservedWorldTrigger& seen = m_observed_world_triggers[index];
-				if (seen.family == family && seen.subtype == subtype &&
-					seen.definition_id == definition_id && seen.event_code == event_code)
-				{
-					return;
-				}
-			}
-			if (m_observed_world_trigger_count >=
-				_countof(m_observed_world_triggers))
-			{
-				if (!m_logged_world_trigger_observation_limit)
-				{
-					m_logged_world_trigger_observation_limit = true;
-					CoopRuntime::Instance().Log(
-						"[world-event] observation limit reached; further types suppressed\r\n");
-				}
-				return;
-			}
-			ObservedWorldTrigger& observed =
-				m_observed_world_triggers[m_observed_world_trigger_count++];
-			observed.family = family;
-			observed.subtype = subtype;
-			observed.definition_id = definition_id;
-			observed.event_code = event_code;
-					const char* const role = IsHost() ? "host" : "client";
-		CoopRuntime::Instance().Log(
-			"[world-event] %s family=%08X subtype=%08X def=%d event=%d result=%d\r\n",
-			role, family, subtype, definition_id, event_code, result);
-
-		}
 
 		int CoopNetGame::HandleTriggerEvent(void* trigger, int event_code)
 		{
@@ -1489,10 +1405,7 @@ namespace coop
 				const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
 					bytes + kTriggerSpawnIdOffset);
 				if (IsHost() || IsClient())
-				{
-					ObserveHostWorldTrigger(family, subtype, definition_id, event_code, result);
 					WorldSync::Instance().ObserveLocalP1Trigger(trigger);
-				}
 				// Observation is useful before a client connects; packet queueing and
 				// HP authority still require an actual peer.
 				if (!HasRemotePeer())
@@ -2008,21 +1921,7 @@ namespace coop
 			if (IsMirrorSuppressedAction(action))
 				return false;
 			const uint32_t action_index = action - kFirstKeyboardActionId;
-			const bool edge = m_remote_press_edge[action_index];
-			if (edge && action == kFireActionId)
-			{
-				static volatile LONG s_logged_fire_press = 0;
-				if (InterlockedCompareExchange(&s_logged_fire_press, 1, 0) == 0)
-				{
-					uint32_t weapon_type = 0xFFFFFFFFu;
-					GetActiveRemoteWeaponType(weapon_type);
-					CoopRuntime::Instance().Log(
-						"[netgame-diag] remote FIRE press-edge reached P2 "
-						"(action=0x%08X weapon_type=%d)\r\n",
-						action, static_cast<int>(weapon_type));
-				}
-			}
-			return edge;
+				return m_remote_press_edge[action_index];
 		}
 		if (is_keyboard_action && IsMoochAction(action) &&
 			IsRemoteFlyControlled())
@@ -2219,20 +2118,6 @@ namespace coop
 			return value;
 		}
 
-		// P2's tick: return remote look_axis from packet
-		if (!m_logged_axis_queries[axis])
-		{
-			m_logged_axis_queries[axis] = true;
-			CoopRuntime::Instance().Log(
-				"[net-axis pid=%lu] axis=%u device=%u remote-look-backed\r\n",
-				GetCurrentProcessId(), axis, device);
-		}
-		static volatile LONG s_logged_remote_look[2] = { 0, 0 };
-		if (axis <= 1 && InterlockedCompareExchange(&s_logged_remote_look[axis], 1, 0) == 0)
-		{
-			CoopRuntime::Instance().Log("[netgame-diag] P2 remote look_axis[%u]=%.3f (from packet)\r\n",
-				axis, GetRemoteLookAxis(axis));
-		}
 		return GetRemoteLookAxis(axis);
 	}
 
@@ -2253,20 +2138,13 @@ namespace coop
 	{
 		if (!m_original_camera_yaw)
 			return 0.0f;
-		// Only P2's own tick is diverted.  Everything else вЂ” P1's controller, the
-		// scan/fly/mooch modes, the camera itself вЂ” keeps reading the real handler.
+		// Only P2's own tick is diverted.  Everything else Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎСљ P1's controller, the
+		// scan/fly/mooch modes, the camera itself Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎСљ keeps reading the real handler.
 		if (IsRemoteInputActiveOnThisThread())
 		{
 			float remote_yaw = 0.0f;
 			if (GetActiveRemoteCameraYaw(remote_yaw))
 			{
-				if (!m_logged_camera_yaw_override)
-				{
-					m_logged_camera_yaw_override = true;
-					CoopRuntime::Instance().Log(
-						"[netgame] P2 body turn uses the remote camera yaw %.3f instead of the shared handler\r\n",
-						remote_yaw);
-				}
 				return remote_yaw;
 			}
 		}
@@ -2283,16 +2161,7 @@ namespace coop
 		// Darwin every frame.  Mooch owns its own stock camera path; no fly yaw or
 		// position is manufactured here.
 		if (IsRemoteInputActiveOnThisThread() || IsLocalFlyControlled())
-		{
-			if (IsRemoteInputActiveOnThisThread() &&
-				!m_logged_camera_update_skip)
-			{
-				m_logged_camera_update_skip = true;
-				CoopRuntime::Instance().Log(
-					"[netgame] P2 tick no longer drives the shared camera update 0x5BCF30\r\n");
-			}
 			return;
-		}
 		m_original_gpig_camera_update(mode);
 	}
 
@@ -2815,92 +2684,92 @@ bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 		m_weapon_ammo_consume_hooked = false;
 	}
 
-	bool CoopNetGame::InstallTriggerSpawnTraceHook()
+	bool CoopNetGame::InstallTriggerSpawnHook()
 	{
-		if (m_trigger_spawn_trace_hooked)
+		if (m_trigger_spawn_hooked)
 			return true;
 		if (!InstallJmpHookRaw(kTriggerSpawnFromDefinition,
 			kExpectedTriggerSpawnFromDefinition,
 			sizeof(kExpectedTriggerSpawnFromDefinition),
 			reinterpret_cast<void*>(&HookTriggerSpawnFromDefinition),
 			m_original_trigger_spawn_bytes, &m_trigger_spawn_trampoline,
-			"NPC/monster native spawn trace"))
+			"NPC/monster spawn registration"))
 		{
 			return false;
 		}
 		m_original_trigger_spawn = reinterpret_cast<TriggerSpawnFromDefinitionFn>(
 			m_trigger_spawn_trampoline);
-		m_trigger_spawn_trace_hooked = true;
+		m_trigger_spawn_hooked = true;
 		return true;
 	}
 
-	void CoopNetGame::RemoveTriggerSpawnTraceHook()
+	void CoopNetGame::RemoveTriggerSpawnHook()
 	{
-		if (!m_trigger_spawn_trace_hooked)
+		if (!m_trigger_spawn_hooked)
 			return;
 		RemoveJmpHookRaw(kTriggerSpawnFromDefinition, m_original_trigger_spawn_bytes,
 			sizeof(m_original_trigger_spawn_bytes), &m_trigger_spawn_trampoline);
 		m_original_trigger_spawn = NULL;
-		m_trigger_spawn_trace_hooked = false;
+		m_trigger_spawn_hooked = false;
 	}
 
-	bool CoopNetGame::InstallTriggerFactoryTraceHook()
+	bool CoopNetGame::InstallTriggerFactoryHook()
 	{
-		if (m_trigger_factory_trace_hooked)
+		if (m_trigger_factory_hooked)
 			return true;
 		if (!InstallJmpHookRaw(kTriggerFactory, kExpectedTriggerFactory,
 			sizeof(kExpectedTriggerFactory),
 			reinterpret_cast<void*>(&HookTriggerFactory),
 			m_original_trigger_factory_bytes, &m_trigger_factory_trampoline,
-			"NPC/monster trigger factory trace"))
+			"NPC/monster trigger registration"))
 		{
 			return false;
 		}
 		m_original_trigger_factory = reinterpret_cast<TriggerFactoryFn>(
 			m_trigger_factory_trampoline);
-		m_trigger_factory_trace_hooked = true;
+		m_trigger_factory_hooked = true;
 		return true;
 	}
 
-	void CoopNetGame::RemoveTriggerFactoryTraceHook()
+	void CoopNetGame::RemoveTriggerFactoryHook()
 	{
-		if (!m_trigger_factory_trace_hooked)
+		if (!m_trigger_factory_hooked)
 			return;
 		RemoveJmpHookRaw(kTriggerFactory, m_original_trigger_factory_bytes,
 			sizeof(m_original_trigger_factory_bytes), &m_trigger_factory_trampoline);
 		m_original_trigger_factory = NULL;
-		m_trigger_factory_trace_hooked = false;
+		m_trigger_factory_hooked = false;
 	}
 
-	bool CoopNetGame::InstallTriggerEventTraceHook()
+	bool CoopNetGame::InstallTriggerEventHook()
 	{
-		if (m_trigger_event_trace_hooked)
+				if (m_trigger_event_hooked)
 			return true;
-		CoopRuntime::Instance().Log("[netgame] installing trigger-event hook at 0x%08X...\r\n", kTriggerEventDispatcher);
+
 		if (!InstallJmpHookRaw(kTriggerEventDispatcher,
 			kExpectedTriggerEventDispatcher,
 			sizeof(kExpectedTriggerEventDispatcher),
 			reinterpret_cast<void*>(&HookTriggerEvent),
 			m_original_trigger_event_bytes, &m_trigger_event_trampoline,
-			"NPC/monster trigger event trace"))
+			"NPC/monster trigger event"))
 		{
 			return false;
 		}
 		m_original_trigger_event = reinterpret_cast<TriggerEventFn>(
 			m_trigger_event_trampoline);
-		m_trigger_event_trace_hooked = true;
-		CoopRuntime::Instance().Log("[netgame] trigger-event hook installed OK\r\n");
+		m_trigger_event_hooked = true;
+
 		return true;
 	}
 
-	void CoopNetGame::RemoveTriggerEventTraceHook()
+	void CoopNetGame::RemoveTriggerEventHook()
 	{
-		if (!m_trigger_event_trace_hooked)
+		if (!m_trigger_event_hooked)
 			return;
 		RemoveJmpHookRaw(kTriggerEventDispatcher, m_original_trigger_event_bytes,
 			sizeof(m_original_trigger_event_bytes), &m_trigger_event_trampoline);
 		m_original_trigger_event = NULL;
-		m_trigger_event_trace_hooked = false;
+		m_trigger_event_hooked = false;
 	}
 
 	bool CoopNetGame::InstallInputHook()
@@ -2977,15 +2846,13 @@ bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 					InstallGPigCameraUpdateHook() &&
 					InstallDefaultModeUpdateHook() && InstallFireHandlerHook() &&
 					InstallWeaponAmmoConsumeHook();
-				// Trace availability must never disable the input co-op that is already
-				// known to work.  It is a read-only discovery aid for world sync.
-				if (!InstallTriggerFactoryTraceHook() ||
-					!InstallTriggerSpawnTraceHook() ||
-					!InstallTriggerEventTraceHook())
-				{
-					CoopRuntime::Instance().Log(
-						"[world-spawn-trace] hook unavailable; world behaviour unchanged\r\n");
-				}
+					if (!InstallTriggerFactoryHook() ||
+						!InstallTriggerSpawnHook() ||
+						!InstallTriggerEventHook())
+					{
+						CoopRuntime::Instance().Log(
+							"[world-sync] trigger hooks unavailable; NPC/monster registration is disabled\r\n");
+					}
 				return input_hooks;
 			}
 		}
@@ -2996,9 +2863,9 @@ bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 
 	void CoopNetGame::RemoveInputHook()
 	{
-		RemoveTriggerEventTraceHook();
-		RemoveTriggerSpawnTraceHook();
-		RemoveTriggerFactoryTraceHook();
+		RemoveTriggerEventHook();
+		RemoveTriggerSpawnHook();
+		RemoveTriggerFactoryHook();
 		RemoveWeaponAmmoConsumeHook();
 		RemoveFireHandlerHook();
 		RemoveDefaultModeUpdateHook();

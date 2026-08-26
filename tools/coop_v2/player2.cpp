@@ -687,49 +687,21 @@ void Player2Module::TickPlayer1(void* player1_controller)
 	// receives the same settled transform/physics context as the proven-safe
 	// manual F6 path.  GameTick itself returns immediately once P2 exists.
 	CoopNetGame::Instance().GameTick();
-	LogPlayer1ModeEdge(player1_controller);
+	HandlePlayer1ModeTransition(player1_controller);
 }
 
-void Player2Module::LogPlayer1ModeEdge(void* player1_controller)
+void Player2Module::HandlePlayer1ModeTransition(void* player1_controller)
 {
-	// Edge-triggered only: one line per mode transition, never per frame.  A mode
-	// change is exactly the event that goes wrong on the fly switch, and this
-	// records the whole state it depends on - who is the active entity, whether
-	// the fly entity exists and what mode its own controller sits in.
 	const uint32_t mode_now = GetModeId(player1_controller);
-	if (mode_now != m_last_player1_mode)
+	if (mode_now == m_last_player1_mode)
+		return;
+
+	if (mode_now == kMoochSwitchModeId)
 	{
-		void* player1 = GetGPigEntity(1);
-		void* fly = NULL;
-		void* fly_controller = NULL;
-		uint32_t fly_mode = 0;
-		void* active_a = NULL;
-		void* active_b = NULL;
-		__try
-		{
-			fly = *reinterpret_cast<void**>(kFlyEntity);
-			active_a = *reinterpret_cast<void**>(kActiveEntityA);
-			active_b = *reinterpret_cast<void**>(kActiveEntityB);
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-		}
-		fly_controller = GetController(fly);
-		fly_mode = GetModeId(fly_controller);
-		CoopRuntime::Instance().Log("[p1-mode] 0x%08X -> 0x%08X active=(%p,%p) p1=%p fly=%p fly_controller=%p fly_mode=0x%08X\r\n",
-			m_last_player1_mode, mode_now, active_a, active_b, player1, fly,
-			fly_controller, fly_mode);
-		if (mode_now == kMoochSwitchModeId)
-		{
-			// This is the only confirmation point: 0x5BBC80 accepted the local
-			// action and selected the EXE's real Darwin-to-Mooch hand-off mode.
-			// Do not infer ownership from the globals, which are reset on the
-			// following stock tick.
-			CoopNetGame::Instance().ConfirmLocalFlyControl();
-			CoopNetGame::Instance().RequestRemotePlayerTickDeferral();
-		}
-		m_last_player1_mode = mode_now;
+		CoopNetGame::Instance().ConfirmLocalFlyControl();
+		CoopNetGame::Instance().RequestRemotePlayerTickDeferral();
 	}
+	m_last_player1_mode = mode_now;
 }
 
 void Player2Module::ConfigurePlayer2DefaultMode(void* controller)

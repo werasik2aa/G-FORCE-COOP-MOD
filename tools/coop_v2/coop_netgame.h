@@ -152,15 +152,7 @@ namespace coop
 			RoleNone,
 			RoleHost,
 			RoleClient
-		};
-
-		struct ObservedWorldTrigger
-		{
-			std::uint32_t family;
-			std::uint32_t subtype;
-			std::int32_t definition_id;
-			std::int32_t event_code;
-		};
+				};
 
 		CoopNetGame();
 		~CoopNetGame() = default;
@@ -187,10 +179,8 @@ namespace coop
 		// the native call, then hands its trigger-to-live-entity result to WorldSync.
 		void HandleTriggerSpawnFromDefinition(void* trigger);
 		void* HandleTriggerFactory(std::uint32_t family, std::uint32_t subtype,
-			void* output, std::uintptr_t caller);
-				int HandleTriggerEvent(void* trigger, int event_code);
-		void ObserveHostWorldTrigger(std::uint32_t family, std::uint32_t subtype,
-			std::int32_t definition_id, int event_code, int result);
+			void* output);
+		int HandleTriggerEvent(void* trigger, int event_code);
 		bool GetActiveRemoteAction(std::uint32_t action) const;
 		bool GetActiveRemoteHold(std::uint32_t action, float threshold) const;
 		bool GetRemoteFlyRawHeld(std::uint32_t action) const;
@@ -243,12 +233,12 @@ namespace coop
 		void RemoveFireHandlerHook();
 		bool InstallWeaponAmmoConsumeHook();
 		void RemoveWeaponAmmoConsumeHook();
-		bool InstallTriggerSpawnTraceHook();
-		void RemoveTriggerSpawnTraceHook();
-		bool InstallTriggerFactoryTraceHook();
-		void RemoveTriggerFactoryTraceHook();
-		bool InstallTriggerEventTraceHook();
-		void RemoveTriggerEventTraceHook();
+		bool InstallTriggerSpawnHook();
+		void RemoveTriggerSpawnHook();
+		bool InstallTriggerFactoryHook();
+		void RemoveTriggerFactoryHook();
+		bool InstallTriggerEventHook();
+		void RemoveTriggerEventHook();
 		// Generic 5-byte E9 detour installer.  relocate_len original bytes are copied
 		// into a freshly allocated trampoline which then jumps back to address +
 		// relocate_len; relocate_len must be >= 5 and cover whole instructions.  The
@@ -310,8 +300,7 @@ namespace coop
 		bool m_aim_hold_query_hooked;
 		bool m_camera_yaw_hooked;
 		bool m_gpig_camera_update_hooked;
-		bool m_logged_camera_yaw_override;
-		bool m_logged_camera_update_skip;
+
 		bool m_default_mode_update_hooked;
 		bool m_logged_remote_gamepad;
 		bool m_remote_gamepad_unavailable;
@@ -377,22 +366,15 @@ namespace coop
 		BYTE m_original_trigger_spawn_bytes[14];
 		BYTE* m_trigger_spawn_trampoline;
 		TriggerSpawnFromDefinitionFn m_original_trigger_spawn;
-		bool m_trigger_spawn_trace_hooked;
-		volatile LONG m_trigger_spawn_sequence;
+		bool m_trigger_spawn_hooked;
 		BYTE m_original_trigger_factory_bytes[14];
 		BYTE* m_trigger_factory_trampoline;
 		TriggerFactoryFn m_original_trigger_factory;
-		bool m_trigger_factory_trace_hooked;
-		volatile LONG m_trigger_factory_sequence;
+		bool m_trigger_factory_hooked;
 		BYTE m_original_trigger_event_bytes[11];
 		BYTE* m_trigger_event_trampoline;
 		TriggerEventFn m_original_trigger_event;
-		bool m_trigger_event_trace_hooked;
-		volatile LONG m_trigger_event_sequence;
-		ObservedWorldTrigger m_observed_world_triggers[32];
-		std::size_t m_observed_world_trigger_count;
-		bool m_logged_world_trigger_observation_limit;
-		bool m_logged_axis_queries[2];
+		bool m_trigger_event_hooked;
 		bool m_logged_remote_transform;
 		std::uint32_t m_prev_local_action_down[3];
 		std::uint32_t m_prev_remote_action_down[3];

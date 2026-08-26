@@ -293,8 +293,8 @@ namespace coop
 	void WorldSync::RecordTriggerTemplate(void* trigger, std::uint32_t family,
 		std::uint32_t subtype)
 	{
-		// Keep every map-defined trigger: F9 world-event experiments include
-		// breakables and doors, not only live NPC/monster spawners.
+			// Keep every map-defined trigger: breakables and doors are not only
+			// represented by live NPC/monster spawners.
 		if (!trigger)
 			return;
 
@@ -1236,9 +1236,10 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 				retail::EntityView(p1).WriteTransform(transform);
 		}
 
-	void WorldSync::ApplyPendingP1Teleports()
-	{
-		std::vector<TriggerP1TeleportPacket> arrived;
+		void WorldSync::ApplyPendingP1Teleports()
+		{
+			constexpr float kRemoteP2TriggerOffsetX = 0.5f;
+			std::vector<TriggerP1TeleportPacket> arrived;
 		AcquireSRWLockExclusive(&m_packet_lock);
 		arrived.swap(m_incoming_p1_teleports);
 		ReleaseSRWLockExclusive(&m_packet_lock);
@@ -1262,29 +1263,46 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 			return;
 		}
 
-		if (!m_pending_p1_teleports.empty())
-		{
-			const TriggerP1TeleportPacket packet = m_pending_p1_teleports.front();
-			m_pending_p1_teleports.erase(m_pending_p1_teleports.begin());
-			if (!m_remote_p1_teleport_active &&
-				!ReadP1Transform(m_remote_p1_saved_position, m_remote_p1_saved_rotation))
+			if (!m_pending_p1_teleports.empty())
 			{
+				const TriggerP1TeleportPacket packet = m_pending_p1_teleports.front();
+				m_pending_p1_teleports.erase(m_pending_p1_teleports.begin());
+				if (!m_remote_p1_teleport_active &&
+					!ReadP1Transform(m_remote_p1_saved_position, m_remote_p1_saved_rotation))
+				{
+					return;
+				}
+
+				retail::PlayerRepository players;
+				retail::EntityRef local_p2 = {};
+				retail::Transform p2_transform = {};
+				if (!players.Get(retail::PlayerSlot::RemoteP2, local_p2) ||
+					!retail::EntityView(local_p2).ReadTransform(p2_transform))
+				{
+					CoopRuntime::Instance().Log(
+						"[trigger-p1-teleport] skipped seq=%u: local P2 unavailable\r\n",
+						packet.sequence);
+					return;
+				}
+
+				float target_position[4] = {};
+				memcpy(target_position, &p2_transform.position, sizeof(target_position));
+				target_position[0] += kRemoteP2TriggerOffsetX;
+				if (WriteP1Transform(target_position, m_remote_p1_saved_rotation))
+				{
+					m_remote_p1_teleport_active = true;
+					m_last_trigger_p1_teleport_sequence = packet.sequence;
+					memcpy(m_remote_p1_target_position, target_position,
+						sizeof(m_remote_p1_target_position));
+					m_remote_p1_teleport_restore_tick = now + 250;
+					CoopRuntime::Instance().Log(
+						"[trigger-p1-teleport] applied seq=%u pending=%u p2=(%.2f,%.2f,%.2f) target=(%.2f,%.2f,%.2f)\r\n",
+						packet.sequence, static_cast<unsigned>(m_pending_p1_teleports.size()),
+						p2_transform.position.x, p2_transform.position.y, p2_transform.position.z,
+						target_position[0], target_position[1], target_position[2]);
+				}
 				return;
 			}
-			if (WriteP1Transform(packet.position, m_remote_p1_saved_rotation))
-			{
-				m_remote_p1_teleport_active = true;
-				m_last_trigger_p1_teleport_sequence = packet.sequence;
-				memcpy(m_remote_p1_target_position, packet.position,
-					sizeof(m_remote_p1_target_position));
-				m_remote_p1_teleport_restore_tick = now + 250;
-				CoopRuntime::Instance().Log(
-					"[trigger-p1-teleport] applied seq=%u pending=%u pos=(%.2f,%.2f,%.2f)\r\n",
-					packet.sequence, static_cast<unsigned>(m_pending_p1_teleports.size()),
-					packet.position[0], packet.position[1], packet.position[2]);
-			}
-			return;
-		}
 
 		if (m_remote_p1_teleport_active)
 		{
@@ -1305,8 +1323,8 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 			EnumerateHostEntities();
 		if (CoopNetGame::Instance().IsClient())
 			EnumerateClientEntities();
-		// Inbound trigger-position teleports are valid in both directions, unlike
-		// the earlier host-only spawn and trigger-event paths.
+			// Inbound trigger pulses are valid in both directions, unlike the earlier
+			// host-only spawn and trigger-event paths.
 		ProcessClientPackets();
 		ApplyPendingP1Teleports();
 		// Capture the post-hit local HP before applying incoming peer state.  The
@@ -1454,12 +1472,6 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 						float received_health = 0.0f;
 						memcpy(&received_health, &packet.hp_bits, sizeof(received_health));
 						SetTrackedHealth(entity, received_health);
-					}
-					if (packet.event_code == 0)
-					{
-						CoopRuntime::Instance().Log(
-							"[combat] F9 sync: %s\r\n",
-							applied ? "applied" : "target unavailable");
 					}
 
 		}

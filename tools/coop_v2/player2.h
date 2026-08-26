@@ -90,7 +90,7 @@ private:
 	// [[entity+0x144]+0x510], and that walk stops naming the controller that holds
 	// the mode the moment P1 switches to the fly.
 	void TickPlayer1(void* player1_controller);
-	void LogPlayer1ModeEdge(void* player1_controller);
+		void HandlePlayer1ModeTransition(void* player1_controller);
 	// P2 owns a distinct Default-mode instance.  It must remain fully active for
 	// packet input, but must not occupy the one exclusive Default ownership bit
 	// that the stock single-player Mooch hand-off needs for P1.

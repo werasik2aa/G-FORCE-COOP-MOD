@@ -229,9 +229,9 @@ constexpr uint8_t kExpectedTriggerEventDispatcher[] = {
 	constexpr size_t kHandlerInventoryOffset = 0x514u;
 	constexpr size_t kHandlerControllerOffset = 0x510u;
 
-// Confirmed by the one-hit F9 probe on monster subtype 0x1F0000F0:
-// this float changed from 20.0 to 10.0 for one ordinary hit, while no
-// controller field showed a matching discrete health decrement.
+// Confirmed on monster subtype 0x1F0000F0: this float changed from 20.0
+// to 10.0 for one ordinary hit, while no controller field showed a matching
+// discrete health decrement.
 constexpr size_t kHandlerHealthOffset = 0x5A4u;
 constexpr size_t kHandlerSelectedWeaponTypeOffset = 0x26E0u;
 constexpr size_t kControllerOwnerOffset = 0x18u;
