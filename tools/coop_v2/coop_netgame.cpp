@@ -1325,18 +1325,20 @@ namespace coop
 		__try
 		{
 			const BYTE* const bytes = static_cast<const BYTE*>(trigger);
-			const std::uint32_t family = *reinterpret_cast<const std::uint32_t*>(
-				bytes + kTriggerFamilyOffset);
-			if (family != kMonsterTriggerFamily && family != kNpcTriggerFamily)
-				return;
+				const std::uint32_t family = *reinterpret_cast<const std::uint32_t*>(
+					bytes + kTriggerFamilyOffset);
+				const std::uint32_t subtype = *reinterpret_cast<const std::uint32_t*>(
+					bytes + kTriggerSubtypeOffset);
+				const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
+					bytes + kTriggerSpawnIdOffset);
+				WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
 
-			const std::uint32_t subtype = *reinterpret_cast<const std::uint32_t*>(
-				bytes + kTriggerSubtypeOffset);
-			const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
-				bytes + kTriggerSpawnIdOffset);
-			WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
+				const bool is_npc_or_monster = family == kMonsterTriggerFamily ||
+					family == kNpcTriggerFamily;
+				if (!is_npc_or_monster)
+					return;
 
-			void* live_entity = NULL;
+				void* live_entity = NULL;
 			BYTE* const registry = *reinterpret_cast<BYTE**>(kEntityRegistry);
 			const size_t list_offsets[] = {
 				kEntityRegistryMonsterListOffset,
@@ -1378,10 +1380,9 @@ namespace coop
 		if (!m_original_trigger_factory)
 			return NULL;
 
-		void* const trigger = m_original_trigger_factory(family, subtype, output);
-		if (family == kMonsterTriggerFamily || family == kNpcTriggerFamily)
+			void* const trigger = m_original_trigger_factory(family, subtype, output);
 			WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
-		return trigger;
+			return trigger;
 	}
 
 		int CoopNetGame::HandleTriggerEvent(void* trigger, int event_code)
@@ -1392,9 +1393,8 @@ namespace coop
 			if (!trigger || (!IsHost() && !IsClient()))
 				return result;
 
-			// Preserve the currently confirmed NPC/monster path.  Other trigger
-			// families are only observed on the host for now: blindly replaying a
-			// door or breakable event could run local level logic twice on the client.
+			// Replay every map-defined trigger family through the stock dispatcher.
+			// NPC/monster-only handling remains below for HP authority.
 			__try
 			{
 				const BYTE* const bytes = static_cast<const BYTE*>(trigger);
@@ -1412,15 +1412,12 @@ namespace coop
 
 				const bool is_npc_or_monster = family == kMonsterTriggerFamily ||
 					family == kNpcTriggerFamily;
-				if (IsHost() && is_npc_or_monster && definition_id >= 0)
-				{
-					WorldSync::TriggerKey key = {};
-					key.family = family;
-					key.subtype = subtype;
-					key.definition_id = definition_id;
-					key.occurrence = WorldSync::Instance().HostOccurrence(trigger);
-					WorldSync::Instance().QueueHostTriggerEvent(key, event_code, result);
-				}
+				WorldSync::TriggerKey key = {};
+				key.family = family;
+				key.subtype = subtype;
+				key.definition_id = definition_id;
+				key.occurrence = WorldSync::Instance().LocalOccurrence(trigger);
+				WorldSync::Instance().QueueTriggerEvent(key, event_code, result);
 				if (is_npc_or_monster)
 				{
 					// A gameplay event on a world-linked entity (a whip hit, a shot) is

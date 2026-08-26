@@ -35,15 +35,15 @@ namespace coop
 		// Called from P1's first post-load tick.  The socket worker later sends one
 		// WorldReady packet, which makes the host replay its current baseline.
 		void NotifyLocalWorldReady();
-		// Returns the host-side occurrence counter for a native trigger pointer,
-		// assigning a new one on first sight.  Only meaningful on the host.
-		std::uint32_t HostOccurrence(void* trigger);
+		// Returns the local occurrence counter for a native trigger pointer,
+		// assigning a new one on first sight for either connected role.
+		std::uint32_t LocalOccurrence(void* trigger);
 		// Returns the local trigger object matching a process-neutral trigger key,
 		// or NULL when this process has not built that template yet.
 		void* FindTemplateTrigger(std::uint32_t family,
 			std::uint32_t subtype, std::int32_t definition_id);
-		// Host-only: queues one reliable trigger-event packet for the client.
-		void QueueHostTriggerEvent(const TriggerKey& key, int event_code,
+		// Queues one reliable native trigger-event packet for the connected peer.
+		void QueueTriggerEvent(const TriggerKey& key, int event_code,
 			int result);
 		// Game-thread: publishes the entity's current absolute HP through a reliable
 		// packet.  Both roles may call this after a local hit or HP change.

@@ -180,10 +180,11 @@ namespace coop
 		return counter.occurrence;
 	}
 
-	std::uint32_t WorldSync::HostOccurrence(void* trigger)
-	{
-		return NextOccurrence(m_host_trigger_counters, trigger);
-	}
+		std::uint32_t WorldSync::LocalOccurrence(void* trigger)
+		{
+			return NextOccurrence(CoopNetGame::Instance().IsHost() ?
+				m_host_trigger_counters : m_client_trigger_counters, trigger);
+		}
 
 	void* WorldSync::FindTemplateTrigger(std::uint32_t family,
 		std::uint32_t subtype, std::int32_t definition_id)
@@ -428,12 +429,11 @@ namespace coop
 		entity.have_transform = true;
 	}
 
-	void WorldSync::QueueHostTriggerEvent(const TriggerKey& key, int event_code,
-		int result)
-	{
-		if (!CoopNetGame::Instance().IsHost() ||
-			!CoopNetGame::Instance().HasRemotePeer() || !key.occurrence)
-			return;
+		void WorldSync::QueueTriggerEvent(const TriggerKey& key, int event_code,
+			int result)
+		{
+			if (!CoopNetGame::Instance().HasRemotePeer() || !key.occurrence)
+				return;
 
 			WorldTriggerEventPacket packet = {};
 			protocol::InitializeFixedPacket(packet,
@@ -1433,16 +1433,11 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 		bool WorldSync::HandleWorldTriggerEventPacket(const protocol::PacketView& view)
 		{
 			WorldTriggerEventPacket packet = {};
-			if (!view.CopyUncompressedExact(packet) ||
-				!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
-			{
-				return true;
-			}
-			if (!IsSupportedFamily(packet.key.family) || !packet.key.occurrence)
+			if (!view.CopyUncompressedExact(packet) || !packet.key.occurrence)
 				return true;
 
 			CoopRuntime::Instance().Log(
-				"[world-trigger-event] client received key=%08X/%08X/%d occ=%u event=%d\r\n",
+				"[world-trigger-event] peer received key=%08X/%08X/%d occ=%u event=%d\r\n",
 				packet.key.family, packet.key.subtype, packet.key.definition_id,
 				packet.key.occurrence, packet.event_code);
 			AcquireSRWLockExclusive(&m_packet_lock);
