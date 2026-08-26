@@ -82,8 +82,9 @@ private:
 	bool SyncPlayer2WeaponSelection(void* player2);
 	bool ApplyPlayer2WeaponSelection(void* player2, uint32_t weapon_type,
 		const char* source);
-	void SpawnPlayer2FromSnapshot(const char* trigger);
-			void PollPlayer2SpawnKey();
+		void SpawnPlayer2FromSnapshot(const char* trigger);
+		bool PromoteClientBlackPigToPlayer1(void*& player1_controller);
+				void PollPlayer2SpawnKey();
 		// P1's stock tick, wrapped in the local half of the network bracket.  Called
 	// only from P1's own array slot, with the controller the game itself handed to
 	// the hook: re-issuing the tick from anywhere else has to re-resolve
@@ -112,8 +113,10 @@ private:
 	// This is a mod-side one-shot guard, not a field in the game entity.  P2
 	// must run Default mode to consume its packet input, but SelectMode must
 	// never be retried during an unrelated Darwin-to-Mooch transition.
-	bool m_player2_default_mode_initialized;
-	bool m_logged_player2;
+		bool m_player2_default_mode_initialized;
+		bool m_client_black_pig_promoted;
+		bool m_client_black_pig_promotion_failed;
+		bool m_logged_player2;
 	bool m_logged_blocked_active_publish;
 		void* m_last_logged_mooch_controller;
 	

@@ -72,8 +72,10 @@ Player2Module::Player2Module() :
 	m_player2_ready(0),
 	m_spawn_snapshot_ready(0),
 	m_spawn_in_progress(0),
-	m_player2_default_mode_initialized(false),
-	m_logged_player2(false),
+		m_player2_default_mode_initialized(false),
+		m_client_black_pig_promoted(false),
+		m_client_black_pig_promotion_failed(false),
+		m_logged_player2(false),
 		m_logged_blocked_active_publish(false),
 			m_last_logged_mooch_controller(NULL),
 
@@ -639,6 +641,90 @@ void Player2Module::SpawnPlayer2FromSnapshot(const char* trigger)
 	InterlockedExchange(&m_spawn_in_progress, 0);
 }
 
+bool Player2Module::PromoteClientBlackPigToPlayer1(void*& player1_controller)
+{
+	if (!CoopNetGame::Instance().IsClient() ||
+		m_client_black_pig_promoted || m_client_black_pig_promotion_failed)
+	{
+		return m_client_black_pig_promoted;
+	}
+	if (!CoopNetGame::Instance().HasRemotePeer() ||
+		InterlockedCompareExchange(&m_spawn_snapshot_ready, 0, 0) == 0 ||
+		!m_spawn_context)
+	{
+		return false;
+	}
+
+	void* const darwin = GetGPigEntity(
+		static_cast<int>(retail::PlayerSlot::LocalP1));
+	if (!darwin || !player1_controller)
+		return false;
+
+	void* black_pig = GetGPigEntity(
+		static_cast<int>(retail::PlayerSlot::RemoteP2));
+	if (!black_pig)
+	{
+		Vec4 black_pig_position = {};
+		Vec4 black_pig_rotation = {};
+		__try
+		{
+			black_pig_position = *reinterpret_cast<Vec4*>(
+				reinterpret_cast<BYTE*>(darwin) + kEntityPositionOffset);
+			black_pig_rotation = *reinterpret_cast<Vec4*>(
+				reinterpret_cast<BYTE*>(darwin) + kEntityRotationOffset);
+			black_pig_position.x += 0.5f;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+
+		SpawnGPigFn spawn = reinterpret_cast<SpawnGPigFn>(kSpawnGPig);
+		__try
+		{
+			black_pig = spawn(&black_pig_position, &black_pig_rotation,
+				kGPig2Id, m_spawn_context);
+		}
+		__except (CoopRuntime::Instance().LogException(
+			GetExceptionInformation(), "client-black-pig-factory"))
+		{
+			m_client_black_pig_promotion_failed = true;
+			return false;
+		}
+	}
+
+	void* const black_pig_controller = GetController(black_pig);
+	const retail::Address p1_slot = kGPigEntityArray +
+		static_cast<retail::Address>(retail::PlayerSlot::LocalP1) *
+		sizeof(retail::Address);
+	const retail::Address p2_slot = kGPigEntityArray +
+		static_cast<retail::Address>(retail::PlayerSlot::RemoteP2) *
+		sizeof(retail::Address);
+	const retail::Address black_pig_address = retail::ToAddress(black_pig);
+	const retail::Address darwin_address = retail::ToAddress(darwin);
+	if (!black_pig || !black_pig_controller ||
+		!retail::TryWrite(p1_slot, black_pig_address) ||
+		!retail::TryWrite(p2_slot, darwin_address) ||
+		!retail::ActiveEntityStore().Set({ black_pig_address }))
+	{
+		m_client_black_pig_promotion_failed = true;
+		CoopRuntime::Instance().Log(
+			"[client-role] Black Pig promotion failed black=%p darwin=%p\r\n",
+			black_pig, darwin);
+		return false;
+	}
+
+	m_player2_default_mode_initialized = false;
+	m_last_weapon_type = 0xFFFFFFFFu;
+	InterlockedExchange(&m_player2_ready, 1);
+	m_client_black_pig_promoted = true;
+	player1_controller = black_pig_controller;
+	CoopRuntime::Instance().Log(
+		"[client-role] Black Pig promoted to P1=%p; Darwin moved to P2=%p\r\n",
+		black_pig, darwin);
+	return true;
+}
+
 void Player2Module::PollPlayer2SpawnKey()
 {
 	const bool down = (GetAsyncKeyState(CoopRuntime::Instance().Config().spawn_key) & 0x8000) != 0;
@@ -662,6 +748,17 @@ void Player2Module::TickPlayer1(void* player1_controller)
 	WorldSync::Instance().NotifyLocalWorldReady();
 	if (SteamManager)
 		SteamManager->NotifyGameWorldReady();
+
+	// Once client transport is live, promote the existing Black Pig archetype to
+	// the real local P1 slot and move the original Darwin into packet-driven P2.
+	// This runs on the game thread after a verified P1 tick; no factory ID is
+	// changed at initial world load.
+	PromoteClientBlackPigToPlayer1(player1_controller);
+	if (m_client_black_pig_promoted &&
+		GetModeId(player1_controller) == kInactiveModeId)
+	{
+		SelectMode(player1_controller, kDefaultModeId);
+	}
 
 	// The single shared GPig camera belongs to whoever the player is actually
 	// driving.  Its mode goes back to Default immediately after the native Mooch
