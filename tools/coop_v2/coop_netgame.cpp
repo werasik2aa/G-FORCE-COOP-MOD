@@ -213,11 +213,14 @@ namespace coop
 		m_original_trigger_event(NULL),
 		m_trigger_event_trace_hooked(false),
 		m_trigger_event_sequence(0),
+		m_observed_world_trigger_count(0),
+		m_logged_world_trigger_observation_limit(false),
 		m_remote_input_thread_id(0),
 		m_local_transform_sequence(0),
-		m_local_fly_transform_sequence(0),
+				m_local_fly_transform_sequence(0),
 		m_local_fly_active_seen(false),
 		m_local_mooch_exit_key_down(false),
+
 		m_logged_fly_active_entity_repair(false),
 		m_local_weapon_sequence(0),
 		m_last_local_weapon_type(0xFFFFFFFFu),
@@ -227,6 +230,7 @@ namespace coop
 		ZeroMemory(&m_remote_input, sizeof(m_remote_input));
 		ZeroMemory(&m_active_remote_input, sizeof(m_active_remote_input));
 		ZeroMemory(&m_local_input, sizeof(m_local_input));
+		ZeroMemory(m_observed_world_triggers, sizeof(m_observed_world_triggers));
 		ZeroMemory(m_saved_keyboard_state, sizeof(m_saved_keyboard_state));
 		ZeroMemory(m_saved_keyboard_state_secondary,
 			sizeof(m_saved_keyboard_state_secondary));
@@ -794,12 +798,14 @@ namespace coop
 			m_local_input.fly_raw_press_seq[raw_index]++;
 			m_local_input.fly_raw_down |= bit;
 		}
-		if (released_edge)
+				if (released_edge)
 		{
 			m_local_input.fly_raw_release_seq[raw_index]++;
 			m_local_input.fly_raw_down &= ~bit;
 		}
 		ReleaseSRWLockExclusive(&m_input_lock);
+		
+
 	}
 
 	bool CoopNetGame::GetActiveRemoteAction(std::uint32_t action) const
@@ -901,11 +907,12 @@ namespace coop
 			m_remote_input.fly_raw_release_seq[raw_index];
 		const bool edge = remote_controls_fly && previous[raw_index] != current;
 		previous[raw_index] = current;
-		ReleaseSRWLockExclusive(&m_input_lock);
+				ReleaseSRWLockExclusive(&m_input_lock);
 		return edge;
 	}
 
 	bool CoopNetGame::GetRemoteFlyFireAction() const
+
 	{
 		CoopInput remote = {};
 		if (!GetRemoteInput(remote) || remote.fly_controlled == 0 ||
@@ -1425,43 +1432,98 @@ namespace coop
 		return trigger;
 	}
 
-	int CoopNetGame::HandleTriggerEvent(void* trigger, int event_code)
-	{
+		void CoopNetGame::ObserveHostWorldTrigger(std::uint32_t family,
+			std::uint32_t subtype, std::int32_t definition_id, int event_code,
+			int result)
+		{
+					if (!IsHost() && !IsClient())
+			return;
+
+			for (std::size_t index = 0; index < m_observed_world_trigger_count;
+				++index)
+			{
+				const ObservedWorldTrigger& seen = m_observed_world_triggers[index];
+				if (seen.family == family && seen.subtype == subtype &&
+					seen.definition_id == definition_id && seen.event_code == event_code)
+				{
+					return;
+				}
+			}
+			if (m_observed_world_trigger_count >=
+				_countof(m_observed_world_triggers))
+			{
+				if (!m_logged_world_trigger_observation_limit)
+				{
+					m_logged_world_trigger_observation_limit = true;
+					CoopRuntime::Instance().Log(
+						"[world-event] observation limit reached; further types suppressed\r\n");
+				}
+				return;
+			}
+			ObservedWorldTrigger& observed =
+				m_observed_world_triggers[m_observed_world_trigger_count++];
+			observed.family = family;
+			observed.subtype = subtype;
+			observed.definition_id = definition_id;
+			observed.event_code = event_code;
+					const char* const role = IsHost() ? "host" : "client";
+		CoopRuntime::Instance().Log(
+			"[world-event] %s family=%08X subtype=%08X def=%d event=%d result=%d\r\n",
+			role, family, subtype, definition_id, event_code, result);
+
+		}
+
+		int CoopNetGame::HandleTriggerEvent(void* trigger, int event_code)
+		{
 		if (!m_original_trigger_event)
 			return 0;
 		const int result = m_original_trigger_event(trigger, event_code);
-		if (!trigger || !HasRemotePeer() || (!IsHost() && !IsClient()))
-			return result;
-
-		// This is diagnostic only.  The event must be observed before it is ever
-		// replayed remotely: some ids are state updates rather than an activation.
-		__try
-		{
-			const BYTE* const bytes = static_cast<const BYTE*>(trigger);
-			const std::uint32_t family = *reinterpret_cast<const std::uint32_t*>(
-				bytes + kTriggerFamilyOffset);
-			if (family != kMonsterTriggerFamily && family != kNpcTriggerFamily)
+			if (!trigger || (!IsHost() && !IsClient()))
 				return result;
-			const std::uint32_t subtype = *reinterpret_cast<const std::uint32_t*>(
-				bytes + kTriggerSubtypeOffset);
-			const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
-				bytes + kTriggerSpawnIdOffset);
-			if (IsHost() && definition_id >= 0)
+
+			// Preserve the currently confirmed NPC/monster path.  Other trigger
+			// families are only observed on the host for now: blindly replaying a
+			// door or breakable event could run local level logic twice on the client.
+			__try
 			{
-				WorldSync::TriggerKey key = {};
-				key.family = family;
-				key.subtype = subtype;
-				key.definition_id = definition_id;
-				key.occurrence = WorldSync::Instance().HostOccurrence(trigger);
-				WorldSync::Instance().QueueHostTriggerEvent(key, event_code, result);
+				const BYTE* const bytes = static_cast<const BYTE*>(trigger);
+				const std::uint32_t family = *reinterpret_cast<const std::uint32_t*>(
+					bytes + kTriggerFamilyOffset);
+				const std::uint32_t subtype = *reinterpret_cast<const std::uint32_t*>(
+					bytes + kTriggerSubtypeOffset);
+				const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
+					bytes + kTriggerSpawnIdOffset);
+				if (IsHost() || IsClient())
+				{
+					ObserveHostWorldTrigger(family, subtype, definition_id, event_code, result);
+					WorldSync::Instance().ObserveLocalP1Trigger(trigger);
+				}
+				// Observation is useful before a client connects; packet queueing and
+				// HP authority still require an actual peer.
+				if (!HasRemotePeer())
+					return result;
+
+				const bool is_npc_or_monster = family == kMonsterTriggerFamily ||
+					family == kNpcTriggerFamily;
+				if (IsHost() && is_npc_or_monster && definition_id >= 0)
+				{
+					WorldSync::TriggerKey key = {};
+					key.family = family;
+					key.subtype = subtype;
+					key.definition_id = definition_id;
+					key.occurrence = WorldSync::Instance().HostOccurrence(trigger);
+					WorldSync::Instance().QueueHostTriggerEvent(key, event_code, result);
+				}
+				if (is_npc_or_monster)
+				{
+					// A gameplay event on a world-linked entity (a whip hit, a shot) is
+					// the HP-authority channel.
+					void* const linked_entity = WorldSync::Instance().EntityOfTrigger(
+						trigger);
+					if (linked_entity)
+						WorldSync::Instance().ReportLocalDamage(linked_entity, event_code);
+				}
 			}
-			// A gameplay event on a world-linked entity (a whip hit, a shot) is the
-			// damage channel: forward one confirmed hit to the peer.
-			void* const linked_entity = WorldSync::Instance().EntityOfTrigger(
-				trigger);
-			if (linked_entity)
-				WorldSync::Instance().ReportLocalDamage(linked_entity, event_code);
-		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
 			CoopRuntime::Instance().Log(
@@ -1879,48 +1941,27 @@ namespace coop
 			return false;
 
 		const bool is_remote_thread = IsRemoteInputActiveOnThisThread();
-		const bool is_keyboard_action = (action >= kFirstKeyboardActionId &&
+				const bool is_keyboard_action = (action >= kFirstKeyboardActionId &&
 			action < kFirstKeyboardActionId + kKeyboardActionCount);
-
 		// 0x488A70 is a level ("is-down now") query.  On P2 return the held state
+
 		// straight from the packet; rising/falling transitions are served by the
 		// dedicated edge hooks (0x488CE0 / 0x488C00) instead.
-		if (is_remote_thread && is_keyboard_action)
-		{
-			// The same Fire action drives both Darwin weapons and Mooch.  While the
-			// sender owns Mooch, reserve Fire for Fly_Scan's explicit call-site below;
-			// feeding it into P2 here makes the remote Darwin attack at the same time.
-			// The Fly_Scan fire path (0x5B6B0C) polls 0x488A70 with this return
-			// address on both threads, so serve the remote laser trigger there too.
-			if (action == kFireActionId && IsRemoteFlyControlled() &&
-				reinterpret_cast<std::uintptr_t>(_ReturnAddress()) ==
-				kFlyScanFireActionQueryReturn)
-			{
-				return GetRemoteFlyFireAction();
-			}
-			if (action == kFireActionId && IsRemoteFlyControlled())
-				return false;
+				if (is_remote_thread && is_keyboard_action)
 			return GetActiveRemoteAction(action);
-		}
-		if (!is_remote_thread && action == kFireActionId &&
-			reinterpret_cast<std::uintptr_t>(_ReturnAddress()) ==
-			kFlyScanFireActionQueryReturn && IsRemoteFlyControlled())
-		{
-			// Only XControllerMode_Fly_Scan gets the remote Fire state.  Darwin's
-			// weapon paths use the same logical action and must keep physical input.
-			return GetRemoteFlyFireAction();
-		}
+
 		if (is_keyboard_action && IsMoochAction(action) &&
 			IsRemoteFlyControlled())
 		{
 			return false;
 		}
 
-		const bool result = m_original_input_action_query(input_manager, device,
+				const bool result = m_original_input_action_query(input_manager, device,
 			action, flags);
 		if (is_keyboard_action && !is_remote_thread)
 			CaptureLocalAction(action, result);
 		return result;
+
 	}
 
 	bool __fastcall CoopNetGame::HandleInputActionUpQuery(void* input_manager,
@@ -2093,9 +2134,13 @@ namespace coop
 	{
 		if (!m_original_input_raw_pressed_query)
 			return false;
-		if (FindFlyRawActionIndex(action) >= 0 && IsRemoteFlyControlled())
-			return ConsumeRemoteFlyRawEdge(action, true);
+				if (FindFlyRawActionIndex(action) >= 0 && IsRemoteFlyControlled())
+		{
+			const bool edge = ConsumeRemoteFlyRawEdge(action, true);
+			return edge;
+		}
 		const bool result = m_original_input_raw_pressed_query(input_manager,
+
 			device, action, flags, record);
 		if (result)
 			CaptureLocalFlyRaw(action, true, true, false);

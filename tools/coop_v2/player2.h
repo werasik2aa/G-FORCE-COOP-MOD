@@ -51,9 +51,10 @@ private:
 
 	void* GetGPigEntity(int slot);
 	void* GetFlyEntity();
-	void* GetController(void* entity);
+		void* GetController(void* entity);
 	uint32_t GetModeId(void* controller);
 	int FindGPigSlot(void* controller);
+
 	void SelectMode(void* controller, uint32_t mode_id);
 	bool RefreshCameraForController(void* controller);
 	uint32_t RestorePlayer1CameraTarget();
@@ -121,8 +122,11 @@ private:
 	bool m_player2_default_mode_initialized;
 	bool m_logged_player2;
 	bool m_logged_blocked_active_publish;
-	void* m_last_logged_mooch_controller;
+		void* m_last_logged_mooch_controller;
+	
+
 	// Last observed mode id of P1's controller, so the diagnostic below fires on
+
 	// the transition only and never every frame.
 	uint32_t m_last_player1_mode;
 	bool m_spawn_key_was_down;

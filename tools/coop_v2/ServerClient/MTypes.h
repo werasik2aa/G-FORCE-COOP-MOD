@@ -42,8 +42,12 @@ enum CoopPacketId : std::uint32_t
 	kCoopPacketWorldTriggerEvent = 33,
 	// Either side reports local-player damage on a world-linked entity.
 	kCoopPacketWorldDamage = 34,
-	// Host -> client: entity has been despawned/died.  Client removes it.
-	kCoopPacketWorldDespawn = 35
+			// Host -> client: entity has been despawned/died.  Client removes it.
+		kCoopPacketWorldDespawn = 35,
+		// Either peer requests that the other process briefly moves its own local P1
+		// to a locally activated trigger position, then restores that P1.
+		kCoopPacketTriggerP1Teleport = 36
+
 };
 
 struct PacketHeader

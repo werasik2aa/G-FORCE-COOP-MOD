@@ -64,8 +64,15 @@ bool CSteamOnlineSocketServer::OpenListenSocketP2P(std::uint32_t port)
 
 void CSteamOnlineSocketServer::CloseServer()
 {
-	if (SteamFriends())
-		SteamFriends()->ClearRichPresence();
+	// F8 changes an already-loaded standalone host into an IP client.  This path
+	// closes the optional Steam server even when SteamAPI_Init never succeeded.
+	// SteamFriends() is not safe to query without that API context, whereas the
+	// underlying offline socket close is always valid and must still run.
+	if (SteamManager && SteamManager->IsSteamInitialized())
+	{
+		if (ISteamFriends* friends = SteamFriends())
+			friends->ClearRichPresence();
+	}
 	CSteamOfflineSocketServer::CloseServer();
 }
 

@@ -25,9 +25,11 @@ Player2Module::Player2Module() :
 	m_spawn_in_progress(0),
 	m_player2_default_mode_initialized(false),
 	m_logged_player2(false),
-	m_logged_blocked_active_publish(false),
-	m_last_logged_mooch_controller(NULL),
+		m_logged_blocked_active_publish(false),
+			m_last_logged_mooch_controller(NULL),
+
 	m_last_player1_mode(0),
+
 	m_spawn_key_was_down(false),
 	m_npc_spawn_key_was_down(false),
 	m_npc_spawn_random_state(0),
@@ -125,23 +127,26 @@ void* Player2Module::GetController(void* entity)
 	}
 }
 
-uint32_t Player2Module::GetModeId(void* controller)
-{
-	if (!controller)
-		return 0;
-	__try
+	uint32_t Player2Module::GetModeId(void* controller)
 	{
-		BYTE* mode = *reinterpret_cast<BYTE**>(
-			reinterpret_cast<BYTE*>(controller) + kControllerModeOffset);
-		return mode ? *reinterpret_cast<uint32_t*>(mode + kModeIdOffset) : 0;
+		if (!controller)
+			return 0;
+		__try
+		{
+			BYTE* mode = *reinterpret_cast<BYTE**>(
+				reinterpret_cast<BYTE*>(controller) + kControllerModeOffset);
+			return mode ? *reinterpret_cast<uint32_t*>(mode + kModeIdOffset) : 0;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return 0;
+		}
 	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		return 0;
-	}
-}
 
-int Player2Module::FindGPigSlot(void* controller)
+	
+
+	int Player2Module::FindGPigSlot(void* controller)
+
 {
 	if (!controller)
 		return 0;
@@ -955,23 +960,23 @@ void Player2Module::UpdateController(void* controller)
 		// in its own slot and nowhere else.  Everything else - the fly's own
 		// controller included, which FindGPigSlot reports as 0 because it is entity
 		// slot 4 (0x9128E8) and not a guinea pig - gets the stock tick untouched.
-		if (slot == 1)
-			TickPlayer1(controller);
-		else if (controller == GetController(GetFlyEntity()))
-		{
-			void* fly = GetFlyEntity();
-			const uint32_t fly_mode_before = GetModeId(controller);
-			m_original_update(controller);
-			// Capture after Mooch's native motor has produced this frame's final
-			// position.  The owner state itself was confirmed from P1's native
-			// Darwin-to-Mooch hand-off and is not inferred here.
-			CoopNetGame::Instance().ObserveLocalFlyMode(fly_mode_before,
-				GetModeId(controller));
-			CoopNetGame::Instance().MaintainLocalFlyActiveEntity(fly);
-			CoopNetGame::Instance().PublishLocalFlyTransform(fly);
-			if (!CoopNetGame::Instance().IsLocalFlyControlled())
-				CoopNetGame::Instance().ApplyRemoteFlyTransform(fly);
-		}
+			if (slot == 1)
+				TickPlayer1(controller);
+			else if (controller == GetController(GetFlyEntity()))
+			{
+				void* const fly = GetFlyEntity();
+				const uint32_t fly_mode_before = GetModeId(controller);
+				m_original_update(controller);
+				// Keep only the previously working shared-Mooch transform presentation.
+				// Remote native tick/fire replay is intentionally removed.
+				CoopNetGame::Instance().ObserveLocalFlyMode(fly_mode_before,
+					GetModeId(controller));
+				CoopNetGame::Instance().MaintainLocalFlyActiveEntity(fly);
+				CoopNetGame::Instance().PublishLocalFlyTransform(fly);
+				if (!CoopNetGame::Instance().IsLocalFlyControlled())
+					CoopNetGame::Instance().ApplyRemoteFlyTransform(fly);
+			}
+
 		else
 			m_original_update(controller);
 		// Edge-triggered on the key itself, so polling it from whichever controller

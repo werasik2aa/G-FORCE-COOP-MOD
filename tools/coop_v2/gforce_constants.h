@@ -56,6 +56,32 @@ constexpr uintptr_t kFireHandler = 0x005B8760u;
 // point that can preserve P1's pool without racing the stock write.
 constexpr uintptr_t kWeaponAmmoConsume = 0x0059F650u;
 constexpr uintptr_t kXGamePadCtor = 0x0048B290u;
+
+// Retail main menu, verified in IDA 9.1 against XHudMenuMain::BuildMainMenu
+// (0x5EECC0).  0x5EED92 is the original AddChild call immediately after the
+// stock «Авторы» button; it is a narrow call-site hook rather than a Steam ASI
+// signature.  The new button reuses unused resource 0x43003B3E and its text is
+// provided as a normal EXWString by the resolver hook below.
+constexpr uintptr_t kMenuCreditsAddChildCall = 0x005EED92u;
+constexpr uintptr_t kMenuAddChild = 0x005C4850u;
+// The stock Credits call enters AddChild after its EDI=ECX setup, at +5.
+// Preserve this exact target when the narrow call-site hook forwards the stock row.
+constexpr uintptr_t kMenuCreditsAddChildTarget = 0x005C4855u;
+constexpr uintptr_t kMenuCreateButton = 0x005E8420u;
+constexpr uintptr_t kMenuLabelResolver = 0x00490900u;
+constexpr uintptr_t kGameAllocator = 0x00605919u;
+constexpr uintptr_t kGameFree = 0x006059EEu;
+constexpr uintptr_t kGameStringRelease = 0x0064E925u;
+constexpr uint32_t kRetailMenuUintCallbackVtable = 0x0071B098u;
+constexpr uint32_t kConnectLabelResourceId = 0x43003B3Eu;
+constexpr uint8_t kExpectedMenuCreditsAddChildCall[] = {
+	0xE8, 0xB9, 0x5A, 0xFD, 0xFF
+};
+constexpr uint8_t kExpectedMenuLabelResolver[] = {
+	0x6A, 0xFF, 0x68, 0xB8, 0x5F, 0x6D, 0x00,
+	0x64, 0xA1, 0x0C, 0x03, 0x91, 0x00
+};
+
 // XLoadSaveManagerPlatform is a process-global object.  The stock Load Game
 // menu passes the selected zero-based row to 0x5F1920, which persists it here
 // before the game flow switches into loading.  It is therefore the selected
@@ -84,8 +110,14 @@ constexpr uintptr_t kEntityRegistry = 0x00912B50u;
 // the guinea-pig slots 1..3, so P2 in slot 2 does not collide with it.  The fly
 // switch at 0x5BBC80 refuses to run when this is null (0x5BBD00), and reads the
 // fly's handler through [fly + 0x144] at 0x5BBD6B.
-constexpr uintptr_t kFlyEntity = 0x009128E8u;
-constexpr uintptr_t kCameraManager = 0x00915738u;
+	constexpr uintptr_t kFlyEntity = 0x009128E8u;
+	// GPig_Mooch::Enter enables this exact state before native Fly_Active::Update
+	// can read its raw action branches.  The receiver mirrors only this lifecycle
+	// flag while the remote peer owns the shared fly.
+	constexpr uintptr_t kFlyActiveStateIndex = 0x009155FCu;
+	constexpr size_t kHandlerFlyStateTableOffset = 0x4ECu;
+	constexpr uintptr_t kCameraManager = 0x00915738u;
+
 constexpr uintptr_t kKeyboardStateOwner = 0x00AA6580u;
 constexpr uintptr_t kGetCameraHandler = 0x00515C80u;
 constexpr uintptr_t kRefreshGPigCamera = 0x005B03A0u;
@@ -150,8 +182,16 @@ constexpr size_t kTriggerCloneVtableOffset = 0x3Cu;
 // Trigger reference slot used by sub_472B00 resolver; found at line 6728 of
 // ida_trace_npc.txt where trigger[90] = *(trigger + 0x168) is resolved.
 constexpr size_t kTriggerResolverSlotOffset = 0x168u;
-constexpr uint32_t kMonsterTriggerFamily = 0x1E000002u;
-constexpr uint32_t kNpcTriggerFamily = 0x1E00000Cu;
+	constexpr uint32_t kMonsterTriggerFamily = 0x1E000002u;
+	constexpr uint32_t kNpcTriggerFamily = 0x1E00000Cu;
+	// Verified computing-centre chain: the source box/activator first receives
+	// 0x41080022, then the game creates the downstream computer spawner, which
+	// later produces dynamic chip/spider triggers (definition -1).
+	constexpr uint32_t kComputerBoxTriggerSubtype = 0x1F000095u;
+	constexpr int32_t kComputerBoxTriggerDefinition = 43;
+	constexpr int32_t kComputerBoxActivateEvent = 0x41080022;
+	constexpr uint32_t kComputerSpawnerTriggerSubtype = 0x1F0000D6u;
+	constexpr int32_t kComputerSpawnerTriggerDefinition = 104;
 constexpr uint32_t kTriggerHasSpawnDefinition = 0x04000000u;
 // The two known clone implementations are the generic one and the monster
 // override.  Both preserve the source trigger's map-only spawn definition.
@@ -186,8 +226,9 @@ constexpr uint8_t kExpectedTriggerEventDispatcher[] = {
 // 0x5933E0 walks an inventory list, not the GPig handler itself.  The ammo HUD
 // obtains this exact container through `[handler + 0x514]` at 0x5D60EF before
 // resolving the selected weapon's WeaponAmmoItem record.
-constexpr size_t kHandlerInventoryOffset = 0x514u;
-constexpr size_t kHandlerControllerOffset = 0x510u;
+	constexpr size_t kHandlerInventoryOffset = 0x514u;
+	constexpr size_t kHandlerControllerOffset = 0x510u;
+
 // Confirmed by the one-hit F9 probe on monster subtype 0x1F0000F0:
 // this float changed from 20.0 to 10.0 for one ordinary hit, while no
 // controller field showed a matching discrete health decrement.
@@ -247,11 +288,14 @@ constexpr uint32_t kP2DefaultExclusiveMask = 0x00000001u;
 // One-frame Darwin controller mode selected by the local Mooch-switch action.
 // Its next stock update must run on Darwin before P2 is allowed to tick.
 constexpr uint32_t kMoochSwitchModeId = 0x61000065u;
-// Mooch's controller enters 0x34 after the confirmed Darwin hand-off and
-// returns to 0x33 when the native flight finishes.  These modes are only used
-// to observe the already-confirmed owner lifecycle, never to infer entry.
-constexpr uint32_t kFlyIdleModeId = 0x61000033u;
-constexpr uint32_t kFlyControlledModeId = 0x61000034u;
+	// GPig_Mooch::Enter sets the fly state's +0x53 active flag.  The native
+	// Fly_Active::Update body at 0x5B4C30 continues while that flag is set, but
+	// selects 0x34 as soon as it is clear.  Thus 0x33 is Fly_Active and 0x34 is
+	// its idle/follow state.  These IDs only observe an already-confirmed owner
+	// lifecycle; they never manufacture a transition.
+	constexpr uint32_t kFlyIdleModeId = 0x61000034u;
+	constexpr uint32_t kFlyControlledModeId = 0x61000033u;
+
 constexpr uint32_t kFirstKeyboardActionId = 0x10000000u;
 constexpr uint32_t kKeyboardActionCount = 0x43u;
 constexpr uint32_t kFireActionId = 0x10000007u;

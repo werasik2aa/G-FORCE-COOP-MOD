@@ -39,7 +39,7 @@ bool CSteamOfflineSocketClient::CreateConnection(const char* connection_ip)
 		return false;
 
 	SteamNetworkingIPAddr address;
-	if (!address.ParseString(connection_ip))
+	if (!ParseStandaloneIPv4Address(connection_ip, address))
 	{
 		Msg("[network-error] invalid server address: %s", connection_ip);
 		return false;

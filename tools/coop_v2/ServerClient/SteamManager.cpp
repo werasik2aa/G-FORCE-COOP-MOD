@@ -373,7 +373,7 @@ void CSteamManager::ConnectToIpAddress(const char* address)
 	}
 
 	SteamNetworkingIPAddr parsed_address;
-	if (!parsed_address.ParseString(connection_address))
+	if (!ParseStandaloneIPv4Address(connection_address, parsed_address))
 	{
 		Msg("[network-error] invalid server address: %s", connection_address);
 		return;

@@ -56,8 +56,13 @@ namespace coop
 		// tick so the hand-off latch cannot miss it when the same tick ends in 0x33.
 		void ObserveLocalFlyMode(std::uint32_t mode_before,
 			std::uint32_t mode_after);
-		bool IsLocalFlyControlled() const;
+				bool IsLocalFlyControlled() const;
+		// The receiving process uses this only to feed the packet snapshot through
+		// the one stock shared Mooch controller tick.
+		bool IsRemoteFlyControlled() const;
+		bool GetRemoteFlyFireAction() const;
 		// Fly_Active::Enter normally publishes Mooch as both active entities, but
+
 		// P1's still-ticking Default controller later overwrites those globals.  Keep
 		// the native fly ownership published after its own tick; never manufacture
 		// its transform or rotation.
@@ -149,6 +154,14 @@ namespace coop
 			RoleClient
 		};
 
+		struct ObservedWorldTrigger
+		{
+			std::uint32_t family;
+			std::uint32_t subtype;
+			std::int32_t definition_id;
+			std::int32_t event_code;
+		};
+
 		CoopNetGame();
 		~CoopNetGame() = default;
 		CoopNetGame(const CoopNetGame&) = delete;
@@ -175,14 +188,15 @@ namespace coop
 		void HandleTriggerSpawnFromDefinition(void* trigger);
 		void* HandleTriggerFactory(std::uint32_t family, std::uint32_t subtype,
 			void* output, std::uintptr_t caller);
-		int HandleTriggerEvent(void* trigger, int event_code);
+				int HandleTriggerEvent(void* trigger, int event_code);
+		void ObserveHostWorldTrigger(std::uint32_t family, std::uint32_t subtype,
+			std::int32_t definition_id, int event_code, int result);
 		bool GetActiveRemoteAction(std::uint32_t action) const;
 		bool GetActiveRemoteHold(std::uint32_t action, float threshold) const;
 		bool GetRemoteFlyRawHeld(std::uint32_t action) const;
 		bool ConsumeRemoteFlyRawEdge(std::uint32_t action, bool pressed);
-		bool GetRemoteFlyFireAction() const;
-		bool IsRemoteFlyControlled() const;
 		bool IsMoochAction(std::uint32_t action) const;
+
 		// The same logical Mooch action that enters the fly returns from it.  Once a
 		// native entry is confirmed, the next local edge releases only our ownership
 		// latch; the stock fly controller still performs its own normal exit.
@@ -273,8 +287,9 @@ namespace coop
 		DWORD m_remote_input_thread_id;
 		std::uint32_t m_local_transform_sequence;
 		std::uint32_t m_local_fly_transform_sequence;
-		bool m_local_fly_active_seen;
+				bool m_local_fly_active_seen;
 		bool m_local_mooch_exit_key_down;
+
 		bool m_logged_fly_active_entity_repair;
 		std::uint32_t m_local_weapon_sequence;
 		std::uint32_t m_last_local_weapon_type;
@@ -374,6 +389,9 @@ namespace coop
 		TriggerEventFn m_original_trigger_event;
 		bool m_trigger_event_trace_hooked;
 		volatile LONG m_trigger_event_sequence;
+		ObservedWorldTrigger m_observed_world_triggers[32];
+		std::size_t m_observed_world_trigger_count;
+		bool m_logged_world_trigger_observation_limit;
 		bool m_logged_axis_queries[2];
 		bool m_logged_remote_transform;
 		std::uint32_t m_prev_local_action_down[3];

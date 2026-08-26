@@ -112,10 +112,17 @@ bool CoopRuntime::BuildModulePaths()
 		return false;
 	lstrcpyW(m_module_directory, path);
 
-	if (lstrlenW(path) + 1 + lstrlenW(L"gforce_coop.log") >= static_cast<int>(_countof(m_log_path)))
+	wchar_t log_file_name[64] = {};
+	wsprintfW(log_file_name, L"gforce_coop_%lu.log",
+		static_cast<unsigned long>(GetCurrentProcessId()));
+	if (lstrlenW(path) + 1 + lstrlenW(log_file_name) >=
+		static_cast<int>(_countof(m_log_path)))
+	{
 		return false;
+	}
 	lstrcpyW(m_log_path, path);
-	lstrcatW(m_log_path, L"\\gforce_coop.log");
+	lstrcatW(m_log_path, L"\\");
+	lstrcatW(m_log_path, log_file_name);
 
 	if (lstrlenW(path) + 1 + lstrlenW(L"coop.ini") >= static_cast<int>(_countof(m_ini_path)))
 		return false;

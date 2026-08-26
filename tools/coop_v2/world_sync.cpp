@@ -61,9 +61,14 @@ namespace coop
 		m_host_resync_requested(1),
 		m_client_ready_pending(0),
 		m_client_ready_sent(0),
-		m_client_ready_sequence(0),
-		m_forced_client_spawn_active(false)
+				m_client_ready_sequence(0),
+		m_forced_client_spawn_active(false),
+		m_trigger_p1_teleport_sequence(0),
+		m_last_trigger_p1_teleport_sequence(0),
+		m_remote_p1_teleport_active(false),
+		m_remote_p1_teleport_restore_tick(0)
 	{
+
 		InitializeSRWLock(&m_packet_lock);
 		InitializeSRWLock(&m_damage_lock);
 		ZeroMemory(&m_forced_client_spawn, sizeof(m_forced_client_spawn));
@@ -93,12 +98,17 @@ namespace coop
 		AcquireSRWLockExclusive(&m_packet_lock);
 		m_outgoing_spawns.clear();
 		m_outgoing_snapshots.clear();
-		m_outgoing_trigger_events.clear();
+				m_outgoing_trigger_events.clear();
+		m_outgoing_p1_teleports.clear();
 		m_outgoing_despawns.clear();
+
 		m_incoming_spawns.clear();
 		m_incoming_snapshots.clear();
-		m_incoming_trigger_events.clear();
+				m_incoming_trigger_events.clear();
+		m_incoming_p1_teleports.clear();
+		m_pending_p1_teleports.clear();
 		m_incoming_despawns.clear();
+
 		ReleaseSRWLockExclusive(&m_packet_lock);
 	}
 
@@ -110,8 +120,11 @@ namespace coop
 		m_host_entities.clear();
 		m_client_entities.clear();
 		m_pending_spawns.clear();
-		m_pending_snapshots.clear();
+				m_pending_snapshots.clear();
+		m_pending_p1_teleports.clear();
+		m_activated_local_p1_triggers.clear();
 		m_next_world_id = 1;
+
 		m_snapshot_sequence = 0;
 		m_last_snapshot_tick = 0;
 		m_client_ready_sequence = 0;
@@ -119,6 +132,13 @@ namespace coop
 		InterlockedExchange(&m_client_ready_sent, 0);
 		m_forced_client_spawn_active = false;
 		ZeroMemory(&m_forced_client_spawn, sizeof(m_forced_client_spawn));
+		m_trigger_p1_teleport_sequence = 0;
+		m_last_trigger_p1_teleport_sequence = 0;
+		m_remote_p1_teleport_active = false;
+		m_remote_p1_teleport_restore_tick = 0;
+		ZeroMemory(m_remote_p1_saved_position, sizeof(m_remote_p1_saved_position));
+		ZeroMemory(m_remote_p1_saved_rotation, sizeof(m_remote_p1_saved_rotation));
+		ZeroMemory(m_remote_p1_target_position, sizeof(m_remote_p1_target_position));
 		AcquireSRWLockExclusive(&m_damage_lock);
 		m_outgoing_damage.clear();
 		m_incoming_damage.clear();
@@ -134,11 +154,15 @@ namespace coop
 		AcquireSRWLockExclusive(&m_packet_lock);
 		m_outgoing_spawns.clear();
 		m_outgoing_snapshots.clear();
-		m_outgoing_trigger_events.clear();
+				m_outgoing_trigger_events.clear();
+		m_outgoing_p1_teleports.clear();
 		m_incoming_spawns.clear();
+
 		m_incoming_snapshots.clear();
-		m_incoming_trigger_events.clear();
+				m_incoming_trigger_events.clear();
+		m_incoming_p1_teleports.clear();
 		ReleaseSRWLockExclusive(&m_packet_lock);
+
 		AcquireSRWLockExclusive(&m_damage_lock);
 		m_outgoing_damage.clear();
 		m_incoming_damage.clear();
@@ -282,7 +306,9 @@ namespace coop
 	void WorldSync::RecordTriggerTemplate(void* trigger, std::uint32_t family,
 		std::uint32_t subtype)
 	{
-		if (!trigger || !IsSupportedFamily(family))
+		// Keep every map-defined trigger: F9 world-event experiments include
+		// breakables and doors, not only live NPC/monster spawners.
+		if (!trigger)
 			return;
 
 		std::int32_t definition_id = -1;
@@ -295,8 +321,7 @@ namespace coop
 		{
 			return;
 		}
-		if (definition_id < 0)
-			return;
+		
 
 		for (TriggerTemplate& existing : m_trigger_templates)
 		{
@@ -538,7 +563,70 @@ namespace coop
 		return NULL;
 	}
 
+		void WorldSync::ObserveLocalP1Trigger(void* trigger, bool require_p1_proximity)
+	{
+		constexpr float kTriggerProximityRange = 4.0f;
+		constexpr float kTriggerProximityRangeSq =
+			kTriggerProximityRange * kTriggerProximityRange;
+		if (!trigger || !CoopNetGame::Instance().HasRemotePeer())
+			return;
+		// The temporary P1 move deliberately makes local triggers fire.  Those
+		// effects must stay local; otherwise the receiver would echo the same pulse
+		// back and create a cross-process trigger loop.
+		if (m_remote_p1_teleport_active)
+			return;
+		// A hit event on a linked NPC is not a map proximity trigger.  Never pulse
+		// the peer's camera for ordinary combat damage.
+		if (EntityOfTrigger(trigger))
+			return;
+
+		if (std::find(m_activated_local_p1_triggers.begin(),
+			m_activated_local_p1_triggers.end(), trigger) !=
+			m_activated_local_p1_triggers.end())
+		{
+			return;
+		}
+
+		__try
+		{
+			void* const p1 = reinterpret_cast<void**>(gforce::kGPigEntityArray)[1];
+			if (!p1)
+				return;
+			const float* const p1_position = reinterpret_cast<const float*>(
+				static_cast<const BYTE*>(p1) + gforce::kEntityPositionOffset);
+			const float* const trigger_position = reinterpret_cast<const float*>(
+				static_cast<const BYTE*>(trigger) + gforce::kTriggerPositionOffset);
+			const float dx = p1_position[0] - trigger_position[0];
+			const float dy = p1_position[1] - trigger_position[1];
+			const float dz = p1_position[2] - trigger_position[2];
+			const float distance_sq = dx * dx + dy * dy + dz * dz;
+			if (require_p1_proximity && distance_sq > kTriggerProximityRangeSq)
+				return;
+
+			TriggerP1TeleportPacket packet = {};
+			packet.m_PacketID = kCoopPacketTriggerP1Teleport;
+			packet.m_RealSize = sizeof(packet) - sizeof(PacketHeader);
+			packet.m_SizeOne = packet.m_RealSize;
+			packet.sequence = ++m_trigger_p1_teleport_sequence;
+			memcpy(packet.position, trigger_position, sizeof(packet.position));
+			AcquireSRWLockExclusive(&m_packet_lock);
+			if (m_outgoing_p1_teleports.size() < kMaxPendingWorldPackets)
+				m_outgoing_p1_teleports.push_back(packet);
+			ReleaseSRWLockExclusive(&m_packet_lock);
+			m_activated_local_p1_triggers.push_back(trigger);
+			CoopRuntime::Instance().Log(
+				"[trigger-p1-teleport] queued seq=%u pos=(%.2f,%.2f,%.2f) dist=%.2f\r\n",
+				packet.sequence, packet.position[0], packet.position[1], packet.position[2],
+				sqrtf(distance_sq));
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log("[trigger-p1-teleport] source trigger read fault\r\n");
+		}
+	}
+
 	void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
+
 		std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id)
 	{
 		if (!trigger || !entity || !IsSupportedFamily(family))
@@ -1133,6 +1221,108 @@ namespace coop
 		ApplyPendingSnapshots();
 	}
 
+	bool WorldSync::ReadP1Transform(float position[4], float rotation[4]) const
+	{
+		if (!position || !rotation)
+			return false;
+		__try
+		{
+			void* const p1 = reinterpret_cast<void**>(gforce::kGPigEntityArray)[1];
+			if (!p1)
+				return false;
+			const BYTE* const bytes = static_cast<const BYTE*>(p1);
+			memcpy(position, bytes + gforce::kEntityPositionOffset, sizeof(float) * 4);
+			memcpy(rotation, bytes + gforce::kEntityRotationOffset, sizeof(float) * 4);
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+	}
+
+	bool WorldSync::WriteP1Transform(const float position[4],
+		const float rotation[4]) const
+	{
+		if (!position || !rotation)
+			return false;
+		__try
+		{
+			void* const p1 = reinterpret_cast<void**>(gforce::kGPigEntityArray)[1];
+			if (!p1)
+				return false;
+			BYTE* const bytes = static_cast<BYTE*>(p1);
+			memcpy(bytes + gforce::kEntityPositionOffset, position, sizeof(float) * 4);
+			memcpy(bytes + gforce::kEntityRotationOffset, rotation, sizeof(float) * 4);
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+	}
+
+	void WorldSync::ApplyPendingP1Teleports()
+	{
+		std::vector<TriggerP1TeleportPacket> arrived;
+		AcquireSRWLockExclusive(&m_packet_lock);
+		arrived.swap(m_incoming_p1_teleports);
+		ReleaseSRWLockExclusive(&m_packet_lock);
+
+		for (const TriggerP1TeleportPacket& packet : arrived)
+		{
+			if (packet.sequence == 0 ||
+				(m_last_trigger_p1_teleport_sequence != 0 &&
+					static_cast<std::int32_t>(packet.sequence -
+						m_last_trigger_p1_teleport_sequence) <= 0))
+			{
+				continue;
+			}
+			m_pending_p1_teleports.push_back(packet);
+		}
+
+		const DWORD now = GetTickCount();
+		if (m_remote_p1_teleport_active &&
+			static_cast<LONG>(now - m_remote_p1_teleport_restore_tick) < 0)
+		{
+			return;
+		}
+
+		if (!m_pending_p1_teleports.empty())
+		{
+			const TriggerP1TeleportPacket packet = m_pending_p1_teleports.front();
+			m_pending_p1_teleports.erase(m_pending_p1_teleports.begin());
+			if (!m_remote_p1_teleport_active &&
+				!ReadP1Transform(m_remote_p1_saved_position, m_remote_p1_saved_rotation))
+			{
+				return;
+			}
+			if (WriteP1Transform(packet.position, m_remote_p1_saved_rotation))
+			{
+				m_remote_p1_teleport_active = true;
+				m_last_trigger_p1_teleport_sequence = packet.sequence;
+				memcpy(m_remote_p1_target_position, packet.position,
+					sizeof(m_remote_p1_target_position));
+				m_remote_p1_teleport_restore_tick = now + 250;
+				CoopRuntime::Instance().Log(
+					"[trigger-p1-teleport] applied seq=%u pending=%u pos=(%.2f,%.2f,%.2f)\r\n",
+					packet.sequence, static_cast<unsigned>(m_pending_p1_teleports.size()),
+					packet.position[0], packet.position[1], packet.position[2]);
+			}
+			return;
+		}
+
+		if (m_remote_p1_teleport_active)
+		{
+			if (WriteP1Transform(m_remote_p1_saved_position, m_remote_p1_saved_rotation))
+			{
+				CoopRuntime::Instance().Log("[trigger-p1-teleport] restored local P1\r\n");
+			}
+			m_remote_p1_teleport_active = false;
+			m_remote_p1_teleport_restore_tick = 0;
+		}
+	}
+
 	void WorldSync::GameTick()
 	{
 		if (!CoopNetGame::Instance().HasRemotePeer())
@@ -1140,10 +1330,11 @@ namespace coop
 		if (CoopNetGame::Instance().IsHost())
 			EnumerateHostEntities();
 		if (CoopNetGame::Instance().IsClient())
-		{
 			EnumerateClientEntities();
-			ProcessClientPackets();
-		}
+		// Inbound trigger-position teleports are valid in both directions, unlike
+		// the earlier host-only spawn and trigger-event paths.
+		ProcessClientPackets();
+		ApplyPendingP1Teleports();
 		// Capture the post-hit local HP before applying incoming peer state.  The
 		// receive path refreshes this baseline, so remote HP never bounces back.
 		DetectLocalHealthChanges();
@@ -1399,6 +1590,120 @@ namespace coop
 		memcpy(p1_pos, static_cast<const BYTE*>(p1) +
 			gforce::kEntityPositionOffset, sizeof(p1_pos));
 
+		// Stage one of the new F9 route is deliberately read-only.  Static buttons,
+		// doors and switches can use different dispatchers, so identify the closest
+		// map trigger first instead of guessing an event code and opening something
+		// unrelated.  The next phase will invoke only the confirmed native route.
+		constexpr float kInteractorProbeRange = 6.0f;
+		constexpr float kInteractorProbeRangeSq =
+			kInteractorProbeRange * kInteractorProbeRange;
+		constexpr size_t kInteractorProbeCount = 5;
+		TriggerTemplate* nearest_interactors[kInteractorProbeCount] = {};
+		float nearest_interactor_dist_sq[kInteractorProbeCount] = {
+			kInteractorProbeRangeSq, kInteractorProbeRangeSq, kInteractorProbeRangeSq,
+			kInteractorProbeRangeSq, kInteractorProbeRangeSq
+		};
+		__try
+		{
+			for (TriggerTemplate& candidate : m_trigger_templates)
+			{
+				if (!candidate.trigger)
+					continue;
+				const float* const position = reinterpret_cast<const float*>(
+					static_cast<const BYTE*>(candidate.trigger) +
+					gforce::kTriggerPositionOffset);
+				const float dx = position[0] - p1_pos[0];
+				const float dy = position[1] - p1_pos[1];
+				const float dz = position[2] - p1_pos[2];
+				const float dist_sq = dx * dx + dy * dy + dz * dz;
+				for (size_t slot = 0; slot < kInteractorProbeCount; ++slot)
+				{
+					if (dist_sq > nearest_interactor_dist_sq[slot])
+						continue;
+					for (size_t move = kInteractorProbeCount - 1; move > slot; --move)
+					{
+						nearest_interactors[move] = nearest_interactors[move - 1];
+						nearest_interactor_dist_sq[move] =
+							nearest_interactor_dist_sq[move - 1];
+					}
+					nearest_interactors[slot] = &candidate;
+					nearest_interactor_dist_sq[slot] = dist_sq;
+					break;
+				}
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log("[interactor-probe] F9 trigger scan fault\r\n");
+			return;
+		}
+		if (nearest_interactors[0])
+		{
+			for (size_t slot = 0; slot < kInteractorProbeCount &&
+				nearest_interactors[slot]; ++slot)
+			{
+				const TriggerTemplate* const candidate = nearest_interactors[slot];
+				CoopRuntime::Instance().Log(
+					"[interactor-probe] F9 rank=%u family=%08X subtype=%08X def=%d dist=%.2f trigger=%p\r\n",
+					static_cast<unsigned>(slot + 1), candidate->family, candidate->subtype,
+					candidate->definition_id, sqrtf(nearest_interactor_dist_sq[slot]),
+					candidate->trigger);
+			}
+			ObserveLocalP1Trigger(nearest_interactors[0]->trigger, false);
+			return;
+		}
+
+		// The computing-centre source box is a map trigger, not a live combat
+		// entity.  Dispatching its verified event lets the stock chain destroy the
+		// box, create the computer and later create its dynamic spiders.
+		constexpr float kComputerBoxRange = 10.0f;
+		constexpr float kComputerBoxRangeSq = kComputerBoxRange * kComputerBoxRange;
+		TriggerTemplate* nearest_box = NULL;
+		float nearest_box_dist_sq = kComputerBoxRangeSq;
+		__try
+		{
+			for (TriggerTemplate& candidate : m_trigger_templates)
+			{
+				if (!candidate.trigger ||
+					candidate.family != gforce::kMonsterTriggerFamily ||
+					candidate.subtype != gforce::kComputerBoxTriggerSubtype ||
+					candidate.definition_id != gforce::kComputerBoxTriggerDefinition)
+				{
+					continue;
+				}
+				const float* const position = reinterpret_cast<const float*>(
+					static_cast<const BYTE*>(candidate.trigger) +
+					gforce::kTriggerPositionOffset);
+				const float dx = position[0] - p1_pos[0];
+				const float dy = position[1] - p1_pos[1];
+				const float dz = position[2] - p1_pos[2];
+				const float dist_sq = dx * dx + dy * dy + dz * dz;
+				if (dist_sq <= nearest_box_dist_sq)
+				{
+					nearest_box = &candidate;
+					nearest_box_dist_sq = dist_sq;
+				}
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log("[world-trigger] F9: spawner scan fault\r\n");
+			return;
+		}
+		if (nearest_box)
+		{
+			const bool dispatched = CoopNetGame::Instance().ReplayTriggerEvent(
+				nearest_box->family, nearest_box->subtype,
+				nearest_box->definition_id, 0,
+				gforce::kComputerBoxActivateEvent);
+			CoopRuntime::Instance().Log(
+				"[world-trigger] F9: source box %.1f units away, event=0x%08X %s\r\n",
+				sqrtf(nearest_box_dist_sq),
+				static_cast<unsigned>(gforce::kComputerBoxActivateEvent),
+				dispatched ? "dispatched" : "unavailable");
+			return;
+		}
+
 		void* best_entity = NULL;
 		const BYTE* best_trigger = NULL;
 		float best_dist_sq = kDebugKillRangeSq;
@@ -1537,9 +1842,11 @@ namespace coop
 		if (header->m_PacketID != kCoopPacketWorldSpawn &&
 			header->m_PacketID != kCoopPacketWorldSnapshot &&
 			header->m_PacketID != kCoopPacketWorldReady &&
-			header->m_PacketID != kCoopPacketWorldTriggerEvent &&
+						header->m_PacketID != kCoopPacketWorldTriggerEvent &&
 			header->m_PacketID != kCoopPacketWorldDamage &&
-			header->m_PacketID != kCoopPacketWorldDespawn)
+			header->m_PacketID != kCoopPacketWorldDespawn &&
+			header->m_PacketID != kCoopPacketTriggerP1Teleport)
+
 		{
 			return false;
 		}
@@ -1581,6 +1888,24 @@ namespace coop
 			if (m_incoming_damage.size() < kMaxPendingWorldPackets)
 				m_incoming_damage.push_back(*packet);
 			ReleaseSRWLockExclusive(&m_damage_lock);
+			return true;
+		}
+
+		if (header->m_PacketID == kCoopPacketTriggerP1Teleport)
+		{
+			if (size != sizeof(WorldSync::TriggerP1TeleportPacket) ||
+				header->m_CompressSize != 0 || header->Size() != size)
+			{
+				return true;
+			}
+			const TriggerP1TeleportPacket* const packet =
+				static_cast<const TriggerP1TeleportPacket*>(data);
+			if (!packet->sequence)
+				return true;
+			AcquireSRWLockExclusive(&m_packet_lock);
+			if (m_incoming_p1_teleports.size() < kMaxPendingWorldPackets)
+				m_incoming_p1_teleports.push_back(*packet);
+			ReleaseSRWLockExclusive(&m_packet_lock);
 			return true;
 		}
 
@@ -1695,22 +2020,28 @@ namespace coop
 				ready.sequence);
 		}
 		std::vector<WorldSpawnPacket> spawns;
-		std::vector<WorldSnapshotPacket> snapshots;
+				std::vector<WorldSnapshotPacket> snapshots;
 		std::vector<WorldTriggerEventPacket> trigger_events;
+		std::vector<TriggerP1TeleportPacket> p1_teleports;
 		AcquireSRWLockExclusive(&m_packet_lock);
 		spawns.swap(m_outgoing_spawns);
 		snapshots.swap(m_outgoing_snapshots);
 		trigger_events.swap(m_outgoing_trigger_events);
+		p1_teleports.swap(m_outgoing_p1_teleports);
+
 		ReleaseSRWLockExclusive(&m_packet_lock);
 
 		for (const WorldSpawnPacket& packet : spawns)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 		for (const WorldSnapshotPacket& packet : snapshots)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Unreliable);
-		for (const WorldTriggerEventPacket& packet : trigger_events)
+				for (const WorldTriggerEventPacket& packet : trigger_events)
+			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
+		for (const TriggerP1TeleportPacket& packet : p1_teleports)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 
 		std::vector<WorldDamagePacket> damage;
+
 		AcquireSRWLockExclusive(&m_damage_lock);
 		damage.swap(m_outgoing_damage);
 		ReleaseSRWLockExclusive(&m_damage_lock);
