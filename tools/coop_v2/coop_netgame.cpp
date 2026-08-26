@@ -1404,8 +1404,7 @@ namespace coop
 					bytes + kTriggerSubtypeOffset);
 				const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
 					bytes + kTriggerSpawnIdOffset);
-				if (IsHost() || IsClient())
-					WorldSync::Instance().ObserveLocalP1Trigger(trigger);
+
 				// Observation is useful before a client connects; packet queueing and
 				// HP authority still require an actual peer.
 				if (!HasRemotePeer())

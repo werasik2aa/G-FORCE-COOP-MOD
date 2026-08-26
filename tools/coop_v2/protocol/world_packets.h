@@ -44,12 +44,6 @@ namespace protocol
         std::int32_t result;
     };
 
-    struct TriggerP1TeleportPacket final : PacketHeader
-    {
-        std::uint32_t sequence;
-        float position[4];
-    };
-
     struct WorldDamagePacket final : PacketHeader
     {
         std::uint32_t world_id;
@@ -76,7 +70,5 @@ namespace protocol
         "world-ready packets must keep their fixed x86 wire layout");
     static_assert(sizeof(WorldTriggerEventPacket) == 44,
         "trigger-event packets must keep their fixed x86 wire layout");
-    static_assert(sizeof(TriggerP1TeleportPacket) == 40,
-        "trigger pulse packets must keep their fixed x86 wire layout");
 }
 }

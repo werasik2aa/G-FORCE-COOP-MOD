@@ -51,10 +51,7 @@ namespace coop
 		// Returns the world id of a linked entity, or zero when untracked.
 		std::uint32_t WorldIdOfEntity(void* entity) const;
 		// Returns the live entity currently bound to a native trigger object.
-		void* EntityOfTrigger(void* trigger) const;
-		// Game-thread-only: after a local P1-proximity trigger, queue a reliable
-		// request for the other process to pulse its own P1 at the same coordinates.
-		void ObserveLocalP1Trigger(void* trigger, bool require_p1_proximity = true);
+				void* EntityOfTrigger(void* trigger) const;
 
 		// These methods run only on the game thread, from the already verified
 		// trigger factory/spawn hooks and P1's post-update tick.
@@ -78,7 +75,6 @@ namespace coop
 		using WorldSnapshotPacket = protocol::WorldSnapshotPacket;
 		using WorldReadyPacket = protocol::WorldReadyPacket;
 		using WorldTriggerEventPacket = protocol::WorldTriggerEventPacket;
-		using TriggerP1TeleportPacket = protocol::TriggerP1TeleportPacket;
 		using WorldDamagePacket = protocol::WorldDamagePacket;
 			using WorldDespawnPacket = protocol::WorldDespawnPacket;
 
@@ -149,7 +145,6 @@ namespace coop
 		bool HandleWorldSnapshotPacket(const protocol::PacketView& view);
 		bool HandleWorldTriggerEventPacket(const protocol::PacketView& view);
 		bool HandleWorldDamagePacket(const protocol::PacketView& view);
-		bool HandleTriggerP1TeleportPacket(const protocol::PacketView& view);
 		bool ReadEntityTransform(void* entity, float position[4],
 			float rotation[4]) const;
 		bool ReadEntityHealth(void* entity, float& health) const;
@@ -157,9 +152,6 @@ namespace coop
 		void EnumerateHostEntities();
 		void EnumerateClientEntities();
 		void ProcessClientPackets();
-		void ApplyPendingP1Teleports();
-		bool ReadP1Transform(float position[4], float rotation[4]) const;
-		bool WriteP1Transform(const float position[4], const float rotation[4]) const;
 		void ResolvePendingSpawns();
 		void ApplyIncomingDamage();
 		void DetectLocalHealthChanges();
@@ -212,14 +204,10 @@ namespace coop
 		std::vector<WorldSpawnPacket> m_outgoing_spawns;
 		std::vector<WorldSnapshotPacket> m_outgoing_snapshots;
 		std::vector<WorldTriggerEventPacket> m_outgoing_trigger_events;
-		std::vector<TriggerP1TeleportPacket> m_outgoing_p1_teleports;
 		std::vector<WorldSpawnPacket> m_incoming_spawns;
 		std::vector<WorldSnapshotPacket> m_incoming_snapshots;
 		std::vector<WorldTriggerEventPacket> m_incoming_trigger_events;
-		std::vector<TriggerP1TeleportPacket> m_incoming_p1_teleports;
-		// Game-thread FIFO.  Packets may arrive in one networking batch but each
-		// destination must remain active long enough for the stock trigger check.
-		std::vector<TriggerP1TeleportPacket> m_pending_p1_teleports;
+
 		std::vector<TriggerCounter> m_host_trigger_counters;
 		std::vector<TriggerCounter> m_client_trigger_counters;
 		std::vector<TriggerTemplate> m_trigger_templates;
@@ -236,15 +224,5 @@ namespace coop
 		std::uint32_t m_client_ready_sequence;
 		bool m_forced_client_spawn_active;
 		WorldSpawnPacket m_forced_client_spawn;
-		std::uint32_t m_trigger_p1_teleport_sequence;
-		std::uint32_t m_last_trigger_p1_teleport_sequence;
-		bool m_remote_p1_teleport_active;
-		DWORD m_remote_p1_teleport_restore_tick;
-		float m_remote_p1_saved_position[4];
-		float m_remote_p1_saved_rotation[4];
-		float m_remote_p1_target_position[4];
-		// Process-local trigger addresses are valid only during the current level.
-		// ResetForWorldLoad/ClearGameState clears this set before the next map.
-		std::vector<void*> m_activated_local_p1_triggers;
 	};
 }

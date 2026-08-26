@@ -64,11 +64,7 @@ namespace coop
 		m_client_ready_pending(0),
 		m_client_ready_sent(0),
 				m_client_ready_sequence(0),
-		m_forced_client_spawn_active(false),
-		m_trigger_p1_teleport_sequence(0),
-		m_last_trigger_p1_teleport_sequence(0),
-		m_remote_p1_teleport_active(false),
-		m_remote_p1_teleport_restore_tick(0)
+		m_forced_client_spawn_active(false)
 	{
 
 		InitializeSRWLock(&m_packet_lock);
@@ -101,14 +97,11 @@ namespace coop
 		m_outgoing_spawns.clear();
 		m_outgoing_snapshots.clear();
 				m_outgoing_trigger_events.clear();
-		m_outgoing_p1_teleports.clear();
 		m_outgoing_despawns.clear();
 
 		m_incoming_spawns.clear();
 		m_incoming_snapshots.clear();
 				m_incoming_trigger_events.clear();
-		m_incoming_p1_teleports.clear();
-		m_pending_p1_teleports.clear();
 		m_incoming_despawns.clear();
 
 		ReleaseSRWLockExclusive(&m_packet_lock);
@@ -123,8 +116,6 @@ namespace coop
 		m_client_entities.clear();
 		m_pending_spawns.clear();
 				m_pending_snapshots.clear();
-		m_pending_p1_teleports.clear();
-		m_activated_local_p1_triggers.clear();
 		m_next_world_id = 1;
 
 		m_snapshot_sequence = 0;
@@ -134,13 +125,6 @@ namespace coop
 		InterlockedExchange(&m_client_ready_sent, 0);
 		m_forced_client_spawn_active = false;
 		ZeroMemory(&m_forced_client_spawn, sizeof(m_forced_client_spawn));
-		m_trigger_p1_teleport_sequence = 0;
-		m_last_trigger_p1_teleport_sequence = 0;
-		m_remote_p1_teleport_active = false;
-		m_remote_p1_teleport_restore_tick = 0;
-		ZeroMemory(m_remote_p1_saved_position, sizeof(m_remote_p1_saved_position));
-		ZeroMemory(m_remote_p1_saved_rotation, sizeof(m_remote_p1_saved_rotation));
-		ZeroMemory(m_remote_p1_target_position, sizeof(m_remote_p1_target_position));
 		AcquireSRWLockExclusive(&m_damage_lock);
 		m_outgoing_damage.clear();
 		m_incoming_damage.clear();
@@ -157,12 +141,10 @@ namespace coop
 		m_outgoing_spawns.clear();
 		m_outgoing_snapshots.clear();
 				m_outgoing_trigger_events.clear();
-		m_outgoing_p1_teleports.clear();
 		m_incoming_spawns.clear();
 
 		m_incoming_snapshots.clear();
 				m_incoming_trigger_events.clear();
-		m_incoming_p1_teleports.clear();
 		ReleaseSRWLockExclusive(&m_packet_lock);
 
 		AcquireSRWLockExclusive(&m_damage_lock);
@@ -544,68 +526,6 @@ namespace coop
 		return NULL;
 	}
 
-		void WorldSync::ObserveLocalP1Trigger(void* trigger, bool require_p1_proximity)
-		{
-			constexpr float kTriggerProximityRange = 4.0f;
-			constexpr float kTriggerProximityRangeSq =
-				kTriggerProximityRange * kTriggerProximityRange;
-			if (!trigger || !CoopNetGame::Instance().HasRemotePeer() ||
-				m_remote_p1_teleport_active || EntityOfTrigger(trigger))
-			{
-				return;
-			}
-			if (std::find(m_activated_local_p1_triggers.begin(),
-				m_activated_local_p1_triggers.end(), trigger) !=
-				m_activated_local_p1_triggers.end())
-			{
-				return;
-			}
-
-			retail::PlayerRepository players;
-			retail::EntityRef local_p1 = {};
-			retail::Transform player_transform = {};
-			const retail::TriggerRef trigger_ref = { retail::ToAddress(trigger) };
-			retail::Transform trigger_transform = {};
-			if (!players.Get(retail::PlayerSlot::LocalP1, local_p1) ||
-				!retail::EntityView(local_p1).ReadTransform(player_transform) ||
-				!retail::TriggerView(trigger_ref).ReadTransform(trigger_transform))
-			{
-				CoopRuntime::Instance().Log(
-					"[trigger-p1-teleport] source trigger read fault\r\n");
-				return;
-			}
-
-			const float dx = player_transform.position.x - trigger_transform.position.x;
-			const float dy = player_transform.position.y - trigger_transform.position.y;
-			const float dz = player_transform.position.z - trigger_transform.position.z;
-			const float distance_sq = dx * dx + dy * dy + dz * dz;
-			if (require_p1_proximity && distance_sq > kTriggerProximityRangeSq)
-				return;
-
-			TriggerP1TeleportPacket packet = {};
-			protocol::InitializeFixedPacket(packet,
-				protocol::PacketKind::TriggerP1Teleport);
-			packet.sequence = ++m_trigger_p1_teleport_sequence;
-			memcpy(packet.position, &trigger_transform.position,
-				sizeof(packet.position));
-
-			bool queued = false;
-			AcquireSRWLockExclusive(&m_packet_lock);
-			if (m_outgoing_p1_teleports.size() < kMaxPendingWorldPackets)
-			{
-				m_outgoing_p1_teleports.push_back(packet);
-				queued = true;
-			}
-			ReleaseSRWLockExclusive(&m_packet_lock);
-			if (!queued)
-				return;
-
-			m_activated_local_p1_triggers.push_back(trigger);
-			CoopRuntime::Instance().Log(
-				"[trigger-p1-teleport] queued seq=%u pos=(%.2f,%.2f,%.2f) dist=%.2f\r\n",
-				packet.sequence, packet.position[0], packet.position[1], packet.position[2],
-				sqrtf(distance_sq));
-		}
 void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 
 		std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id)
@@ -1202,119 +1122,6 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 		ApplyPendingSnapshots();
 	}
 
-		bool WorldSync::ReadP1Transform(float position[4], float rotation[4]) const
-		{
-			if (!position || !rotation)
-				return false;
-
-			retail::PlayerRepository players;
-			retail::EntityRef p1 = {};
-			retail::Transform transform = {};
-			if (!players.Get(retail::PlayerSlot::LocalP1, p1) ||
-				!retail::EntityView(p1).ReadTransform(transform))
-			{
-				return false;
-			}
-
-			memcpy(position, &transform.position, sizeof(transform.position));
-			memcpy(rotation, &transform.rotation, sizeof(transform.rotation));
-			return true;
-		}
-
-		bool WorldSync::WriteP1Transform(const float position[4],
-			const float rotation[4]) const
-		{
-			if (!position || !rotation)
-				return false;
-
-			retail::PlayerRepository players;
-			retail::EntityRef p1 = {};
-			retail::Transform transform = {};
-			memcpy(&transform.position, position, sizeof(transform.position));
-			memcpy(&transform.rotation, rotation, sizeof(transform.rotation));
-			return players.Get(retail::PlayerSlot::LocalP1, p1) &&
-				retail::EntityView(p1).WriteTransform(transform);
-		}
-
-		void WorldSync::ApplyPendingP1Teleports()
-		{
-			constexpr float kRemoteP2TriggerOffsetX = 0.5f;
-			std::vector<TriggerP1TeleportPacket> arrived;
-		AcquireSRWLockExclusive(&m_packet_lock);
-		arrived.swap(m_incoming_p1_teleports);
-		ReleaseSRWLockExclusive(&m_packet_lock);
-
-		for (const TriggerP1TeleportPacket& packet : arrived)
-		{
-			if (packet.sequence == 0 ||
-				(m_last_trigger_p1_teleport_sequence != 0 &&
-					static_cast<std::int32_t>(packet.sequence -
-						m_last_trigger_p1_teleport_sequence) <= 0))
-			{
-				continue;
-			}
-			m_pending_p1_teleports.push_back(packet);
-		}
-
-		const DWORD now = GetTickCount();
-		if (m_remote_p1_teleport_active &&
-			static_cast<LONG>(now - m_remote_p1_teleport_restore_tick) < 0)
-		{
-			return;
-		}
-
-			if (!m_pending_p1_teleports.empty())
-			{
-				const TriggerP1TeleportPacket packet = m_pending_p1_teleports.front();
-				m_pending_p1_teleports.erase(m_pending_p1_teleports.begin());
-				if (!m_remote_p1_teleport_active &&
-					!ReadP1Transform(m_remote_p1_saved_position, m_remote_p1_saved_rotation))
-				{
-					return;
-				}
-
-				retail::PlayerRepository players;
-				retail::EntityRef local_p2 = {};
-				retail::Transform p2_transform = {};
-				if (!players.Get(retail::PlayerSlot::RemoteP2, local_p2) ||
-					!retail::EntityView(local_p2).ReadTransform(p2_transform))
-				{
-					CoopRuntime::Instance().Log(
-						"[trigger-p1-teleport] skipped seq=%u: local P2 unavailable\r\n",
-						packet.sequence);
-					return;
-				}
-
-				float target_position[4] = {};
-				memcpy(target_position, &p2_transform.position, sizeof(target_position));
-				target_position[0] += kRemoteP2TriggerOffsetX;
-				if (WriteP1Transform(target_position, m_remote_p1_saved_rotation))
-				{
-					m_remote_p1_teleport_active = true;
-					m_last_trigger_p1_teleport_sequence = packet.sequence;
-					memcpy(m_remote_p1_target_position, target_position,
-						sizeof(m_remote_p1_target_position));
-					m_remote_p1_teleport_restore_tick = now + 250;
-					CoopRuntime::Instance().Log(
-						"[trigger-p1-teleport] applied seq=%u pending=%u p2=(%.2f,%.2f,%.2f) target=(%.2f,%.2f,%.2f)\r\n",
-						packet.sequence, static_cast<unsigned>(m_pending_p1_teleports.size()),
-						p2_transform.position.x, p2_transform.position.y, p2_transform.position.z,
-						target_position[0], target_position[1], target_position[2]);
-				}
-				return;
-			}
-
-		if (m_remote_p1_teleport_active)
-		{
-			if (WriteP1Transform(m_remote_p1_saved_position, m_remote_p1_saved_rotation))
-			{
-				CoopRuntime::Instance().Log("[trigger-p1-teleport] restored local P1\r\n");
-			}
-			m_remote_p1_teleport_active = false;
-			m_remote_p1_teleport_restore_tick = 0;
-		}
-	}
-
 	void WorldSync::GameTick()
 	{
 		if (!CoopNetGame::Instance().HasRemotePeer())
@@ -1326,7 +1133,6 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 			// Inbound trigger pulses are valid in both directions, unlike the earlier
 			// host-only spawn and trigger-event paths.
 		ProcessClientPackets();
-		ApplyPendingP1Teleports();
 		// Capture the post-hit local HP before applying incoming peer state.  The
 		// receive path refreshes this baseline, so remote HP never bounces back.
 		DetectLocalHealthChanges();
@@ -1600,18 +1406,6 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 			return true;
 		}
 
-		bool WorldSync::HandleTriggerP1TeleportPacket(const protocol::PacketView& view)
-		{
-			TriggerP1TeleportPacket packet = {};
-			if (!view.CopyUncompressedExact(packet) || !packet.sequence)
-				return true;
-			AcquireSRWLockExclusive(&m_packet_lock);
-			if (m_incoming_p1_teleports.size() < kMaxPendingWorldPackets)
-				m_incoming_p1_teleports.push_back(packet);
-			ReleaseSRWLockExclusive(&m_packet_lock);
-			return true;
-		}
-
 		bool WorldSync::HandleWorldSpawnPacket(const protocol::PacketView& view)
 		{
 			WorldSpawnPacket packet = {};
@@ -1695,8 +1489,6 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 				return HandleWorldTriggerEventPacket(view);
 			case protocol::PacketKind::WorldDamage:
 				return HandleWorldDamagePacket(view);
-			case protocol::PacketKind::TriggerP1Teleport:
-				return HandleTriggerP1TeleportPacket(view);
 			case protocol::PacketKind::WorldDespawn:
 				// Legacy despawn has no verified native destruction entry point.  Keep
 				// consuming it for wire compatibility, but do not drop a live local object.
@@ -1747,12 +1539,10 @@ void WorldSync::SendToRemote(const void* data, std::uint32_t size, int flags) co
 		std::vector<WorldSpawnPacket> spawns;
 				std::vector<WorldSnapshotPacket> snapshots;
 		std::vector<WorldTriggerEventPacket> trigger_events;
-		std::vector<TriggerP1TeleportPacket> p1_teleports;
 		AcquireSRWLockExclusive(&m_packet_lock);
 		spawns.swap(m_outgoing_spawns);
 		snapshots.swap(m_outgoing_snapshots);
 		trigger_events.swap(m_outgoing_trigger_events);
-		p1_teleports.swap(m_outgoing_p1_teleports);
 
 		ReleaseSRWLockExclusive(&m_packet_lock);
 
@@ -1761,8 +1551,6 @@ void WorldSync::SendToRemote(const void* data, std::uint32_t size, int flags) co
 		for (const WorldSnapshotPacket& packet : snapshots)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Unreliable);
 				for (const WorldTriggerEventPacket& packet : trigger_events)
-			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
-		for (const TriggerP1TeleportPacket& packet : p1_teleports)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 
 		std::vector<WorldDamagePacket> damage;

@@ -159,9 +159,9 @@ void CSteamOfflineSocketClient::OnRemotePacket(
 	case coop::protocol::PacketKind::WorldSnapshot:
 	case coop::protocol::PacketKind::WorldReady:
 	case coop::protocol::PacketKind::WorldTriggerEvent:
-	case coop::protocol::PacketKind::WorldDamage:
-	case coop::protocol::PacketKind::WorldDespawn:
-	case coop::protocol::PacketKind::TriggerP1Teleport:
+			case coop::protocol::PacketKind::WorldDamage:
+		case coop::protocol::PacketKind::WorldDespawn:
+
 		if (coop::WorldSync::Instance().OnRemotePacket(data, size))
 			return;
 		break;

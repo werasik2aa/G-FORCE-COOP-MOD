@@ -22,8 +22,8 @@ namespace protocol
         WorldReady = kCoopPacketWorldReady,
         WorldTriggerEvent = kCoopPacketWorldTriggerEvent,
         WorldDamage = kCoopPacketWorldDamage,
-        WorldDespawn = kCoopPacketWorldDespawn,
-        TriggerP1Teleport = kCoopPacketTriggerP1Teleport
+		WorldDespawn = kCoopPacketWorldDespawn
+
     };
 
 	template<typename T>
