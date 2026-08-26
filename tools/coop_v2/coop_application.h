@@ -11,8 +11,8 @@ class CoopApplication final
 public:
 	static CoopApplication& Instance();
 
-	void SetModule(HMODULE module);
-	BOOL Initialize();
+		void SetModule(HMODULE module);
+		BOOL Initialize();
 	void Shutdown();
 
 private:

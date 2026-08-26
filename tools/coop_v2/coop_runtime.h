@@ -43,8 +43,9 @@ private:
 	bool BuildModulePaths();
 	bool HashExecutable(BYTE digest[32]);
 	HMODULE m_module;
-	HANDLE m_log;
-	CRITICAL_SECTION m_log_lock;
+		HANDLE m_log;
+		HANDLE m_log_mutex;
+		CRITICAL_SECTION m_log_lock;
 	bool m_log_lock_ready;
 	wchar_t m_module_directory[MAX_PATH];
 	wchar_t m_log_path[MAX_PATH];

@@ -32,7 +32,6 @@ public:
 	virtual bool IsSteam() const { return false; }
 
 protected:
-	void SendHello();
 	virtual void OnRemotePacket(const SteamNetworkingMessage_t* message);
 
 	ISteamNetworkingSockets* m_sockets;

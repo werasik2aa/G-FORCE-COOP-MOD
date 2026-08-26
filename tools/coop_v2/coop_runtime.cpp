@@ -25,6 +25,7 @@ CoopRuntime& CoopRuntime::Instance()
 CoopRuntime::CoopRuntime() :
 	m_module(NULL),
 	m_log(INVALID_HANDLE_VALUE),
+	m_log_mutex(NULL),
 	m_log_lock_ready(false)
 {
 	ZeroMemory(&m_log_lock, sizeof(m_log_lock));
@@ -58,7 +59,24 @@ CoopConfig& CoopRuntime::Config()
 
 void CoopRuntime::Log(const char* format, ...)
 {
-	if (!m_log_lock_ready)
+	if (!m_log_lock_ready || !format)
+		return;
+
+	char message[1024] = {};
+	va_list args;
+	va_start(args, format);
+	int message_length = _vsnprintf_s(message, sizeof(message), _TRUNCATE,
+		format, args);
+	va_end(args);
+	if (message_length < 0)
+		message_length = static_cast<int>(strlen(message));
+	if (message_length <= 0)
+		return;
+
+	char line[1152] = {};
+	const int line_length = _snprintf_s(line, sizeof(line), _TRUNCATE,
+		"[pid=%lu] %s", static_cast<unsigned long>(GetCurrentProcessId()), message);
+	if (line_length <= 0)
 		return;
 
 	EnterCriticalSection(&m_log_lock);
@@ -68,18 +86,14 @@ void CoopRuntime::Log(const char* format, ...)
 			FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
 			FILE_ATTRIBUTE_NORMAL, NULL);
 	}
-
-	if (m_log != INVALID_HANDLE_VALUE)
+	if (m_log != INVALID_HANDLE_VALUE && m_log_mutex)
 	{
-		char buffer[1024];
-		va_list args;
-		va_start(args, format);
-		const int length = _vsnprintf_s(buffer, sizeof(buffer), _TRUNCATE, format, args);
-		va_end(args);
-		if (length > 0)
+		const DWORD wait = WaitForSingleObject(m_log_mutex, 5000);
+		if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED)
 		{
 			DWORD written = 0;
-			WriteFile(m_log, buffer, static_cast<DWORD>(length), &written, NULL);
+			WriteFile(m_log, line, static_cast<DWORD>(line_length), &written, NULL);
+			ReleaseMutex(m_log_mutex);
 		}
 	}
 	LeaveCriticalSection(&m_log_lock);
@@ -112,9 +126,7 @@ bool CoopRuntime::BuildModulePaths()
 		return false;
 	lstrcpyW(m_module_directory, path);
 
-	wchar_t log_file_name[64] = {};
-	wsprintfW(log_file_name, L"gforce_coop_%lu.log",
-		static_cast<unsigned long>(GetCurrentProcessId()));
+	const wchar_t* const log_file_name = L"gforce_coop.log";
 	if (lstrlenW(path) + 1 + lstrlenW(log_file_name) >=
 		static_cast<int>(_countof(m_log_path)))
 	{
@@ -357,7 +369,19 @@ bool CoopRuntime::Initialize()
 		DeleteCriticalSection(&m_log_lock);
 		return false;
 	}
-	DeleteFileW(m_log_path);
+	m_log_mutex = CreateMutexW(NULL, TRUE, L"Local\\GForceCoopRuntimeLog");
+	const DWORD mutex_status = GetLastError();
+	if (!m_log_mutex)
+	{
+		m_log_lock_ready = false;
+		DeleteCriticalSection(&m_log_lock);
+		return false;
+	}
+	if (mutex_status != ERROR_ALREADY_EXISTS)
+	{
+		DeleteFileW(m_log_path);
+		ReleaseMutex(m_log_mutex);
+	}
 	return true;
 }
 
@@ -373,6 +397,11 @@ void CoopRuntime::Shutdown()
 		m_log = INVALID_HANDLE_VALUE;
 	}
 	LeaveCriticalSection(&m_log_lock);
+	if (m_log_mutex)
+	{
+		CloseHandle(m_log_mutex);
+		m_log_mutex = NULL;
+	}
 	m_log_lock_ready = false;
 	DeleteCriticalSection(&m_log_lock);
 }

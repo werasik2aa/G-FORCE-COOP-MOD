@@ -79,10 +79,8 @@ Player2Module::Player2Module() :
 
 	m_last_player1_mode(0),
 
-	m_spawn_key_was_down(false),
-	m_npc_spawn_key_was_down(false),
-	m_npc_spawn_random_state(0),
-	m_last_weapon_type(0xFFFFFFFFu),
+		m_spawn_key_was_down(false),
+		m_last_weapon_type(0xFFFFFFFFu),
 	m_spawn_context(NULL),
 	m_default_mode_active_stores_patched(false),
 	m_original_update(
@@ -369,7 +367,7 @@ bool Player2Module::SaveSharedCameraAimState(SharedCameraAimState& saved)
 	// argument, and that handler is a single process-wide object, so everything it
 	// writes there belongs to whichever entity happens to be ticking.  P1 ticks
 	// first, so without this save/restore P2's tick is what P1's camera and P1's
-	// own aim-mode turn consume on the next frame вЂ” the same class of defect the
+	// own aim-mode turn consume on the next frame РІР‚вЂќ the same class of defect the
 	// inactive mode 0x5B7D60 had with handler+0x91C/+0x920.
 	saved.has_assist = false;
 	saved.has_yaw_state = false;
@@ -649,198 +647,6 @@ void Player2Module::PollPlayer2SpawnKey()
 	m_spawn_key_was_down = down;
 }
 
-bool Player2Module::IsSpawnableNpcTemplate(void* trigger, uint32_t family)
-{
-	if (!trigger ||
-		(family != kMonsterTriggerFamily && family != kNpcTriggerFamily))
-	{
-		return false;
-	}
-
-	__try
-	{
-		BYTE* const bytes = static_cast<BYTE*>(trigger);
-		if (*reinterpret_cast<uint32_t*>(bytes + kTriggerFamilyOffset) != family ||
-			(*reinterpret_cast<uint32_t*>(bytes + kTriggerFlagsOffset) &
-				kTriggerHasSpawnDefinition) == 0 ||
-			*reinterpret_cast<int32_t*>(bytes + kTriggerSpawnIdOffset) < 0)
-		{
-			return false;
-		}
-
-		void** const vtable = *reinterpret_cast<void***>(trigger);
-		if (!vtable ||
-			vtable[kTriggerSpawnVtableOffset / sizeof(void*)] !=
-				reinterpret_cast<void*>(kTriggerSpawnFromDefinition))
-		{
-			return false;
-		}
-
-		void* const clone = vtable[kTriggerCloneVtableOffset / sizeof(void*)];
-		return clone == reinterpret_cast<void*>(kTriggerCloneGeneric) ||
-			clone == reinterpret_cast<void*>(kTriggerCloneMonster);
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		return false;
-	}
-}
-
-void* Player2Module::SelectRandomNpcTemplate(uint32_t& family,
-	uint32_t& subtype, size_t& candidate_count)
-{
-	family = 0;
-	subtype = 0;
-	candidate_count = 0;
-
-	struct TemplateList
-	{
-		size_t offset;
-		uint32_t family;
-	};
-	const TemplateList lists[] =
-	{
-		{ kEntityRegistryMonsterListOffset, kMonsterTriggerFamily },
-		{ kEntityRegistryNpcListOffset, kNpcTriggerFamily }
-	};
-
-	__try
-	{
-		BYTE* const registry = *reinterpret_cast<BYTE**>(kEntityRegistry);
-		if (!registry)
-			return NULL;
-
-		for (size_t list_index = 0; list_index < _countof(lists); ++list_index)
-		{
-			BYTE* node = *reinterpret_cast<BYTE**>(registry + lists[list_index].offset);
-			for (size_t visited = 0; node && visited != 256; ++visited)
-			{
-				BYTE* const entity = *reinterpret_cast<BYTE**>(
-					node + kIntrusiveListValueOffset);
-				BYTE* const trigger = entity ? *reinterpret_cast<BYTE**>(
-					entity + kEntityTriggerOffset) : NULL;
-				if (IsSpawnableNpcTemplate(trigger, lists[list_index].family))
-					++candidate_count;
-				node = *reinterpret_cast<BYTE**>(node + kIntrusiveListNextOffset);
-			}
-		}
-
-		if (!candidate_count)
-			return NULL;
-
-		if (!m_npc_spawn_random_state)
-			m_npc_spawn_random_state = GetTickCount();
-		m_npc_spawn_random_state = m_npc_spawn_random_state * 1664525u +
-			1013904223u;
-		size_t remaining = m_npc_spawn_random_state % candidate_count;
-		for (size_t list_index = 0; list_index < _countof(lists); ++list_index)
-		{
-			BYTE* node = *reinterpret_cast<BYTE**>(registry + lists[list_index].offset);
-			for (size_t visited = 0; node && visited != 256; ++visited)
-			{
-				BYTE* const entity = *reinterpret_cast<BYTE**>(
-					node + kIntrusiveListValueOffset);
-				BYTE* const trigger = entity ? *reinterpret_cast<BYTE**>(
-					entity + kEntityTriggerOffset) : NULL;
-				if (IsSpawnableNpcTemplate(trigger, lists[list_index].family))
-				{
-					if (!remaining)
-					{
-						family = lists[list_index].family;
-						subtype = *reinterpret_cast<uint32_t*>(
-							trigger + kTriggerSubtypeOffset);
-						return trigger;
-					}
-					--remaining;
-				}
-				node = *reinterpret_cast<BYTE**>(node + kIntrusiveListNextOffset);
-			}
-		}
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER)
-	{
-		CoopRuntime::Instance().Log(
-			"[npc-spawn] live trigger list fault; no object created\r\n");
-	}
-	return NULL;
-}
-
-void Player2Module::SpawnRandomNpcFromLiveTemplate()
-{
-	void* const player1 = GetGPigEntity(1);
-	if (!player1)
-	{
-		CoopRuntime::Instance().Log(
-			"[npc-spawn] F5 ignored: no loaded P1/world yet\r\n");
-		return;
-	}
-
-	uint32_t family = 0;
-	uint32_t subtype = 0;
-	size_t candidate_count = 0;
-	void* const source = SelectRandomNpcTemplate(family, subtype, candidate_count);
-	if (!source)
-	{
-		CoopRuntime::Instance().Log(
-			"[npc-spawn] F5 found no spawnable monster/NPC map template\r\n");
-		return;
-	}
-
-	__try
-	{
-		void** const source_vtable = *reinterpret_cast<void***>(source);
-		TriggerCloneFn const clone = reinterpret_cast<TriggerCloneFn>(
-			source_vtable[kTriggerCloneVtableOffset / sizeof(void*)]);
-		void* const created = clone(source);
-		if (!created)
-		{
-			CoopRuntime::Instance().Log(
-				"[npc-spawn] clone failed family=0x%08X subtype=0x%08X\r\n",
-				family, subtype);
-			return;
-		}
-
-		// The clone preserves the map's exact archetype/spawn definition.  Only
-		// replace its transform with the current P1 transform before the native
-		// spawn method reads trigger+0xA4.
-		*reinterpret_cast<Vec4*>(static_cast<BYTE*>(created) +
-			kTriggerPositionOffset) = *reinterpret_cast<Vec4*>(
-			static_cast<BYTE*>(player1) + kEntityPositionOffset);
-		*reinterpret_cast<Vec4*>(static_cast<BYTE*>(created) +
-			kTriggerRotationOffset) = *reinterpret_cast<Vec4*>(
-			static_cast<BYTE*>(player1) + kEntityRotationOffset);
-
-		void** const created_vtable = *reinterpret_cast<void***>(created);
-		if (!created_vtable ||
-			created_vtable[kTriggerSpawnVtableOffset / sizeof(void*)] !=
-				reinterpret_cast<void*>(kTriggerSpawnFromDefinition))
-		{
-			CoopRuntime::Instance().Log(
-				"[npc-spawn] clone has no expected native spawn method; left untouched\r\n");
-			return;
-		}
-
-		TriggerSpawnFn const spawn = reinterpret_cast<TriggerSpawnFn>(
-			created_vtable[kTriggerSpawnVtableOffset / sizeof(void*)]);
-		spawn(created);
-		CoopRuntime::Instance().Log(
-			"[npc-spawn] F5 template=%p family=0x%08X subtype=0x%08X candidates=%u created=%p\r\n",
-			source, family, subtype, static_cast<unsigned>(candidate_count), created);
-	}
-	__except (CoopRuntime::Instance().LogException(
-		GetExceptionInformation(), "npc-spawn-from-live-template"))
-	{
-	}
-}
-
-void Player2Module::PollRandomNpcSpawnKey()
-{
-	const bool down = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
-	if (down && !m_npc_spawn_key_was_down)
-		SpawnRandomNpcFromLiveTemplate();
-	m_npc_spawn_key_was_down = down;
-}
-
 void __fastcall Player2Module::HookControllerUpdate(
 	void* controller, void*)
 {
@@ -870,7 +676,7 @@ void Player2Module::TickPlayer1(void* player1_controller)
 	CoopNetGame::Instance().PublishLocalPlayerTransform(GetGPigEntity(1));
 	// P1's 0x5BCF30 and 0x5BB1D0 have just finished driving the single shared
 	// camera, so this is the only frame point where 0x52AD20 reports P1's own yaw.
-	// The remote machine cannot read its P2's camera because P2 owns none there вЂ”
+	// The remote machine cannot read its P2's camera because P2 owns none there РІР‚вЂќ
 	// it consumes this value.
 	float local_camera_yaw = 0.0f;
 	const bool local_camera_yaw_valid = ReadLocalCameraYaw(local_camera_yaw);
@@ -1034,10 +840,8 @@ void Player2Module::ConfigurePlayer2DefaultMode(void* controller)
 				RunStockControllerUpdate(controller, "non-player");
 			}
 
-			// The keys are edge-triggered and independent of which controller was
-			// visited.  This keeps F5/F6 available during native mode transitions.
+			// F6 is edge-triggered and independent of the controller being visited.
 			PollPlayer2SpawnKey();
-			PollRandomNpcSpawnKey();
 			return;
 		}
 

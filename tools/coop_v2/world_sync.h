@@ -195,11 +195,6 @@ namespace coop
 		void HandleIncomingDespawn(const WorldDespawnPacket& packet);
 
 	public:
-			// F9 debug: activates the verified nearby source-box trigger first; its
-			// stock chain creates the computer and later dynamic chip/spider enemies.
-			// Otherwise it kills the nearest live NPC/monster close to P1.
-			void DebugKillNearest();
-
 		struct PendingDamage
 		{
 			std::uint32_t world_id;

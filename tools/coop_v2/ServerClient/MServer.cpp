@@ -2,18 +2,12 @@
 
 #include "MStandalone.h"
 #include "../coop_netgame.h"
+#include "../protocol/packet_view.h"
 #include "../save_sync.h"
 #include "../world_sync.h"
-#include "../protocol/packet_dispatch.h"
 
 #include <algorithm>
 #include <string.h>
-
-namespace
-{
-const char kHelloMessage[] = "GFCOOP_HELLO_v1";
-const char kWelcomeMessage[] = "GFCOOP_WELCOME_v1";
-}
 
 CSteamOfflineSocketServer::CSteamOfflineSocketServer() :
 	m_sockets(nullptr),
@@ -130,10 +124,8 @@ void CSteamOfflineSocketServer::OnStateChange(
 
 	case k_ESteamNetworkingConnectionState_Connected:
 		Msg("[network-server] connection %u ready", info->m_hConn);
-		SendRaw(info->m_hConn, kWelcomeMessage,
-			static_cast<std::uint32_t>(sizeof(kWelcomeMessage)),
-			k_nSteamNetworkingSend_Reliable);
 		coop::CoopNetGame::Instance().OnPeerConnected();
+		coop::SaveSync::Instance().SendHostJoinSave(this, info->m_hConn);
 		break;
 
 	case k_ESteamNetworkingConnectionState_ClosedByPeer:
@@ -176,22 +168,33 @@ void CSteamOfflineSocketServer::OnRemotePacket(
 {
 	if (!message)
 		return;
-	const bool hello = message->m_cbSize == sizeof(kHelloMessage) &&
-		memcmp(message->m_pData, kHelloMessage, sizeof(kHelloMessage)) == 0;
-	if (hello)
+	const void* const data = message->m_pData;
+	const std::uint32_t size = static_cast<std::uint32_t>(message->m_cbSize);
+	const coop::protocol::PacketView view(data, size);
+	switch (view.Kind())
 	{
-		Msg("[network-server] received hello from %u", message->m_conn);
-		SendRaw(message->m_conn, kWelcomeMessage,
-			static_cast<std::uint32_t>(sizeof(kWelcomeMessage)),
-			k_nSteamNetworkingSend_Reliable);
-		coop::SaveSync::Instance().SendHostJoinSave(this, message->m_conn);
+	case coop::protocol::PacketKind::Input:
+		coop::CoopNetGame::Instance().OnRemotePacket(data, size);
 		return;
-	}
 
-	if (coop::protocol::DispatchInboundPacket(message->m_pData,
-		static_cast<std::uint32_t>(message->m_cbSize)))
-	{
-		return;
+	case coop::protocol::PacketKind::SaveSlot:
+		if (coop::SaveSync::Instance().OnRemotePacket(data, size))
+			return;
+		break;
+
+	case coop::protocol::PacketKind::WorldSpawn:
+	case coop::protocol::PacketKind::WorldSnapshot:
+	case coop::protocol::PacketKind::WorldReady:
+	case coop::protocol::PacketKind::WorldTriggerEvent:
+	case coop::protocol::PacketKind::WorldDamage:
+	case coop::protocol::PacketKind::WorldDespawn:
+	case coop::protocol::PacketKind::TriggerP1Teleport:
+		if (coop::WorldSync::Instance().OnRemotePacket(data, size))
+			return;
+		break;
+
+	default:
+		break;
 	}
 	Msg("[network-server] ignored unknown packet from %u: %d bytes",
 		message->m_conn, message->m_cbSize);
