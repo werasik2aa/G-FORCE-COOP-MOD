@@ -14,8 +14,7 @@ public:
 	bool OpenListenSocketP2P(std::uint32_t port);
 	void CloseServer() override;
 	bool IsSteam() const override { return true; }
-	void OnStateChange(
-		SteamNetConnectionStatusChangedCallback_t* info) override;
+	void OnStateChange(SteamNetConnectionStatusChangedCallback_t* info) override;
 };
 
 extern CSteamOnlineSocketServer* SteamSServer;

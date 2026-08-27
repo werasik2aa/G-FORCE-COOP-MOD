@@ -20,29 +20,24 @@ public:
 	MMRESULT TimeGetDevCaps(LPTIMECAPS caps, UINT size);
 	DWORD TimeGetTime();
 	MMRESULT WaveOutClose(HWAVEOUT wave_out);
-	MMRESULT WaveOutOpen(LPHWAVEOUT wave_out, UINT device_id,
-		LPCWAVEFORMATEX format, DWORD_PTR callback,
-		DWORD_PTR instance, DWORD flags);
+	MMRESULT WaveOutOpen(LPHWAVEOUT wave_out, UINT device_id, LPCWAVEFORMATEX format, DWORD_PTR callback, DWORD_PTR instance, DWORD flags);
 	MMRESULT WaveOutPause(HWAVEOUT wave_out);
-	MMRESULT WaveOutPrepareHeader(
-		HWAVEOUT wave_out, LPWAVEHDR header, UINT size);
+	MMRESULT WaveOutPrepareHeader(HWAVEOUT wave_out, LPWAVEHDR header, UINT size);
 	MMRESULT WaveOutReset(HWAVEOUT wave_out);
 	MMRESULT WaveOutRestart(HWAVEOUT wave_out);
 	MMRESULT WaveOutSetVolume(HWAVEOUT wave_out, DWORD volume);
-	MMRESULT WaveOutUnprepareHeader(
-		HWAVEOUT wave_out, LPWAVEHDR header, UINT size);
+	MMRESULT WaveOutUnprepareHeader(HWAVEOUT wave_out, LPWAVEHDR header, UINT size);
 	MMRESULT WaveOutWrite(HWAVEOUT wave_out, LPWAVEHDR header, UINT size);
 
 private:
-	typedef UINT (WINAPI* TimePeriodFn)(UINT);
-	typedef MMRESULT (WINAPI* TimeGetDevCapsFn)(LPTIMECAPS, UINT);
-	typedef DWORD (WINAPI* TimeGetTimeFn)();
-	typedef MMRESULT (WINAPI* WaveOutHandleFn)(HWAVEOUT);
-	typedef MMRESULT (WINAPI* WaveOutHeaderFn)(HWAVEOUT, LPWAVEHDR, UINT);
-	typedef MMRESULT (WINAPI* WaveOutOpenFn)(LPHWAVEOUT, UINT,
-		LPCWAVEFORMATEX, DWORD_PTR, DWORD_PTR, DWORD);
-	typedef MMRESULT (WINAPI* WaveOutSetVolumeFn)(HWAVEOUT, DWORD);
-	typedef BOOL (WINAPI* CoopInitializeFn)();
+	typedef UINT(WINAPI* TimePeriodFn)(UINT);
+	typedef MMRESULT(WINAPI* TimeGetDevCapsFn)(LPTIMECAPS, UINT);
+	typedef DWORD(WINAPI* TimeGetTimeFn)();
+	typedef MMRESULT(WINAPI* WaveOutHandleFn)(HWAVEOUT);
+	typedef MMRESULT(WINAPI* WaveOutHeaderFn)(HWAVEOUT, LPWAVEHDR, UINT);
+	typedef MMRESULT(WINAPI* WaveOutOpenFn)(LPHWAVEOUT, UINT, LPCWAVEFORMATEX, DWORD_PTR, DWORD_PTR, DWORD);
+	typedef MMRESULT(WINAPI* WaveOutSetVolumeFn)(HWAVEOUT, DWORD);
+	typedef BOOL(WINAPI* CoopInitializeFn)();
 
 	WinmmProxy();
 	~WinmmProxy() = default;
@@ -50,8 +45,7 @@ private:
 	WinmmProxy& operator=(const WinmmProxy&) = delete;
 
 	void Initialize();
-	static bool AppendFileName(
-		wchar_t path[MAX_PATH], const wchar_t* file_name);
+	static bool AppendFileName(wchar_t path[MAX_PATH], const wchar_t* file_name);
 	static BOOL CALLBACK InitializeOnce(PINIT_ONCE, PVOID, PVOID*);
 	static DWORD WINAPI EarlyInitializeThread(LPVOID);
 

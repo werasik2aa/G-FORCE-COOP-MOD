@@ -1,18 +1,5 @@
 #include "ip_connect_dialog.h"
 
-namespace
-{
-const char kDialogClassName[] = "GForceCoopIpConnectDialog";
-const int kDialogWidth = 440;
-const int kDialogHeight = 154;
-const int kAddressControlId = 1001;
-
-int CenteredCoordinate(int origin, int extent, int size)
-{
-	return origin + (extent - size) / 2;
-}
-}
-
 IpConnectDialog::IpConnectDialog() :
 	m_window(NULL),
 	m_edit(NULL),
@@ -22,8 +9,7 @@ IpConnectDialog::IpConnectDialog() :
 	m_owner_was_enabled(false),
 	m_finished(false),
 	m_accepted(false)
-{
-}
+{}
 
 bool IpConnectDialog::RegisterWindowClass()
 {
@@ -37,7 +23,7 @@ bool IpConnectDialog::RegisterWindowClass()
 	window_class.hInstance = GetModuleHandleA(NULL);
 	window_class.hCursor = LoadCursor(NULL, IDC_ARROW);
 	window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-	window_class.lpszClassName = kDialogClassName;
+	window_class.lpszClassName = "GForceCoopIpConnectDialog";
 	atom = RegisterClassExA(&window_class);
 	return atom != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
@@ -71,8 +57,7 @@ bool IpConnectDialog::Prompt(HWND owner, const char* default_address,
 			kDialogHeight);
 	}
 
-	m_window = CreateWindowExA(WS_EX_DLGMODALFRAME,
-		kDialogClassName, "G-Force Co-op: Connect by IP",
+	m_window = CreateWindowExA(WS_EX_DLGMODALFRAME, "GForceCoopIpConnectDialog", "G-Force Co-op: Connect by IP",
 		WS_POPUP | WS_CAPTION | WS_SYSMENU,
 		bounds.left, bounds.top, kDialogWidth, kDialogHeight, m_owner, NULL,
 		GetModuleHandleA(NULL), this);

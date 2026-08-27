@@ -18,7 +18,7 @@ namespace coop
 	constexpr DWORD kWorldSnapshotIntervalMs = 350;
 	constexpr DWORD kMissingSpawnRetryMs = 1000;
 	constexpr size_t kWorldRegistryWalkLimit = 512;
-		constexpr size_t kMaxPendingWorldPackets = 1024;
+	constexpr size_t kMaxPendingWorldPackets = 1024;
 
 	bool SameTriggerKey(const WorldSync::TriggerKey& left, const WorldSync::TriggerKey& right)
 	{
@@ -34,21 +34,21 @@ namespace coop
 			key.definition_id == definition_id;
 	}
 
-		bool TransformChanged(const float old_position[4], const float old_rotation[4],
-			const float position[4], const float rotation[4])
+	bool TransformChanged(const float old_position[4], const float old_rotation[4],
+		const float position[4], const float rotation[4])
+	{
+		for (size_t index = 0; index != 3; ++index)
 		{
-			for (size_t index = 0; index != 3; ++index)
-			{
-				if (fabsf(old_position[index] - position[index]) > 0.015f)
-					return true;
-			}
-			for (size_t index = 0; index != 4; ++index)
-			{
-				if (fabsf(old_rotation[index] - rotation[index]) > 0.0025f)
-					return true;
-			}
-			return false;
+			if (fabsf(old_position[index] - position[index]) > 0.015f)
+				return true;
 		}
+		for (size_t index = 0; index != 4; ++index)
+		{
+			if (fabsf(old_rotation[index] - rotation[index]) > 0.0025f)
+				return true;
+		}
+		return false;
+	}
 
 	WorldSync& WorldSync::Instance()
 	{
@@ -63,7 +63,7 @@ namespace coop
 		m_host_resync_requested(1),
 		m_client_ready_pending(0),
 		m_client_ready_sent(0),
-				m_client_ready_sequence(0),
+		m_client_ready_sequence(0),
 		m_forced_client_spawn_active(false)
 	{
 
@@ -96,12 +96,12 @@ namespace coop
 		AcquireSRWLockExclusive(&m_packet_lock);
 		m_outgoing_spawns.clear();
 		m_outgoing_snapshots.clear();
-				m_outgoing_trigger_events.clear();
+		m_outgoing_trigger_events.clear();
 		m_outgoing_despawns.clear();
 
 		m_incoming_spawns.clear();
 		m_incoming_snapshots.clear();
-				m_incoming_trigger_events.clear();
+		m_incoming_trigger_events.clear();
 		m_incoming_despawns.clear();
 
 		ReleaseSRWLockExclusive(&m_packet_lock);
@@ -116,7 +116,7 @@ namespace coop
 		m_client_entities.clear();
 		m_stale_client_world_ids.clear();
 		m_pending_spawns.clear();
-				m_pending_snapshots.clear();
+		m_pending_snapshots.clear();
 		m_next_world_id = 1;
 
 		m_snapshot_sequence = 0;
@@ -141,11 +141,11 @@ namespace coop
 		AcquireSRWLockExclusive(&m_packet_lock);
 		m_outgoing_spawns.clear();
 		m_outgoing_snapshots.clear();
-				m_outgoing_trigger_events.clear();
+		m_outgoing_trigger_events.clear();
 		m_incoming_spawns.clear();
 
 		m_incoming_snapshots.clear();
-				m_incoming_trigger_events.clear();
+		m_incoming_trigger_events.clear();
 		ReleaseSRWLockExclusive(&m_packet_lock);
 
 		AcquireSRWLockExclusive(&m_damage_lock);
@@ -181,11 +181,11 @@ namespace coop
 		return counter.occurrence;
 	}
 
-		std::uint32_t WorldSync::LocalOccurrence(void* trigger)
-		{
-			return NextOccurrence(CoopNetGame::Instance().IsHost() ?
-				m_host_trigger_counters : m_client_trigger_counters, trigger);
-		}
+	std::uint32_t WorldSync::LocalOccurrence(void* trigger)
+	{
+		return NextOccurrence(CoopNetGame::Instance().IsHost() ?
+			m_host_trigger_counters : m_client_trigger_counters, trigger);
+	}
 
 	void* WorldSync::FindTemplateTrigger(std::uint32_t family,
 		std::uint32_t subtype, std::int32_t definition_id)
@@ -215,29 +215,29 @@ namespace coop
 		return found ? found->trigger : NULL;
 	}
 
-		bool WorldSync::ReadEntityTransform(void* entity, float position[4],
-			float rotation[4]) const
-		{
-			if (!entity || !position || !rotation)
-				return false;
+	bool WorldSync::ReadEntityTransform(void* entity, float position[4],
+		float rotation[4]) const
+	{
+		if (!entity || !position || !rotation)
+			return false;
 
-			retail::Transform transform = {};
-			const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
-			if (!retail::EntityView(entity_ref).ReadTransform(transform))
-				return false;
+		retail::Transform transform = {};
+		const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
+		if (!retail::EntityView(entity_ref).ReadTransform(transform))
+			return false;
 
-			memcpy(position, &transform.position, sizeof(transform.position));
-			memcpy(rotation, &transform.rotation, sizeof(transform.rotation));
-			return true;
-		}
+		memcpy(position, &transform.position, sizeof(transform.position));
+		memcpy(rotation, &transform.rotation, sizeof(transform.rotation));
+		return true;
+	}
 
-		bool WorldSync::ReadEntityHealth(void* entity, float& health) const
-		{
-			if (!entity)
-				return false;
-			const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
-			return retail::EntityView(entity_ref).ReadHealth(health);
-		}
+	bool WorldSync::ReadEntityHealth(void* entity, float& health) const
+	{
+		if (!entity)
+			return false;
+		const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
+		return retail::EntityView(entity_ref).ReadHealth(health);
+	}
 
 	bool WorldSync::IsLiveEntity(void* entity) const
 	{
@@ -277,8 +277,8 @@ namespace coop
 	void WorldSync::RecordTriggerTemplate(void* trigger, std::uint32_t family,
 		std::uint32_t subtype)
 	{
-			// Keep every map-defined trigger: breakables and doors are not only
-			// represented by live NPC/monster spawners.
+		// Keep every map-defined trigger: breakables and doors are not only
+		// represented by live NPC/monster spawners.
 		if (!trigger)
 			return;
 
@@ -292,7 +292,7 @@ namespace coop
 		{
 			return;
 		}
-		
+
 
 		for (TriggerTemplate& existing : m_trigger_templates)
 		{
@@ -335,17 +335,17 @@ namespace coop
 		return NULL;
 	}
 
-		WorldSync::ClientEntity* WorldSync::FindClientEntity(void* entity)
-		{
-			if (!entity)
-				return NULL;
-			for (ClientEntity& existing : m_client_entities)
-			{
-				if (existing.entity == entity)
-					return &existing;
-			}
+	WorldSync::ClientEntity* WorldSync::FindClientEntity(void* entity)
+	{
+		if (!entity)
 			return NULL;
+		for (ClientEntity& existing : m_client_entities)
+		{
+			if (existing.entity == entity)
+				return &existing;
 		}
+		return NULL;
+	}
 
 	WorldSync::ClientEntity* WorldSync::FindUnlinkedClientEntity(
 		const TriggerKey& key)
@@ -377,8 +377,8 @@ namespace coop
 		if (!CoopNetGame::Instance().HasRemotePeer())
 			return;
 
-			WorldSpawnPacket packet = {};
-			protocol::InitializeFixedPacket(packet, protocol::PacketKind::WorldSpawn);
+		WorldSpawnPacket packet = {};
+		protocol::InitializeFixedPacket(packet, protocol::PacketKind::WorldSpawn);
 		packet.world_id = entity.world_id;
 		packet.key = entity.key;
 		memcpy(packet.position, entity.last_position, sizeof(packet.position));
@@ -399,9 +399,9 @@ namespace coop
 			!CoopNetGame::Instance().HasRemotePeer())
 			return;
 
-			WorldDespawnPacket packet = {};
-			protocol::InitializeFixedPacket(packet,
-				protocol::PacketKind::WorldDespawn);
+		WorldDespawnPacket packet = {};
+		protocol::InitializeFixedPacket(packet,
+			protocol::PacketKind::WorldDespawn);
 		packet.world_id = world_id;
 		AcquireSRWLockExclusive(&m_packet_lock);
 		m_outgoing_despawns.push_back(packet);
@@ -415,9 +415,9 @@ namespace coop
 	{
 		if (!entity.announced)
 			return;
-			WorldSnapshotPacket packet = {};
-			protocol::InitializeFixedPacket(packet,
-				protocol::PacketKind::WorldSnapshot);
+		WorldSnapshotPacket packet = {};
+		protocol::InitializeFixedPacket(packet,
+			protocol::PacketKind::WorldSnapshot);
 		packet.world_id = entity.world_id;
 		packet.sequence = ++m_snapshot_sequence;
 		memcpy(packet.position, position, sizeof(packet.position));
@@ -430,15 +430,15 @@ namespace coop
 		entity.have_transform = true;
 	}
 
-		void WorldSync::QueueTriggerEvent(const TriggerKey& key, int event_code,
-			int result)
-		{
-			if (!CoopNetGame::Instance().HasRemotePeer() || !key.occurrence)
-				return;
+	void WorldSync::QueueTriggerEvent(const TriggerKey& key, int event_code,
+		int result)
+	{
+		if (!CoopNetGame::Instance().HasRemotePeer() || !key.occurrence)
+			return;
 
-			WorldTriggerEventPacket packet = {};
-			protocol::InitializeFixedPacket(packet,
-				protocol::PacketKind::WorldTriggerEvent);
+		WorldTriggerEventPacket packet = {};
+		protocol::InitializeFixedPacket(packet,
+			protocol::PacketKind::WorldTriggerEvent);
 		packet.key = key;
 		packet.event_code = event_code;
 		packet.result = result;
@@ -470,33 +470,33 @@ namespace coop
 		return 0;
 	}
 
-		bool WorldSync::ReportLocalDamage(void* entity, int event_code)
-		{
-			if (!entity || !CoopNetGame::Instance().HasRemotePeer())
-				return false;
-			const std::uint32_t world_id = WorldIdOfEntity(entity);
-			if (!world_id)
-				return false;
-			float health = 0.0f;
-			if (!ReadEntityHealth(entity, health))
-				return false;
+	bool WorldSync::ReportLocalDamage(void* entity, int event_code)
+	{
+		if (!entity || !CoopNetGame::Instance().HasRemotePeer())
+			return false;
+		const std::uint32_t world_id = WorldIdOfEntity(entity);
+		if (!world_id)
+			return false;
+		float health = 0.0f;
+		if (!ReadEntityHealth(entity, health))
+			return false;
 
-				WorldDamagePacket packet = {};
-				protocol::InitializeFixedPacket(packet,
-					protocol::PacketKind::WorldDamage);
-			packet.world_id = world_id;
-			memcpy(&packet.hp_bits, &health, sizeof(packet.hp_bits));
-			packet.event_code = event_code;
-			AcquireSRWLockExclusive(&m_damage_lock);
-			bool queued = false;
-			if (m_outgoing_damage.size() < kMaxPendingWorldPackets)
-			{
-				m_outgoing_damage.push_back(packet);
-				queued = true;
-			}
-			ReleaseSRWLockExclusive(&m_damage_lock);
-			return queued;
+		WorldDamagePacket packet = {};
+		protocol::InitializeFixedPacket(packet,
+			protocol::PacketKind::WorldDamage);
+		packet.world_id = world_id;
+		memcpy(&packet.hp_bits, &health, sizeof(packet.hp_bits));
+		packet.event_code = event_code;
+		AcquireSRWLockExclusive(&m_damage_lock);
+		bool queued = false;
+		if (m_outgoing_damage.size() < kMaxPendingWorldPackets)
+		{
+			m_outgoing_damage.push_back(packet);
+			queued = true;
 		}
+		ReleaseSRWLockExclusive(&m_damage_lock);
+		return queued;
+	}
 
 	void* WorldSync::EntityOfTrigger(void* trigger) const
 	{
@@ -527,7 +527,7 @@ namespace coop
 		return NULL;
 	}
 
-void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
+	void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 
 		std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id)
 	{
@@ -1150,8 +1150,8 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 			EnumerateHostEntities();
 		if (CoopNetGame::Instance().IsClient())
 			EnumerateClientEntities();
-			// Inbound trigger pulses are valid in both directions, unlike the earlier
-			// host-only spawn and trigger-event paths.
+		// Inbound trigger pulses are valid in both directions, unlike the earlier
+		// host-only spawn and trigger-event paths.
 		ProcessClientPackets();
 		// Capture the post-hit local HP before applying incoming peer state.  The
 		// receive path refreshes this baseline, so remote HP never bounces back.
@@ -1239,15 +1239,15 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 		}
 	}
 
-		bool WorldSync::ApplyHealthToEntity(void* entity, std::uint32_t hp_bits) const
-		{
-			if (!entity)
-				return false;
-			float health = 0.0f;
-			memcpy(&health, &hp_bits, sizeof(health));
-			const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
-			return retail::EntityView(entity_ref).SetHealth(health);
-		}
+	bool WorldSync::ApplyHealthToEntity(void* entity, std::uint32_t hp_bits) const
+	{
+		if (!entity)
+			return false;
+		float health = 0.0f;
+		memcpy(&health, &hp_bits, sizeof(health));
+		const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
+		return retail::EntityView(entity_ref).SetHealth(health);
+	}
 
 	void WorldSync::ApplyIncomingDamage()
 	{
@@ -1281,9 +1281,9 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 			if (!entity)
 			{
 				PendingDamage pending = {};
-					pending.world_id = packet.world_id;
-					pending.hp_bits = packet.hp_bits;
-					pending.event_code = packet.event_code;
+				pending.world_id = packet.world_id;
+				pending.hp_bits = packet.hp_bits;
+				pending.event_code = packet.event_code;
 				m_pending_damage.push_back(pending);
 				continue;
 			}
@@ -1292,13 +1292,13 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 			if (!IsLiveEntity(entity))
 				continue;
 
-					const bool applied = ApplyHealthToEntity(entity, packet.hp_bits);
-					if (applied)
-					{
-						float received_health = 0.0f;
-						memcpy(&received_health, &packet.hp_bits, sizeof(received_health));
-						SetTrackedHealth(entity, received_health);
-					}
+			const bool applied = ApplyHealthToEntity(entity, packet.hp_bits);
+			if (applied)
+			{
+				float received_health = 0.0f;
+				memcpy(&received_health, &packet.hp_bits, sizeof(received_health));
+				SetTrackedHealth(entity, received_health);
+			}
 
 		}
 		// Hits that arrived before the local twin was linked are replayed as soon
@@ -1334,13 +1334,13 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 				it = m_pending_damage.erase(it);
 				continue;
 			}
-				const bool applied = ApplyHealthToEntity(entity, it->hp_bits);
-				if (applied)
-				{
-					float received_health = 0.0f;
-					memcpy(&received_health, &it->hp_bits, sizeof(received_health));
-					SetTrackedHealth(entity, received_health);
-				}
+			const bool applied = ApplyHealthToEntity(entity, it->hp_bits);
+			if (applied)
+			{
+				float received_health = 0.0f;
+				memcpy(&received_health, &it->hp_bits, sizeof(received_health));
+				SetTrackedHealth(entity, received_health);
+			}
 
 			it = m_pending_damage.erase(it);
 		}
@@ -1399,120 +1399,120 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 		}
 	}
 
-			bool WorldSync::HandleWorldReadyPacket(const protocol::PacketView& view)
-		{
-			WorldReadyPacket packet = {};
-			if (!view.CopyUncompressedExact(packet))
-				return true;
-			if (CoopNetGame::Instance().IsHost() &&
-				!CoopNetGame::Instance().IsClient() && packet.sequence != 0)
-			{
-				InterlockedExchange(&m_host_resync_requested, 1);
-				CoopRuntime::Instance().Log(
-					"[world-sync] client world ready; host baseline queued\r\n");
-			}
+	bool WorldSync::HandleWorldReadyPacket(const protocol::PacketView& view)
+	{
+		WorldReadyPacket packet = {};
+		if (!view.CopyUncompressedExact(packet))
 			return true;
-		}
-
-		bool WorldSync::HandleWorldDamagePacket(const protocol::PacketView& view)
+		if (CoopNetGame::Instance().IsHost() &&
+			!CoopNetGame::Instance().IsClient() && packet.sequence != 0)
 		{
-			WorldDamagePacket packet = {};
-			if (!view.CopyUncompressedExact(packet) || !packet.world_id)
-				return true;
-			AcquireSRWLockExclusive(&m_damage_lock);
-			if (m_incoming_damage.size() < kMaxPendingWorldPackets)
-				m_incoming_damage.push_back(packet);
-			ReleaseSRWLockExclusive(&m_damage_lock);
-			return true;
-		}
-
-		bool WorldSync::HandleWorldSpawnPacket(const protocol::PacketView& view)
-		{
-			WorldSpawnPacket packet = {};
-			if (!view.CopyUncompressedExact(packet) ||
-				!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
-			{
-				return true;
-			}
-
-			const bool dynamic = packet.key.definition_id < 0;
-			if (!packet.world_id || !IsSupportedFamily(packet.key.family) ||
-				(!dynamic && !packet.key.occurrence))
-			{
-				CoopRuntime::Instance().Log("[world-sync] rejected invalid spawn event\r\n");
-				return true;
-			}
-
-			AcquireSRWLockExclusive(&m_packet_lock);
-			if (m_incoming_spawns.size() < kMaxPendingWorldPackets)
-				m_incoming_spawns.push_back(packet);
-			ReleaseSRWLockExclusive(&m_packet_lock);
-			return true;
-		}
-
-		bool WorldSync::HandleWorldTriggerEventPacket(const protocol::PacketView& view)
-		{
-			WorldTriggerEventPacket packet = {};
-			if (!view.CopyUncompressedExact(packet) || !packet.key.occurrence)
-				return true;
-
+			InterlockedExchange(&m_host_resync_requested, 1);
 			CoopRuntime::Instance().Log(
-				"[world-trigger-event] peer received key=%08X/%08X/%d occ=%u event=%d\r\n",
-				packet.key.family, packet.key.subtype, packet.key.definition_id,
-				packet.key.occurrence, packet.event_code);
-			AcquireSRWLockExclusive(&m_packet_lock);
-			if (m_incoming_trigger_events.size() < kMaxPendingWorldPackets)
-				m_incoming_trigger_events.push_back(packet);
-			ReleaseSRWLockExclusive(&m_packet_lock);
+				"[world-sync] client world ready; host baseline queued\r\n");
+		}
+		return true;
+	}
+
+	bool WorldSync::HandleWorldDamagePacket(const protocol::PacketView& view)
+	{
+		WorldDamagePacket packet = {};
+		if (!view.CopyUncompressedExact(packet) || !packet.world_id)
+			return true;
+		AcquireSRWLockExclusive(&m_damage_lock);
+		if (m_incoming_damage.size() < kMaxPendingWorldPackets)
+			m_incoming_damage.push_back(packet);
+		ReleaseSRWLockExclusive(&m_damage_lock);
+		return true;
+	}
+
+	bool WorldSync::HandleWorldSpawnPacket(const protocol::PacketView& view)
+	{
+		WorldSpawnPacket packet = {};
+		if (!view.CopyUncompressedExact(packet) ||
+			!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
+		{
 			return true;
 		}
 
-		bool WorldSync::HandleWorldSnapshotPacket(const protocol::PacketView& view)
+		const bool dynamic = packet.key.definition_id < 0;
+		if (!packet.world_id || !IsSupportedFamily(packet.key.family) ||
+			(!dynamic && !packet.key.occurrence))
 		{
-			WorldSnapshotPacket packet = {};
-			if (!view.CopyUncompressedExact(packet) ||
-				!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
-			{
-				return true;
-			}
-			if (!packet.world_id || !packet.sequence)
-				return true;
-
-			AcquireSRWLockExclusive(&m_packet_lock);
-			if (m_incoming_snapshots.size() < kMaxPendingWorldPackets)
-				m_incoming_snapshots.push_back(packet);
-			ReleaseSRWLockExclusive(&m_packet_lock);
+			CoopRuntime::Instance().Log("[world-sync] rejected invalid spawn event\r\n");
 			return true;
 		}
 
-		bool WorldSync::OnRemotePacket(const void* data, std::uint32_t size)
-		{
-			const protocol::PacketView view(data, size);
-			PacketHeader header = {};
-			if (!view.ReadHeader(header))
-				return false;
+		AcquireSRWLockExclusive(&m_packet_lock);
+		if (m_incoming_spawns.size() < kMaxPendingWorldPackets)
+			m_incoming_spawns.push_back(packet);
+		ReleaseSRWLockExclusive(&m_packet_lock);
+		return true;
+	}
 
-			switch (view.Kind())
-			{
-			case protocol::PacketKind::WorldReady:
-				return HandleWorldReadyPacket(view);
-			case protocol::PacketKind::WorldSpawn:
-				return HandleWorldSpawnPacket(view);
-			case protocol::PacketKind::WorldSnapshot:
-				return HandleWorldSnapshotPacket(view);
-			case protocol::PacketKind::WorldTriggerEvent:
-				return HandleWorldTriggerEventPacket(view);
-			case protocol::PacketKind::WorldDamage:
-				return HandleWorldDamagePacket(view);
-			case protocol::PacketKind::WorldDespawn:
-				// Legacy despawn has no verified native destruction entry point.  Keep
-				// consuming it for wire compatibility, but do not drop a live local object.
-				return true;
-			default:
-				return false;
-			}
+	bool WorldSync::HandleWorldTriggerEventPacket(const protocol::PacketView& view)
+	{
+		WorldTriggerEventPacket packet = {};
+		if (!view.CopyUncompressedExact(packet) || !packet.key.occurrence)
+			return true;
+
+		CoopRuntime::Instance().Log(
+			"[world-trigger-event] peer received key=%08X/%08X/%d occ=%u event=%d\r\n",
+			packet.key.family, packet.key.subtype, packet.key.definition_id,
+			packet.key.occurrence, packet.event_code);
+		AcquireSRWLockExclusive(&m_packet_lock);
+		if (m_incoming_trigger_events.size() < kMaxPendingWorldPackets)
+			m_incoming_trigger_events.push_back(packet);
+		ReleaseSRWLockExclusive(&m_packet_lock);
+		return true;
+	}
+
+	bool WorldSync::HandleWorldSnapshotPacket(const protocol::PacketView& view)
+	{
+		WorldSnapshotPacket packet = {};
+		if (!view.CopyUncompressedExact(packet) ||
+			!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
+		{
+			return true;
 		}
-void WorldSync::SendToRemote(const void* data, std::uint32_t size, int flags) const
+		if (!packet.world_id || !packet.sequence)
+			return true;
+
+		AcquireSRWLockExclusive(&m_packet_lock);
+		if (m_incoming_snapshots.size() < kMaxPendingWorldPackets)
+			m_incoming_snapshots.push_back(packet);
+		ReleaseSRWLockExclusive(&m_packet_lock);
+		return true;
+	}
+
+	bool WorldSync::OnRemotePacket(const void* data, std::uint32_t size)
+	{
+		const protocol::PacketView view(data, size);
+		PacketHeader header = {};
+		if (!view.ReadHeader(header))
+			return false;
+
+		switch (view.Kind())
+		{
+		case protocol::PacketKind::WorldReady:
+			return HandleWorldReadyPacket(view);
+		case protocol::PacketKind::WorldSpawn:
+			return HandleWorldSpawnPacket(view);
+		case protocol::PacketKind::WorldSnapshot:
+			return HandleWorldSnapshotPacket(view);
+		case protocol::PacketKind::WorldTriggerEvent:
+			return HandleWorldTriggerEventPacket(view);
+		case protocol::PacketKind::WorldDamage:
+			return HandleWorldDamagePacket(view);
+		case protocol::PacketKind::WorldDespawn:
+			// Legacy despawn has no verified native destruction entry point.  Keep
+			// consuming it for wire compatibility, but do not drop a live local object.
+			return true;
+		default:
+			return false;
+		}
+	}
+	void WorldSync::SendToRemote(const void* data, std::uint32_t size, int flags) const
 	{
 		if (!data || !size)
 			return;
@@ -1542,8 +1542,8 @@ void WorldSync::SendToRemote(const void* data, std::uint32_t size, int flags) co
 		if (CoopNetGame::Instance().IsClient() &&
 			InterlockedExchange(&m_client_ready_pending, 0) != 0)
 		{
-				WorldSync::WorldReadyPacket ready = {};
-				protocol::InitializeFixedPacket(ready, protocol::PacketKind::WorldReady);
+			WorldSync::WorldReadyPacket ready = {};
+			protocol::InitializeFixedPacket(ready, protocol::PacketKind::WorldReady);
 			ready.sequence = ++m_client_ready_sequence;
 			SendToRemote(&ready, sizeof(ready), k_nSteamNetworkingSend_Reliable);
 			InterlockedExchange(&m_client_ready_sent, 1);
@@ -1552,7 +1552,7 @@ void WorldSync::SendToRemote(const void* data, std::uint32_t size, int flags) co
 				ready.sequence);
 		}
 		std::vector<WorldSpawnPacket> spawns;
-				std::vector<WorldSnapshotPacket> snapshots;
+		std::vector<WorldSnapshotPacket> snapshots;
 		std::vector<WorldTriggerEventPacket> trigger_events;
 		AcquireSRWLockExclusive(&m_packet_lock);
 		spawns.swap(m_outgoing_spawns);
@@ -1565,7 +1565,7 @@ void WorldSync::SendToRemote(const void* data, std::uint32_t size, int flags) co
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 		for (const WorldSnapshotPacket& packet : snapshots)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Unreliable);
-				for (const WorldTriggerEventPacket& packet : trigger_events)
+		for (const WorldTriggerEventPacket& packet : trigger_events)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 
 		std::vector<WorldDamagePacket> damage;

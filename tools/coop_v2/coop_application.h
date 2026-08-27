@@ -6,21 +6,21 @@
 
 namespace coop
 {
-class CoopApplication final
-{
-public:
-	static CoopApplication& Instance();
+	class CoopApplication final
+	{
+	public:
+		static CoopApplication& Instance();
 
 		void SetModule(HMODULE module);
 		BOOL Initialize();
-	void Shutdown();
+		void Shutdown();
 
-private:
-	CoopApplication();
-	~CoopApplication() = default;
-	CoopApplication(const CoopApplication&) = delete;
-	CoopApplication& operator=(const CoopApplication&) = delete;
+	private:
+		CoopApplication();
+		~CoopApplication() = default;
+		CoopApplication(const CoopApplication&) = delete;
+		CoopApplication& operator=(const CoopApplication&) = delete;
 
-	volatile LONG m_init_state;
-};
+		volatile LONG m_init_state;
+	};
 }

@@ -236,7 +236,7 @@ extern "C" UINT WINAPI proxy_timeBeginPeriod(UINT period)
 
 extern "C" MMRESULT WINAPI proxy_mixerClose(HMIXER mixer)
 {
-	typedef MMRESULT (WINAPI* Function)(HMIXER);
+	typedef MMRESULT(WINAPI* Function)(HMIXER);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("mixerClose"));
 	return function ? function(mixer) : MMSYSERR_ERROR;
@@ -245,7 +245,7 @@ extern "C" MMRESULT WINAPI proxy_mixerClose(HMIXER mixer)
 extern "C" MMRESULT WINAPI proxy_mixerGetControlDetailsA(
 	HMIXEROBJ mixer, LPMIXERCONTROLDETAILS details, DWORD flags)
 {
-	typedef MMRESULT (WINAPI* Function)(
+	typedef MMRESULT(WINAPI* Function)(
 		HMIXEROBJ, LPMIXERCONTROLDETAILS, DWORD);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("mixerGetControlDetailsA"));
@@ -255,7 +255,7 @@ extern "C" MMRESULT WINAPI proxy_mixerGetControlDetailsA(
 extern "C" MMRESULT WINAPI proxy_mixerGetDevCapsA(
 	UINT_PTR mixer_id, LPMIXERCAPSA caps, UINT size)
 {
-	typedef MMRESULT (WINAPI* Function)(UINT_PTR, LPMIXERCAPSA, UINT);
+	typedef MMRESULT(WINAPI* Function)(UINT_PTR, LPMIXERCAPSA, UINT);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("mixerGetDevCapsA"));
 	return function ? function(mixer_id, caps, size) : MMSYSERR_ERROR;
@@ -264,7 +264,7 @@ extern "C" MMRESULT WINAPI proxy_mixerGetDevCapsA(
 extern "C" MMRESULT WINAPI proxy_mixerGetID(
 	HMIXEROBJ mixer, UINT* mixer_id, DWORD flags)
 {
-	typedef MMRESULT (WINAPI* Function)(HMIXEROBJ, UINT*, DWORD);
+	typedef MMRESULT(WINAPI* Function)(HMIXEROBJ, UINT*, DWORD);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("mixerGetID"));
 	return function ? function(mixer, mixer_id, flags) : MMSYSERR_ERROR;
@@ -273,7 +273,7 @@ extern "C" MMRESULT WINAPI proxy_mixerGetID(
 extern "C" MMRESULT WINAPI proxy_mixerGetLineControlsA(
 	HMIXEROBJ mixer, LPMIXERLINECONTROLSA controls, DWORD flags)
 {
-	typedef MMRESULT (WINAPI* Function)(
+	typedef MMRESULT(WINAPI* Function)(
 		HMIXEROBJ, LPMIXERLINECONTROLSA, DWORD);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("mixerGetLineControlsA"));
@@ -283,7 +283,7 @@ extern "C" MMRESULT WINAPI proxy_mixerGetLineControlsA(
 extern "C" MMRESULT WINAPI proxy_mixerGetLineInfoA(
 	HMIXEROBJ mixer, LPMIXERLINEA line, DWORD flags)
 {
-	typedef MMRESULT (WINAPI* Function)(HMIXEROBJ, LPMIXERLINEA, DWORD);
+	typedef MMRESULT(WINAPI* Function)(HMIXEROBJ, LPMIXERLINEA, DWORD);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("mixerGetLineInfoA"));
 	return function ? function(mixer, line, flags) : MMSYSERR_ERROR;
@@ -292,7 +292,7 @@ extern "C" MMRESULT WINAPI proxy_mixerGetLineInfoA(
 extern "C" MMRESULT WINAPI proxy_mixerOpen(LPHMIXER mixer,
 	UINT mixer_id, DWORD_PTR callback, DWORD_PTR instance, DWORD flags)
 {
-	typedef MMRESULT (WINAPI* Function)(
+	typedef MMRESULT(WINAPI* Function)(
 		LPHMIXER, UINT, DWORD_PTR, DWORD_PTR, DWORD);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("mixerOpen"));
@@ -303,7 +303,7 @@ extern "C" MMRESULT WINAPI proxy_mixerOpen(LPHMIXER mixer,
 extern "C" MMRESULT WINAPI proxy_mixerSetControlDetails(
 	HMIXEROBJ mixer, LPMIXERCONTROLDETAILS details, DWORD flags)
 {
-	typedef MMRESULT (WINAPI* Function)(
+	typedef MMRESULT(WINAPI* Function)(
 		HMIXEROBJ, LPMIXERCONTROLDETAILS, DWORD);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("mixerSetControlDetails"));
@@ -312,7 +312,7 @@ extern "C" MMRESULT WINAPI proxy_mixerSetControlDetails(
 
 extern "C" MMRESULT WINAPI proxy_waveInClose(HWAVEIN wave_in)
 {
-	typedef MMRESULT (WINAPI* Function)(HWAVEIN);
+	typedef MMRESULT(WINAPI* Function)(HWAVEIN);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("waveInClose"));
 	return function ? function(wave_in) : MMSYSERR_ERROR;
@@ -321,7 +321,7 @@ extern "C" MMRESULT WINAPI proxy_waveInClose(HWAVEIN wave_in)
 extern "C" MMRESULT WINAPI proxy_waveInMessage(
 	HWAVEIN wave_in, UINT message, DWORD_PTR first, DWORD_PTR second)
 {
-	typedef MMRESULT (WINAPI* Function)(
+	typedef MMRESULT(WINAPI* Function)(
 		HWAVEIN, UINT, DWORD_PTR, DWORD_PTR);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("waveInMessage"));
@@ -333,7 +333,7 @@ extern "C" MMRESULT WINAPI proxy_waveInOpen(LPHWAVEIN wave_in,
 	UINT device_id, LPCWAVEFORMATEX format, DWORD_PTR callback,
 	DWORD_PTR instance, DWORD flags)
 {
-	typedef MMRESULT (WINAPI* Function)(
+	typedef MMRESULT(WINAPI* Function)(
 		LPHWAVEIN, UINT, LPCWAVEFORMATEX, DWORD_PTR, DWORD_PTR, DWORD);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("waveInOpen"));
@@ -344,7 +344,7 @@ extern "C" MMRESULT WINAPI proxy_waveInOpen(LPHWAVEIN wave_in,
 extern "C" MMRESULT WINAPI proxy_waveOutGetDevCapsW(
 	UINT_PTR device_id, LPWAVEOUTCAPSW caps, UINT size)
 {
-	typedef MMRESULT (WINAPI* Function)(UINT_PTR, LPWAVEOUTCAPSW, UINT);
+	typedef MMRESULT(WINAPI* Function)(UINT_PTR, LPWAVEOUTCAPSW, UINT);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("waveOutGetDevCapsW"));
 	return function ? function(device_id, caps, size) : MMSYSERR_ERROR;
@@ -353,7 +353,7 @@ extern "C" MMRESULT WINAPI proxy_waveOutGetDevCapsW(
 extern "C" MMRESULT WINAPI proxy_waveOutMessage(
 	HWAVEOUT wave_out, UINT message, DWORD_PTR first, DWORD_PTR second)
 {
-	typedef MMRESULT (WINAPI* Function)(
+	typedef MMRESULT(WINAPI* Function)(
 		HWAVEOUT, UINT, DWORD_PTR, DWORD_PTR);
 	Function function = reinterpret_cast<Function>(
 		WinmmProxy::Instance().ResolveReal("waveOutMessage"));
@@ -448,7 +448,7 @@ extern "C" MMRESULT WINAPI proxy_waveOutWrite(
 #define WINMM_FORWARD(index, name) +1
 const int kWinmmForwardCount = 0
 #include "winmm_forward.inl"
-	;
+;
 #undef WINMM_FORWARD
 
 #define WINMM_FORWARD(index, name) #name,

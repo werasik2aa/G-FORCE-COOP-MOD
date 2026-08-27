@@ -13,8 +13,7 @@ CSteamOfflineSocketClient::CSteamOfflineSocketClient() :
 	m_connection(k_HSteamNetConnection_Invalid),
 	m_last_steam_port(0),
 	m_state(MConnectState::None)
-{
-}
+{}
 
 CSteamOfflineSocketClient::~CSteamOfflineSocketClient()
 {
@@ -159,8 +158,8 @@ void CSteamOfflineSocketClient::OnRemotePacket(
 	case coop::protocol::PacketKind::WorldSnapshot:
 	case coop::protocol::PacketKind::WorldReady:
 	case coop::protocol::PacketKind::WorldTriggerEvent:
-			case coop::protocol::PacketKind::WorldDamage:
-		case coop::protocol::PacketKind::WorldDespawn:
+	case coop::protocol::PacketKind::WorldDamage:
+	case coop::protocol::PacketKind::WorldDespawn:
 
 		if (coop::WorldSync::Instance().OnRemotePacket(data, size))
 			return;

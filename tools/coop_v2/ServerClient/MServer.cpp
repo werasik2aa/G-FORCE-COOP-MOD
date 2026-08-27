@@ -15,8 +15,7 @@ CSteamOfflineSocketServer::CSteamOfflineSocketServer() :
 	m_listen_socket(k_HSteamListenSocket_Invalid),
 	m_max_players(1),
 	m_p2p(false)
-{
-}
+{}
 
 CSteamOfflineSocketServer::~CSteamOfflineSocketServer()
 {
@@ -186,8 +185,8 @@ void CSteamOfflineSocketServer::OnRemotePacket(
 	case coop::protocol::PacketKind::WorldSnapshot:
 	case coop::protocol::PacketKind::WorldReady:
 	case coop::protocol::PacketKind::WorldTriggerEvent:
-			case coop::protocol::PacketKind::WorldDamage:
-		case coop::protocol::PacketKind::WorldDespawn:
+	case coop::protocol::PacketKind::WorldDamage:
+	case coop::protocol::PacketKind::WorldDespawn:
 
 		if (coop::WorldSync::Instance().OnRemotePacket(data, size))
 			return;

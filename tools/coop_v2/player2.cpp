@@ -76,7 +76,118 @@ namespace coop
 			}
 		}
 
+		struct RdvMotorTraceState
+		{
+			void* entity;
+			void* handler;
+			void* motor;
+			void* task;
+			float root_rotation[4];
+			float local_position[4];
+			float local_heading;
+			float local_turn;
+			std::uint32_t task_state;
+			std::uint8_t task_enabled;
+			std::uint8_t task_external;
+		};
+
+		bool CaptureRdvMotorTraceState(void* entity, RdvMotorTraceState& state)
+		{
+			ZeroMemory(&state, sizeof(state));
+			if (!entity)
+				return false;
+			__try
+			{
+				state.entity = entity;
+				BYTE* const entity_bytes = static_cast<BYTE*>(entity);
+				state.handler = *reinterpret_cast<void**>(
+					entity_bytes + kEntityHandlerOffset);
+				if (!state.handler)
+					return false;
+				memcpy(state.root_rotation,
+					entity_bytes + kEntityRotationOffset, sizeof(state.root_rotation));
+
+				BYTE* const handler_bytes = static_cast<BYTE*>(state.handler);
+				BYTE* const motor_system = handler_bytes + 0x4C0u;
+				const std::uint32_t resource_count = *reinterpret_cast<std::uint32_t*>(
+					motor_system + 0x10u);
+				void** const resources = *reinterpret_cast<void***>(motor_system + 0x14u);
+				if (resource_count <= 11u || !resources || !resources[11])
+					return false;
+				state.motor = resources[11];
+				if (*reinterpret_cast<void**>(state.motor) !=
+					reinterpret_cast<void*>(kGPigRdvMotorFunctionVtable))
+				{
+					return false;
+				}
+				BYTE* const motor_bytes = static_cast<BYTE*>(state.motor);
+				memcpy(state.local_position, motor_bytes + 0x88u,
+					sizeof(state.local_position));
+				state.local_heading = *reinterpret_cast<float*>(motor_bytes + 0xB0u);
+				state.local_turn = *reinterpret_cast<float*>(motor_bytes + 0xB4u);
+
+				void** const state_table = *reinterpret_cast<void***>(handler_bytes + 0x4ECu);
+				const std::uint32_t task_index =
+					*reinterpret_cast<std::uint32_t*>(kGPigRdvTaskStateIndex);
+				if (!state_table || task_index >= 64u)
+					return false;
+				state.task = state_table[task_index];
+				if (!state.task || *reinterpret_cast<void**>(state.task) !=
+					reinterpret_cast<void*>(kGPigRdvTaskVtable))
+				{
+					return false;
+				}
+				const BYTE* const task_bytes = static_cast<const BYTE*>(state.task);
+				state.task_enabled = *(task_bytes + 0x30u);
+				state.task_external = *(task_bytes + 0x58u);
+				state.task_state = *reinterpret_cast<const std::uint32_t*>(
+					task_bytes + 0x5Cu);
+				return true;
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER)
+			{
+				return false;
+			}
+		}
+
+		void TraceRdvMotorPair(void* player1, void* player2)
+		{
+			static DWORD last_trace_tick = 0;
+			static std::uint32_t trace_samples = 0;
+			const DWORD now = GetTickCount();
+			if (last_trace_tick != 0 &&
+				static_cast<DWORD>(now - last_trace_tick) < 200)
+			{
+				return;
+			}
+
+			RdvMotorTraceState p1 = {};
+			RdvMotorTraceState p2 = {};
+			if (!CaptureRdvMotorTraceState(player1, p1) ||
+				!CaptureRdvMotorTraceState(player2, p2))
+			{
+				return;
+			}
+			last_trace_tick = now;
+			++trace_samples;
+			CoopRuntime::Instance().Log(
+				"[abr-rdv-state] sample=%u P1 root=(%.3f,%.3f,%.3f,%.3f) pos=(%.3f,%.3f,%.3f,%.3f) heading=%.3f turn=%.3f task=%p state=%u enabled=%u external=%u | P2 root=(%.3f,%.3f,%.3f,%.3f) pos=(%.3f,%.3f,%.3f,%.3f) heading=%.3f turn=%.3f task=%p state=%u enabled=%u external=%u\r\n",
+				trace_samples,
+				p1.root_rotation[0], p1.root_rotation[1], p1.root_rotation[2],
+				p1.root_rotation[3], p1.local_position[0], p1.local_position[1],
+				p1.local_position[2], p1.local_position[3], p1.local_heading,
+				p1.local_turn, p1.task, p1.task_state,
+				static_cast<unsigned>(p1.task_enabled),
+				static_cast<unsigned>(p1.task_external), p2.root_rotation[0],
+				p2.root_rotation[1], p2.root_rotation[2], p2.root_rotation[3],
+				p2.local_position[0], p2.local_position[1], p2.local_position[2],
+				p2.local_position[3], p2.local_heading, p2.local_turn, p2.task,
+				p2.task_state, static_cast<unsigned>(p2.task_enabled),
+				static_cast<unsigned>(p2.task_external));
+		}
+
 		class PrimaryGamePadScope final
+
 		{
 
 		public:
@@ -119,12 +230,12 @@ namespace coop
 		m_player2_ready(0),
 		m_spawn_snapshot_ready(0),
 		m_spawn_in_progress(0),
-				m_player2_default_mode_initialized(false),
-			m_logged_blocked_active_publish(false),
+		m_player2_default_mode_initialized(false),
+		m_logged_blocked_active_publish(false),
 
-			m_last_player1_mode(0),
-			m_abr_native_task_player2(NULL),
-			m_abr_native_task_configured_player2(NULL),
+		m_last_player1_mode(0),
+		m_abr_native_task_player2(NULL),
+		m_abr_native_task_configured_player2(NULL),
 
 		m_remote_abr_mode_active(false),
 		m_last_weapon_type(0xFFFFFFFFu),
@@ -945,13 +1056,13 @@ namespace coop
 		return true;
 	}
 
-			void __fastcall Player2Module::HookControllerUpdate(
-			void* controller, void*)
-		{
-			Instance().UpdateController(controller);
-		}
+	void __fastcall Player2Module::HookControllerUpdate(
+		void* controller, void*)
+	{
+		Instance().UpdateController(controller);
+	}
 
-		void Player2Module::TickPlayer1(void* player1_controller)
+	void Player2Module::TickPlayer1(void* player1_controller)
 
 	{
 		// The first real P1 controller tick cannot happen in the main menu.  It is
@@ -1002,7 +1113,6 @@ namespace coop
 		if (mode_now == kMoochSwitchModeId)
 		{
 			CoopNetGame::Instance().ConfirmLocalFlyControl();
-			CoopNetGame::Instance().RequestRemotePlayerTickDeferral();
 		}
 
 		m_last_player1_mode = mode_now;
@@ -1070,105 +1180,105 @@ namespace coop
 	}
 
 	void Player2Module::UpdateController(void* controller)
-{
-	const int slot = FindGPigSlot(controller);
-	if (slot == static_cast<int>(retail::PlayerSlot::LocalP1))
 	{
-		TickPlayer1(controller);
-		return;
-	}
-
-	void* const fly = GetFlyEntity();
-	if (controller && controller == GetController(fly))
-	{
-		const uint32_t mode_before = GetModeId(controller);
-		if (RunStockControllerUpdate(controller, "fly"))
+		const int slot = FindGPigSlot(controller);
+		if (slot == static_cast<int>(retail::PlayerSlot::LocalP1))
 		{
-			CoopNetGame& netgame = CoopNetGame::Instance();
-			netgame.ObserveLocalFlyMode(mode_before, GetModeId(controller));
-			netgame.MaintainLocalFlyActiveEntity(fly);
-			netgame.PublishLocalFlyTransform(fly);
-			if (!netgame.IsLocalFlyControlled())
-				netgame.ApplyRemoteFlyTransform(fly);
+			TickPlayer1(controller);
+			return;
 		}
-		return;
-	}
 
-	const bool is_ready_player2 =
-		slot == static_cast<int>(retail::PlayerSlot::RemoteP2) &&
-		CoopRuntime::Instance().Config().enabled &&
-		InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
-	if (!is_ready_player2)
-	{
-		RunStockControllerUpdate(controller, "non-player");
-		return;
-	}
+		void* const fly = GetFlyEntity();
+		if (controller && controller == GetController(fly))
+		{
+			const uint32_t mode_before = GetModeId(controller);
+			if (RunStockControllerUpdate(controller, "fly"))
+			{
+				CoopNetGame& netgame = CoopNetGame::Instance();
+				netgame.ObserveLocalFlyMode(mode_before, GetModeId(controller));
+				netgame.MaintainLocalFlyActiveEntity(fly);
+				netgame.PublishLocalFlyTransform(fly);
+				if (!netgame.IsLocalFlyControlled())
+					netgame.ApplyRemoteFlyTransform(fly);
+			}
+			return;
+		}
 
-	CoopNetGame& netgame = CoopNetGame::Instance();
-	if (netgame.ConsumeRemotePlayerTickDeferral())
-		return;
+		const bool is_ready_player2 =
+			slot == static_cast<int>(retail::PlayerSlot::RemoteP2) &&
+			CoopRuntime::Instance().Config().enabled &&
+			InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
+		if (!is_ready_player2)
+		{
+			RunStockControllerUpdate(controller, "non-player");
+			return;
+		}
 
-	void* const player1 = GetGPigEntity(
-		static_cast<int>(retail::PlayerSlot::LocalP1));
-	void* const player2 = GetGPigEntity(
-		static_cast<int>(retail::PlayerSlot::RemoteP2));
-	RemoteInputScope remote_input(netgame);
+		CoopNetGame& netgame = CoopNetGame::Instance();
 
-	const bool local_player_is_abr =
-		GetModeId(GetController(player1)) == kAbrModeId;
-	if (local_player_is_abr)
-	{
-		// Vehicle-only levels have one shared HUD. Keeping P2's generic controller
-		// tick out of this state prevents it from resetting that shared reticle,
-		// while transform replication and the native P2 presentation task continue.
+		void* const player1 = GetGPigEntity(
+			static_cast<int>(retail::PlayerSlot::LocalP1));
+		void* const player2 = GetGPigEntity(
+			static_cast<int>(retail::PlayerSlot::RemoteP2));
+		RemoteInputScope remote_input(netgame);
+
+		const bool local_player_is_abr =
+			GetModeId(GetController(player1)) == kAbrModeId;
+		if (local_player_is_abr)
+		{
+			// Vehicle-only levels have one shared HUD. Keeping P2's generic controller
+			// tick out of this state prevents it from resetting that shared reticle,
+			// while transform replication and the native P2 presentation task continue.
+			m_remote_abr_mode_active = netgame.IsRemoteAbrMode();
+			if (netgame.HasRemotePeer())
+				TryEnsurePlayer2RdvTask("network-ABR");
+			TraceRdvMotorPair(player1, player2);
+			netgame.ApplyRemotePlayerTransform(player2);
+
+			return;
+		}
+
+		const bool preserve_fly_camera = netgame.IsLocalFlyControlled();
+		PrimaryGamePadScope remote_gamepad(netgame, preserve_fly_camera);
+
+		if (GetModeId(controller) == kInactiveModeId)
+		{
+			SharedCameraAimState saved_camera_state = {};
+			const bool restore_camera = SaveSharedCameraAimState(saved_camera_state);
+			SelectMode(controller, kDefaultModeId);
+			if (restore_camera)
+				RestoreSharedCameraAimState(saved_camera_state);
+		}
+		if (!m_player2_default_mode_initialized &&
+			GetModeId(controller) == kDefaultModeId)
+		{
+			ConfigurePlayer2DefaultMode(controller);
+			m_player2_default_mode_initialized = true;
+		}
+		if (GetModeId(controller) == kAbrModeId)
+			SelectMode(controller, kDefaultModeId);
+
 		m_remote_abr_mode_active = netgame.IsRemoteAbrMode();
+		uint32_t remote_weapon_type = 0xFFFFFFFFu;
+		if (netgame.GetActiveRemoteWeaponType(remote_weapon_type))
+			ApplyPlayer2WeaponSelection(player2, remote_weapon_type, "remote P1");
+		netgame.ArmRemoteP2AmmoOwner(player2);
+
+		SharedCameraAimState saved_fly_camera_state = {};
+		const bool restore_fly_camera = preserve_fly_camera &&
+			SaveSharedCameraAimState(saved_fly_camera_state);
+		const bool stock_update_completed =
+			RunStockControllerUpdate(controller, "remote-player2");
+		if (restore_fly_camera)
+			RestoreSharedCameraAimState(saved_fly_camera_state);
+		if (!stock_update_completed)
+			return;
+
 		if (netgame.HasRemotePeer())
-			TryEnsurePlayer2RdvTask("network-ABR");
+			TryEnsurePlayer2RdvTask("network-post-P2-tick");
 		netgame.ApplyRemotePlayerTransform(player2);
-		return;
 	}
-
-	const bool preserve_fly_camera = netgame.IsLocalFlyControlled();
-	PrimaryGamePadScope remote_gamepad(netgame, preserve_fly_camera);
-
-	if (GetModeId(controller) == kInactiveModeId)
-	{
-		SharedCameraAimState saved_camera_state = {};
-		const bool restore_camera = SaveSharedCameraAimState(saved_camera_state);
-		SelectMode(controller, kDefaultModeId);
-		if (restore_camera)
-			RestoreSharedCameraAimState(saved_camera_state);
-	}
-	if (!m_player2_default_mode_initialized &&
-		GetModeId(controller) == kDefaultModeId)
-	{
-		ConfigurePlayer2DefaultMode(controller);
-		m_player2_default_mode_initialized = true;
-	}
-	if (GetModeId(controller) == kAbrModeId)
-		SelectMode(controller, kDefaultModeId);
-
-	m_remote_abr_mode_active = netgame.IsRemoteAbrMode();
-	uint32_t remote_weapon_type = 0xFFFFFFFFu;
-	if (netgame.GetActiveRemoteWeaponType(remote_weapon_type))
-		ApplyPlayer2WeaponSelection(player2, remote_weapon_type, "remote P1");
-	netgame.ArmRemoteP2AmmoOwner(player2);
-
-	SharedCameraAimState saved_fly_camera_state = {};
-	const bool restore_fly_camera = preserve_fly_camera &&
-		SaveSharedCameraAimState(saved_fly_camera_state);
-	const bool stock_update_completed =
-		RunStockControllerUpdate(controller, "remote-player2");
-	if (restore_fly_camera)
-		RestoreSharedCameraAimState(saved_fly_camera_state);
-	if (!stock_update_completed)
-		return;
-
-	if (netgame.HasRemotePeer())
-		TryEnsurePlayer2RdvTask("network-post-P2-tick");
-	netgame.ApplyRemotePlayerTransform(player2);
-}
-void* __cdecl Player2Module::HookSpawnGPig(
+	void* __cdecl Player2Module::HookSpawnGPig(
 		const Vec4* position, const Vec4* rotation, uint32_t gpig_id, void* context)
 	{
 		return Instance().SpawnGPig(position, rotation, gpig_id, context);

@@ -12,8 +12,7 @@ public:
 
 	bool CreateConnection(const char* connection_ip) override;
 	bool RecreateConnection() override;
-	bool ConnectToFriend(CSteamID friend_id,
-		std::uint32_t virtual_port = 0) override;
+	bool ConnectToFriend(CSteamID friend_id, std::uint32_t virtual_port = 0) override;
 	void Disconnect(bool quit = false) override;
 	void OnFrame() override;
 	bool IsSteam() const override { return true; }
@@ -31,7 +30,8 @@ private:
 	bool m_retry_pending;
 	std::uint32_t m_retry_attempts;
 	std::uint32_t m_retry_at_tick;
+	std::uint32_t kMaxConnectRetries;
+	std::uint32_t kConnectRetryDelayMs;
 
-	STEAM_CALLBACK(CSteamOnlineSocketClient, OnSteamStateChange,
-		SteamNetConnectionStatusChangedCallback_t);
+	STEAM_CALLBACK(CSteamOnlineSocketClient, OnSteamStateChange, SteamNetConnectionStatusChangedCallback_t);
 };

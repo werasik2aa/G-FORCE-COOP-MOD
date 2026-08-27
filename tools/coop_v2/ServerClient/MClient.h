@@ -16,8 +16,7 @@ public:
 	virtual void Disconnect(bool quit = false);
 	virtual void ProcessCallbacks();
 	virtual void OnFrame();
-	virtual void OnStateChange(
-		SteamNetConnectionStatusChangedCallback_t* info);
+	virtual void OnStateChange(SteamNetConnectionStatusChangedCallback_t* info);
 
 	bool IsSteamInterface() const;
 	bool IsConnected() const;
@@ -44,5 +43,4 @@ protected:
 
 extern CSteamOfflineSocketClient* SteamOClient;
 extern CSteamOfflineSocketClient* SteamLClient;
-void OfflineClientCallback(
-	SteamNetConnectionStatusChangedCallback_t* info);
+void OfflineClientCallback(SteamNetConnectionStatusChangedCallback_t* info);

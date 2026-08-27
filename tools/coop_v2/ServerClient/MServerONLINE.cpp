@@ -1,10 +1,8 @@
 #include "MServerONLINE.h"
-
 #include "SteamManager.h"
 
 CSteamOnlineSocketServer::CSteamOnlineSocketServer()
-{
-}
+{}
 
 CSteamOnlineSocketServer::~CSteamOnlineSocketServer()
 {

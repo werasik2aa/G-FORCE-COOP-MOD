@@ -2,20 +2,13 @@
 
 #include "SteamManager.h"
 
-namespace
-{
-// Four attempts spaced two seconds apart covers the realistic window: the host
-// is still finishing its save load shortly after the joiner clicked Join.
-constexpr std::uint32_t kMaxConnectRetries = 4;
-constexpr std::uint32_t kConnectRetryDelayMs = 2000;
-}
-
 CSteamOnlineSocketClient::CSteamOnlineSocketClient() :
 	m_retry_pending(false),
 	m_retry_attempts(0),
-	m_retry_at_tick(0)
-{
-}
+	m_retry_at_tick(0),
+	kMaxConnectRetries(4),
+	kConnectRetryDelayMs(2000)
+{}
 
 CSteamOnlineSocketClient::~CSteamOnlineSocketClient()
 {

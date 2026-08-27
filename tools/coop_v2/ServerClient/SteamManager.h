@@ -49,12 +49,9 @@ private:
 	void ProcessAutomaticHostRequest();
 	void WarmUpRelayNetwork();
 
-	STEAM_CALLBACK(CSteamManager, OnGameRichPresenceJoinRequested,
-		GameRichPresenceJoinRequested_t);
-	STEAM_CALLBACK(CSteamManager, OnSteamServersConnected,
-		SteamServersConnected_t);
-	STEAM_CALLBACK(CSteamManager, OnSteamServersDisconnected,
-		SteamServersDisconnected_t);
+	STEAM_CALLBACK(CSteamManager, OnGameRichPresenceJoinRequested, GameRichPresenceJoinRequested_t);
+	STEAM_CALLBACK(CSteamManager, OnSteamServersConnected, SteamServersConnected_t);
+	STEAM_CALLBACK(CSteamManager, OnSteamServersDisconnected, SteamServersDisconnected_t);
 
 	volatile LONG m_started;
 	bool m_steam_initialized;
@@ -66,6 +63,8 @@ private:
 	volatile LONG m_ip_prompt_requested;
 	bool m_f8_was_down;
 	char m_last_ip_address[64];
+	std::uint32_t OfflinePort = 44139;
+	std::uint32_t OnlinePortS = 44140;
 };
 
 // Human-readable Steam Datagram Relay availability, for the one question a

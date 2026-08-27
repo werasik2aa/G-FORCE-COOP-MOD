@@ -42,8 +42,8 @@ enum CoopPacketId : std::uint32_t
 	kCoopPacketWorldTriggerEvent = 33,
 	// Either side reports local-player damage on a world-linked entity.
 	kCoopPacketWorldDamage = 34,
-			// Host -> client: entity has been despawned/died.  Client removes it.
-		kCoopPacketWorldDespawn = 35
+	// Host -> client: entity has been despawned/died.  Client removes it.
+	kCoopPacketWorldDespawn = 35
 
 };
 
@@ -109,6 +109,8 @@ struct CoopInput
 	// instead of it.
 	float camera_yaw;
 	std::uint32_t camera_yaw_valid;
+	float abr_heading;
+	std::uint32_t abr_heading_valid;
 	// Mooch exists exactly once in the game world.  While its owner controls it,
 	// send its live position separately from the owner's Darwin transform.  The
 	// receiver applies this after Mooch's own stock tick, so it is presentation
@@ -123,7 +125,7 @@ struct CoopInput
 	std::uint8_t fly_raw_release_seq[kCoopFlyRawActionCount];
 };
 
-static_assert(sizeof(CoopInput) == 308,
+static_assert(sizeof(CoopInput) == 316,
 	"CoopInput is the authoritative remote-player state; host and client "
 	"builds must share this exact layout");
 
@@ -144,4 +146,5 @@ struct ServerPacket : PacketHeader
 	}
 };
 
-void __cdecl Msg(const char* format, ...);
+void Msg(const char* format, ...);
+bool ParseUnsignedDecimal(const char*& cursor, std::uint32_t maximum, std::uint32_t& value);

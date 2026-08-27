@@ -15,8 +15,7 @@ public:
 	virtual void CloseServer();
 	virtual void ProcessCallbacks();
 	virtual void OnFrame();
-	virtual void OnStateChange(
-		SteamNetConnectionStatusChangedCallback_t* info);
+	virtual void OnStateChange(SteamNetConnectionStatusChangedCallback_t* info);
 
 	bool IsSteamSocketOpen() const;
 	bool IsSteamInterface() const;
@@ -24,18 +23,12 @@ public:
 	std::uint32_t GetOpenConnection() const;
 	const std::vector<HSteamNetConnection>& GetPlayers() const;
 
-	void CloseConnection(HSteamNetConnection connection,
-		int reason = 0, const char* message = "Server closed connection");
-	void SendDataTo(
-		HSteamNetConnection connection, PacketHeader* data,
-		std::uint32_t flags);
-	bool SendRaw(HSteamNetConnection connection,
-		const void* data, std::uint32_t size, int flags);
+	void CloseConnection(HSteamNetConnection connection, int reason = 0, const char* message = "Server closed connection");
+	void SendDataTo(HSteamNetConnection connection, PacketHeader* data, std::uint32_t flags);
+	bool SendRaw(HSteamNetConnection connection, const void* data, std::uint32_t size, int flags);
 	int ReceivePacket(SteamNetworkingMessage_t** data);
 	bool IsClientExist(HSteamNetConnection client_id) const;
-	SteamNetConnectionRealTimeStatus_t GetStatus(
-		HSteamNetConnection client_id) const;
-
+	SteamNetConnectionRealTimeStatus_t GetStatus(HSteamNetConnection client_id) const;
 	virtual bool IsSteam() const { return false; }
 
 protected:

@@ -10,15 +10,15 @@
 
 namespace coop
 {
-			namespace protocol
-		{
-			class PacketView;
-		}
+	namespace protocol
+	{
+		class PacketView;
+	}
 
-		// A local game pointer is meaningful only in its owning process.  WorldSync
-	// assigns the host a small process-neutral id, then binds it to the matching
-	// native object on the client.  It deliberately does not own NPC AI, damage or
-	// despawn yet; this first layer proves matching and transform replication.
+	// A local game pointer is meaningful only in its owning process.  WorldSync
+// assigns the host a small process-neutral id, then binds it to the matching
+// native object on the client.  It deliberately does not own NPC AI, damage or
+// despawn yet; this first layer proves matching and transform replication.
 	class WorldSync final
 	{
 	public:
@@ -40,8 +40,7 @@ namespace coop
 		std::uint32_t LocalOccurrence(void* trigger);
 		// Returns the local trigger object matching a process-neutral trigger key,
 		// or NULL when this process has not built that template yet.
-		void* FindTemplateTrigger(std::uint32_t family,
-			std::uint32_t subtype, std::int32_t definition_id);
+		void* FindTemplateTrigger(std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id);
 		// Queues one reliable native trigger-event packet for the connected peer.
 		void QueueTriggerEvent(const TriggerKey& key, int event_code,
 			int result);
@@ -51,14 +50,12 @@ namespace coop
 		// Returns the world id of a linked entity, or zero when untracked.
 		std::uint32_t WorldIdOfEntity(void* entity) const;
 		// Returns the live entity currently bound to a native trigger object.
-					void* EntityOfTrigger(void* trigger) const;
+		void* EntityOfTrigger(void* trigger) const;
 
 		// These methods run only on the game thread, from the already verified
 		// trigger factory/spawn hooks and P1's post-update tick.
-		void RecordTriggerTemplate(void* trigger, std::uint32_t family,
-			std::uint32_t subtype);
-		void RecordNativeSpawn(void* trigger, void* entity, std::uint32_t family,
-			std::uint32_t subtype, std::int32_t definition_id);
+		void RecordTriggerTemplate(void* trigger, std::uint32_t family,	std::uint32_t subtype);
+		void RecordNativeSpawn(void* trigger, void* entity, std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id);
 		void GameTick();
 		// Called from the already-installed D3D Present hook, after game simulation.
 		// A client applies the latest host sample here every rendered frame, so local
@@ -76,9 +73,9 @@ namespace coop
 		using WorldReadyPacket = protocol::WorldReadyPacket;
 		using WorldTriggerEventPacket = protocol::WorldTriggerEventPacket;
 		using WorldDamagePacket = protocol::WorldDamagePacket;
-			using WorldDespawnPacket = protocol::WorldDespawnPacket;
+		using WorldDespawnPacket = protocol::WorldDespawnPacket;
 
-			struct TriggerCounter
+		struct TriggerCounter
 		{
 			void* trigger;
 			std::uint32_t occurrence;
@@ -145,8 +142,7 @@ namespace coop
 		bool HandleWorldSnapshotPacket(const protocol::PacketView& view);
 		bool HandleWorldTriggerEventPacket(const protocol::PacketView& view);
 		bool HandleWorldDamagePacket(const protocol::PacketView& view);
-		bool ReadEntityTransform(void* entity, float position[4],
-			float rotation[4]) const;
+		bool ReadEntityTransform(void* entity, float position[4], float rotation[4]) const;
 		bool ReadEntityHealth(void* entity, float& health) const;
 		bool IsLiveEntity(void* entity) const;
 		void EnumerateHostEntities();
@@ -159,25 +155,21 @@ namespace coop
 		// Applies an incoming packet's authoritative HP to the matching local entity.
 		bool ApplyHealthToEntity(void* entity, std::uint32_t hp_bits) const;
 		// SEH-isolated: the native dispatcher may fault on a dying entity.
-		static void ApplyOneHit(void* trigger, std::uint32_t amount,
-			std::uint32_t world_id, int event_code);
+		static void ApplyOneHit(void* trigger, std::uint32_t amount, std::uint32_t world_id, int event_code);
 		void ApplyPendingSnapshots();
 		void AcceptSnapshot(ClientEntity& entity,
 			const WorldSnapshotPacket& snapshot, DWORD received_tick);
 		void AdvancePresentation(ClientEntity& entity, DWORD now);
 		void ApplyPresentation(ClientEntity& entity);
 		void QueueHostSpawn(HostEntity& entity);
-		void QueueHostSnapshot(HostEntity& entity, const float position[4],
-			const float rotation[4]);
-		std::uint32_t NextOccurrence(std::vector<TriggerCounter>& counters,
-			void* trigger);
+		void QueueHostSnapshot(HostEntity& entity, const float position[4], const float rotation[4]);
+		std::uint32_t NextOccurrence(std::vector<TriggerCounter>& counters, void* trigger);
 		HostEntity* FindHostEntity(void* entity);
 		ClientEntity* FindClientEntity(void* entity);
 		ClientEntity* FindClientEntityById(std::uint32_t world_id);
 		ClientEntity* FindUnlinkedClientEntity(const TriggerKey& key);
 		TriggerTemplate* FindTriggerTemplate(const TriggerKey& key);
-		void AddClientEntity(void* entity, const TriggerKey& key,
-			std::uint32_t world_id);
+		void AddClientEntity(void* entity, const TriggerKey& key, std::uint32_t world_id);
 		bool TrySpawnClientEntity(PendingSpawn& pending);
 		// Host -> client: queues a despawn packet for a dead entity.
 		void QueueHostDespawn(std::uint32_t world_id);
@@ -212,10 +204,10 @@ namespace coop
 		std::vector<TriggerCounter> m_client_trigger_counters;
 		std::vector<TriggerTemplate> m_trigger_templates;
 		std::vector<HostEntity> m_host_entities;
-			std::vector<ClientEntity> m_client_entities;
-			std::vector<std::uint32_t> m_stale_client_world_ids;
-			std::vector<PendingSpawn> m_pending_spawns;
-			std::vector<WorldSnapshotPacket> m_pending_snapshots;
+		std::vector<ClientEntity> m_client_entities;
+		std::vector<std::uint32_t> m_stale_client_world_ids;
+		std::vector<PendingSpawn> m_pending_spawns;
+		std::vector<WorldSnapshotPacket> m_pending_snapshots;
 		std::uint32_t m_next_world_id;
 		std::uint32_t m_snapshot_sequence;
 		DWORD m_last_snapshot_tick;

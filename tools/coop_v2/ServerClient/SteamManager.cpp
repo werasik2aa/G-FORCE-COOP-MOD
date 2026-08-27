@@ -11,14 +11,7 @@
 #include <new>
 #include <string.h>
 
-namespace
-{
-constexpr std::uint32_t kOfflinePort = 44139;
-constexpr std::uint32_t kSteamVirtualPort = 44140;
-
 CSteamManager g_manager;
-}
-
 CSteamManager* SteamManager = &g_manager;
 CSteamOnlineSocketServer* SteamSServer = nullptr;
 CSteamOfflineSocketServer* SteamOServer = nullptr;
@@ -84,7 +77,7 @@ bool CSteamManager::Initialize()
 	}
 
 	Msg("[network] worker started; world load opens host ports %u/%u, F8 connects %s",
-		kOfflinePort, kSteamVirtualPort, "127.0.0.1:44139");
+		OfflinePort, OnlinePortS, "127.0.0.1:44139");
 	return true;
 }
 
@@ -301,11 +294,8 @@ void CSteamManager::PollHotkeys()
 
 void CSteamManager::ProcessAutomaticHostRequest()
 {
-	if (InterlockedCompareExchange(&m_game_world_ready, 0, 0) == 0 ||
-		InterlockedCompareExchange(&m_automatic_host_attempted, 0, 0) != 0)
-	{
+	if (!InterlockedCompareExchange(&m_game_world_ready, 0, 0) || InterlockedCompareExchange(&m_automatic_host_attempted, 0, 0))
 		return;
-	}
 
 	InterlockedExchange(&m_automatic_host_attempted, 1);
 	if (coop::CoopNetGame::Instance().IsClient())
@@ -323,11 +313,11 @@ void CSteamManager::StartLoadedWorldServers()
 
 	if (m_steam_initialized)
 		WarmUpRelayNetwork();
-	const bool offline = SteamOServer->OpenListenSocket(kOfflinePort);
-	const bool online = SteamSServer->OpenListenSocket(kSteamVirtualPort);
-	Msg("[network-host] loaded world: IP=%s Steam=%s ports=%u/%u relay=%s",
-		offline ? "ready" : "failed", online ? "ready" : "unavailable",
-		kOfflinePort, kSteamVirtualPort, SteamRelayStatusName());
+
+	const bool offline = SteamOServer->OpenListenSocket(OfflinePort);
+	const bool online = SteamSServer->OpenListenSocket(OnlinePortS);
+	Msg("[network-host] loaded world: IP=%s Steam=%s ports=%u/%u relay=%s", offline ? "ready" : "failed", online ? "ready" : "unavailable",
+		OfflinePort, OnlinePortS, SteamRelayStatusName());
 	if (offline || online)
 		coop::CoopNetGame::Instance().SetModeHost();
 }
@@ -344,12 +334,12 @@ void CSteamManager::PromptForIpConnection()
 
 	char address[sizeof(m_last_ip_address)] = {};
 	IpConnectDialog dialog;
-	if (!dialog.Prompt(GetForegroundWindow(), m_last_ip_address, address,
-		sizeof(address)))
+	if (!dialog.Prompt(GetForegroundWindow(), m_last_ip_address, address, sizeof(address)))
 	{
 		Msg("[network-client] IP connect cancelled");
 		return;
 	}
+
 	ConnectToIpAddress(address);
 }
 
@@ -389,10 +379,8 @@ void CSteamManager::ConnectToIpAddress(const char* address)
 	SteamOClient = SteamLClient;
 	const bool started = SteamOClient->CreateConnection(connection_address);
 	if (started)
-		lstrcpynA(m_last_ip_address, connection_address,
-			static_cast<int>(_countof(m_last_ip_address)));
-	Msg("[network-client] IP connect address=%s started=%s", connection_address,
-		started ? "started" : "failed");
+		lstrcpynA(m_last_ip_address, connection_address, static_cast<int>(_countof(m_last_ip_address)));
+	Msg("[network-client] IP connect address=%s started=%s", connection_address, started ? "started" : "failed");
 }
 
 void CSteamManager::StopServersForClient()
@@ -425,8 +413,7 @@ void CSteamManager::OnGameRichPresenceJoinRequested(
 	// A join request is a fresh user intent, so the retry budget starts over even
 	// if a previous friend's connect had already exhausted it.
 	SteamSClient->ResetConnectRetries();
-	SteamOClient->ConnectToFriend(callback->m_steamIDFriend,
-		kSteamVirtualPort);
+	SteamOClient->ConnectToFriend(callback->m_steamIDFriend, OnlinePortS);
 }
 
 void CSteamManager::OnSteamServersConnected(SteamServersConnected_t*)

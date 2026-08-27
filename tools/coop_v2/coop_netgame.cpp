@@ -4,7 +4,9 @@
 #include "gforce_constants.h"
 #include "protocol/packet_view.h"
 #include "player2.h"
+#include "retail/retail_types.h"
 #include "world_sync.h"
+
 #include "ServerClient/MClient.h"
 #include "ServerClient/MServer.h"
 #include "ServerClient/MServerONLINE.h"
@@ -18,9 +20,6 @@ namespace
 {
 	constexpr DWORD kInputSendIntervalMs = 16;
 	constexpr DWORD kNetworkSpawnDelayMs = 1000;
-	constexpr LONG kDeferRemotePlayerOneTick = 1;
-	constexpr LONG kDeferRemotePlayerUntilFlyActive = 2;
-	constexpr DWORD kFlyHandoffTimeoutMs = 1500;
 
 	const std::uint32_t kFlyRawActionIds[kCoopFlyRawActionCount] = {
 		0x40080046u,
@@ -150,6 +149,17 @@ namespace
 			(input.virtual_keys[virtual_key / 32] &
 				(1u << (virtual_key % 32))) != 0;
 	}
+
+	float WrapPi(float angle)
+	{
+		constexpr float kPi = 3.14159265358979323846f;
+		constexpr float kTwoPi = 2.0f * kPi;
+		while (angle > kPi)
+			angle -= kTwoPi;
+		while (angle < -kPi)
+			angle += kTwoPi;
+		return angle;
+	}
 }
 
 namespace coop
@@ -165,14 +175,12 @@ namespace coop
 	CoopNetGame::CoopNetGame() :
 		m_role(RoleNone),
 		m_remote_connected(0),
-					m_last_send_tick(0),
-						m_last_remote_transform_apply_tick(0),
-		m_fly_handoff_started_tick(0),
+		m_last_send_tick(0),
+		m_last_remote_transform_apply_tick(0),
 		m_peer_connected_tick(0),
 
 		m_logged_spawn(0),
 		m_remote_input_active(0),
-		m_defer_remote_player_tick(0),
 		m_keyboard_state_buffer(NULL),
 		m_keyboard_state_secondary_buffer(NULL),
 		m_keyboard_state_swapped(false),
@@ -200,19 +208,19 @@ namespace coop
 		m_fire_handler_trampoline(NULL),
 		m_original_fire_handler(NULL),
 		m_fire_handler_hooked(false),
-					m_weapon_ammo_consume_trampoline(NULL),
-			m_original_weapon_ammo_consume(NULL),
-			m_weapon_ammo_consume_hooked(false),
-			m_health_component_set_trampoline(NULL),
-			m_original_health_component_set(NULL),
-			m_health_component_set_hooked(false),
-			m_health_component_add_trampoline(NULL),
-			m_original_health_component_add(NULL),
-			m_health_component_add_hooked(false),
-			m_health_component_subtract_trampoline(NULL),
-			m_original_health_component_subtract(NULL),
-			m_health_component_subtract_hooked(false),
-			m_trigger_spawn_trampoline(NULL),
+		m_weapon_ammo_consume_trampoline(NULL),
+		m_original_weapon_ammo_consume(NULL),
+		m_weapon_ammo_consume_hooked(false),
+		m_health_component_set_trampoline(NULL),
+		m_original_health_component_set(NULL),
+		m_health_component_set_hooked(false),
+		m_health_component_add_trampoline(NULL),
+		m_original_health_component_add(NULL),
+		m_health_component_add_hooked(false),
+		m_health_component_subtract_trampoline(NULL),
+		m_original_health_component_subtract(NULL),
+		m_health_component_subtract_hooked(false),
+		m_trigger_spawn_trampoline(NULL),
 
 		m_original_trigger_spawn(NULL),
 		m_trigger_spawn_hooked(false),
@@ -221,18 +229,20 @@ namespace coop
 		m_trigger_factory_hooked(false),
 		m_trigger_event_trampoline(NULL),
 		m_original_trigger_event(NULL),
-					m_trigger_event_hooked(false),
-			m_remote_input_thread_id(0),
+		m_trigger_event_hooked(false),
+		m_remote_input_thread_id(0),
 
 		m_local_transform_sequence(0),
-				m_local_fly_transform_sequence(0),
+		m_local_fly_transform_sequence(0),
 		m_local_fly_active_seen(false),
 		m_local_mooch_exit_key_down(false),
 
 		m_logged_fly_active_entity_repair(false),
 		m_local_weapon_sequence(0),
 		m_last_local_weapon_type(0xFFFFFFFFu),
-		m_logged_remote_transform(false)
+		m_logged_remote_transform(false),
+		m_abr_heading_offset(0.0f),
+		m_abr_heading_calibrated(false)
 	{
 		InitializeSRWLock(&m_input_lock);
 		ZeroMemory(&m_remote_input, sizeof(m_remote_input));
@@ -241,9 +251,9 @@ namespace coop
 		ZeroMemory(m_saved_keyboard_state, sizeof(m_saved_keyboard_state));
 		ZeroMemory(m_saved_keyboard_state_secondary,
 			sizeof(m_saved_keyboard_state_secondary));
-					ZeroMemory(m_active_remote_scan_codes,
-				sizeof(m_active_remote_scan_codes));
-			ZeroMemory(m_original_input_action_query_bytes,
+		ZeroMemory(m_active_remote_scan_codes,
+			sizeof(m_active_remote_scan_codes));
+		ZeroMemory(m_original_input_action_query_bytes,
 
 			sizeof(m_original_input_action_query_bytes));
 		ZeroMemory(m_original_input_action_up_query_bytes,
@@ -367,6 +377,7 @@ namespace coop
 			static_cast<LONG>(GetTickCount()));
 		InterlockedExchange(&m_logged_spawn, 0);
 		m_last_remote_transform_apply_tick = 0;
+		m_abr_heading_calibrated = false;
 		WorldSync::Instance().OnPeerConnected();
 		CoopRuntime::Instance().Log(
 			"[netgame] peer connected; P2 spawn queued for game thread\r\n");
@@ -380,47 +391,48 @@ namespace coop
 		ZeroMemory(&m_remote_input, sizeof(m_remote_input));
 		ReleaseSRWLockExclusive(&m_input_lock);
 		m_last_remote_transform_apply_tick = 0;
+		m_abr_heading_calibrated = false;
 		WorldSync::Instance().OnPeerDisconnected();
 		CoopRuntime::Instance().Log("[netgame] remote peer disconnected\r\n");
 	}
 
-		void CoopNetGame::OnRemotePacket(
-			const void* data, std::uint32_t size)
+	void CoopNetGame::OnRemotePacket(
+		const void* data, std::uint32_t size)
+	{
+		const protocol::PacketView view(data, size);
+		CoopInputPacket packet = {};
+		if (view.Kind() != protocol::PacketKind::Input ||
+			!view.CopyUncompressedExact(packet))
 		{
-			const protocol::PacketView view(data, size);
-			CoopInputPacket packet = {};
-			if (view.Kind() != protocol::PacketKind::Input ||
-				!view.CopyUncompressedExact(packet))
-			{
-				return;
-							}
-
-				// This is a state buffer, not a one-frame input event.  It deliberately
-			// remains valid until a later packet replaces it, so held keys survive
-			// packet pacing and the remote controller sees a stable input state.
-			const bool remote_fly_controlled = packet.input.fly_controlled != 0 &&
-				packet.input.fly_transform_sequence != 0;
-			bool client_yielded_fly = false;
-			AcquireSRWLockExclusive(&m_input_lock);
-			m_remote_input = packet.input;
-			// Mooch is a single world object.  If both peers obtain the local hand-off
-			// in the same network window, the client yields to the host.  In all normal
-			// cases only one side has fly_controlled set, so this branch is untouched.
-			if (remote_fly_controlled && m_local_input.fly_controlled != 0 &&
-				IsClient())
-			{
-				m_local_input.fly_controlled = 0;
-				m_local_input.fly_transform_sequence = 0;
-				m_local_fly_active_seen = false;
-				client_yielded_fly = true;
-			}
-			ReleaseSRWLockExclusive(&m_input_lock);
-			if (client_yielded_fly)
-			{
-				CoopRuntime::Instance().Log(
-					"[fly] simultaneous claim: client yielded Mooch to host\r\n");
-			}
+			return;
 		}
+
+		// This is a state buffer, not a one-frame input event.  It deliberately
+	// remains valid until a later packet replaces it, so held keys survive
+	// packet pacing and the remote controller sees a stable input state.
+		const bool remote_fly_controlled = packet.input.fly_controlled != 0 &&
+			packet.input.fly_transform_sequence != 0;
+		bool client_yielded_fly = false;
+		AcquireSRWLockExclusive(&m_input_lock);
+		m_remote_input = packet.input;
+		// Mooch is a single world object.  If both peers obtain the local hand-off
+		// in the same network window, the client yields to the host.  In all normal
+		// cases only one side has fly_controlled set, so this branch is untouched.
+		if (remote_fly_controlled && m_local_input.fly_controlled != 0 &&
+			IsClient())
+		{
+			m_local_input.fly_controlled = 0;
+			m_local_input.fly_transform_sequence = 0;
+			m_local_fly_active_seen = false;
+			client_yielded_fly = true;
+		}
+		ReleaseSRWLockExclusive(&m_input_lock);
+		if (client_yielded_fly)
+		{
+			CoopRuntime::Instance().Log(
+				"[fly] simultaneous claim: client yielded Mooch to host\r\n");
+		}
+	}
 
 	bool CoopNetGame::IsGameForeground() const
 	{
@@ -637,14 +649,14 @@ namespace coop
 		if (!m_original_default_mode_update)
 			return;
 
-				// The normal Default-mode caller takes the globally registered P1 pad and
-		// passes it here. P2's networked keyboard actions are supplied by the
-		// packet-backed query hooks, but its stock motor also makes raw XGamePad
-		// reads that a freshly constructed private pad cannot answer. Keep the
-		// original pad for normal P2 play so those raw reads retain the stock path.
-		// Only while this machine owns Mooch do we substitute P2's private pad: that
-		// isolates P2's reset/update work from the physical pad which Fly_Active
-		// uses for its local movable crosshair.
+		// The normal Default-mode caller takes the globally registered P1 pad and
+// passes it here. P2's networked keyboard actions are supplied by the
+// packet-backed query hooks, but its stock motor also makes raw XGamePad
+// reads that a freshly constructed private pad cannot answer. Keep the
+// original pad for normal P2 play so those raw reads retain the stock path.
+// Only while this machine owns Mooch do we substitute P2's private pad: that
+// isolates P2's reset/update work from the physical pad which Fly_Active
+// uses for its local movable crosshair.
 		void* mode_input = input_manager;
 		if (IsRemoteInputActiveOnThisThread() && IsLocalFlyControlled())
 		{
@@ -717,21 +729,21 @@ namespace coop
 			RestoreAimRay(input_manager, saved_ray);
 	}
 
-		void CoopNetGame::BeginLocalInputCapture()
-		{
-			AcquireSRWLockExclusive(&m_input_lock);
-			// Keep held levels across frames.  Some action modes (the whip charge is one)
-			// poll only the press/release or threshold path while a key remains held, so
-			// rebuilding action_down here loses the whole duration after the first frame.
-			// Level queries still refresh their actions in CaptureLocalAction; edge paths
-			// maintain actions that do not use a level query every frame.
-			ZeroMemory(m_local_press_recorded, sizeof(m_local_press_recorded));
-			ZeroMemory(m_local_release_recorded, sizeof(m_local_release_recorded));
-			ReleaseSRWLockExclusive(&m_input_lock);
-		}
+	void CoopNetGame::BeginLocalInputCapture()
+	{
+		AcquireSRWLockExclusive(&m_input_lock);
+		// Keep held levels across frames.  Some action modes (the whip charge is one)
+		// poll only the press/release or threshold path while a key remains held, so
+		// rebuilding action_down here loses the whole duration after the first frame.
+		// Level queries still refresh their actions in CaptureLocalAction; edge paths
+		// maintain actions that do not use a level query every frame.
+		ZeroMemory(m_local_press_recorded, sizeof(m_local_press_recorded));
+		ZeroMemory(m_local_release_recorded, sizeof(m_local_release_recorded));
+		ReleaseSRWLockExclusive(&m_input_lock);
+	}
 
-			void CoopNetGame::CaptureLocalAction(std::uint32_t action, bool is_down)
-		{
+	void CoopNetGame::CaptureLocalAction(std::uint32_t action, bool is_down)
+	{
 
 		if (action < kFirstKeyboardActionId ||
 			action >= kFirstKeyboardActionId + kKeyboardActionCount)
@@ -742,11 +754,8 @@ namespace coop
 		const uint32_t word = action_index / 32;
 		const uint32_t bit = action_index % 32;
 		const bool was_down = (m_prev_local_action_down[word] & (1u << bit)) != 0;
-		if (action_index == kMoochActionIndex && is_down && !was_down &&
-			!ConsumeLocalMoochFlyExit())
-		{
-			RequestRemotePlayerTickDeferral();
-		}
+		if (action_index == kMoochActionIndex && is_down && !was_down)
+			ConsumeLocalMoochFlyExit();
 		if (action_index == kMoochActionIndex && !is_down)
 		{
 			// The level path can observe the key-up before the released-edge hook.
@@ -785,11 +794,8 @@ namespace coop
 		// level query. Request the one-frame P2 hand-off gap here as well; otherwise
 		// BeginRemoteInput is still active when the EXE transfers the active entity
 		// from Darwin to the fly and the first Mooch press is consumed by P2's context.
-		if (action_index == kMoochActionIndex &&
-			!ConsumeLocalMoochFlyExit())
-		{
-			RequestRemotePlayerTickDeferral();
-		}
+		if (action_index == kMoochActionIndex)
+			ConsumeLocalMoochFlyExit();
 		AcquireSRWLockExclusive(&m_input_lock);
 		if ((m_local_press_recorded[word] & (1u << bit)) == 0)
 		{
@@ -840,7 +846,7 @@ namespace coop
 			m_local_input.fly_raw_press_seq[raw_index]++;
 			m_local_input.fly_raw_down |= bit;
 		}
-				if (released_edge)
+		if (released_edge)
 		{
 			m_local_input.fly_raw_release_seq[raw_index]++;
 			m_local_input.fly_raw_down &= ~bit;
@@ -949,7 +955,7 @@ namespace coop
 			m_remote_input.fly_raw_release_seq[raw_index];
 		const bool edge = remote_controls_fly && previous[raw_index] != current;
 		previous[raw_index] = current;
-				ReleaseSRWLockExclusive(&m_input_lock);
+		ReleaseSRWLockExclusive(&m_input_lock);
 		return edge;
 	}
 
@@ -1028,11 +1034,6 @@ namespace coop
 			// but not during Darwin's one-frame hand-off or the immediately following
 			// Mooch update.  A one-frame gap left P2 running before Fly_Active::Enter
 			// had published the fly as the active entity.
-			m_fly_handoff_started_tick = GetTickCount();
-			InterlockedExchange(&m_defer_remote_player_tick,
-				kDeferRemotePlayerUntilFlyActive);
-			CoopRuntime::Instance().Log(
-				"[fly] native Darwin-to-Mooch hand-off confirmed; P2 paused until Fly_Active\r\n");
 			// Read-only one-shot probe: plasma must use Mooch's own native handler and
 			// inventory, never Darwin's state or a fabricated projectile command.
 			__try
@@ -1116,8 +1117,8 @@ namespace coop
 
 	void CoopNetGame::SendLocalInput()
 	{
-			CoopInputPacket packet = {};
-			protocol::InitializeFixedPacket(packet, protocol::PacketKind::Input);
+		CoopInputPacket packet = {};
+		protocol::InitializeFixedPacket(packet, protocol::PacketKind::Input);
 		AcquireSRWLockShared(&m_input_lock);
 		packet.input = m_local_input;
 		ReleaseSRWLockShared(&m_input_lock);
@@ -1160,9 +1161,9 @@ namespace coop
 		SendLocalInput();
 	}
 
-				void CoopNetGame::GameTick()
-		{
-			if (!HasRemotePeer())
+	void CoopNetGame::GameTick()
+	{
+		if (!HasRemotePeer())
 			return;
 
 		// Runs after P1's native controller tick.  It is the only place WorldSync
@@ -1225,6 +1226,20 @@ namespace coop
 			{
 				selected_weapon_type = *reinterpret_cast<uint32_t*>(
 					handler + kHandlerSelectedWeaponTypeOffset);
+				BYTE* const motor_system = handler + 0x4C0u;
+				const std::uint32_t resource_count = *reinterpret_cast<std::uint32_t*>(
+					motor_system + 0x10u);
+				void** const resources = *reinterpret_cast<void***>(
+					motor_system + 0x14u);
+				if (resource_count > 11u && resources && resources[11] &&
+					*reinterpret_cast<void**>(resources[11]) ==
+					reinterpret_cast<void*>(0x007040DCu))
+				{
+					const float p1_local_heading = *reinterpret_cast<float*>(
+						static_cast<BYTE*>(resources[11]) + 0xB0u);
+					snapshot.abr_heading = p1_local_heading;
+					snapshot.abr_heading_valid = 1u;
+				}
 			}
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
@@ -1232,37 +1247,59 @@ namespace coop
 			return;
 		}
 
+		std::uint32_t published_sequence = 0;
+		bool publish_abr_trace = false;
 		AcquireSRWLockExclusive(&m_input_lock);
 		memcpy(m_local_input.position, snapshot.position,
 			sizeof(snapshot.position));
 		memcpy(m_local_input.rotation, snapshot.rotation,
 			sizeof(snapshot.rotation));
-		m_local_input.transform_sequence = ++m_local_transform_sequence;
+		m_local_input.abr_heading = snapshot.abr_heading;
+		m_local_input.abr_heading_valid = snapshot.abr_heading_valid;
+		published_sequence = ++m_local_transform_sequence;
+		m_local_input.transform_sequence = published_sequence;
+		publish_abr_trace = m_local_input.player_mode == kAbrModeId;
 		m_local_input.selected_weapon_type = selected_weapon_type;
+
 		if (selected_weapon_type != m_last_local_weapon_type)
 		{
 			m_last_local_weapon_type = selected_weapon_type;
 			++m_local_weapon_sequence;
 		}
-			m_local_input.weapon_sequence = m_local_weapon_sequence;
-			ReleaseSRWLockExclusive(&m_input_lock);
-		}
+		m_local_input.weapon_sequence = m_local_weapon_sequence;
+		ReleaseSRWLockExclusive(&m_input_lock);
 
-		void CoopNetGame::PublishLocalPlayerMode(std::uint32_t mode)
+		// Correlate a source P1 transform with a received P2 correction in the
+		// other process by their shared monotonic sequence, not by local slots.
+		static DWORD last_abr_source_trace_tick = 0;
+		const DWORD now = GetTickCount();
+		if (publish_abr_trace && (last_abr_source_trace_tick == 0 ||
+			static_cast<DWORD>(now - last_abr_source_trace_tick) >= 200))
 		{
-			AcquireSRWLockExclusive(&m_input_lock);
-			m_local_input.player_mode = mode;
-			ReleaseSRWLockExclusive(&m_input_lock);
+			last_abr_source_trace_tick = now;
+			CoopRuntime::Instance().Log(
+				"[abr-source-transform] seq=%u root=(%.3f,%.3f,%.3f,%.3f) pos=(%.3f,%.3f,%.3f,%.3f)\r\n",
+				published_sequence, snapshot.rotation[0], snapshot.rotation[1],
+				snapshot.rotation[2], snapshot.rotation[3], snapshot.position[0],
+				snapshot.position[1], snapshot.position[2], snapshot.position[3]);
 		}
+	}
 
-		bool CoopNetGame::IsRemoteAbrMode() const
-		{
-			CoopInput remote = {};
-			return GetRemoteInput(remote) &&
-				remote.transform_sequence != 0 && remote.player_mode == kAbrModeId;
-		}
+	void CoopNetGame::PublishLocalPlayerMode(std::uint32_t mode)
+	{
+		AcquireSRWLockExclusive(&m_input_lock);
+		m_local_input.player_mode = mode;
+		ReleaseSRWLockExclusive(&m_input_lock);
+	}
 
-		void CoopNetGame::PublishLocalFlyTransform(const void* fly)
+	bool CoopNetGame::IsRemoteAbrMode() const
+	{
+		CoopInput remote = {};
+		return GetRemoteInput(remote) &&
+			remote.transform_sequence != 0 && remote.player_mode == kAbrModeId;
+	}
+
+	void CoopNetGame::PublishLocalFlyTransform(const void* fly)
 	{
 		bool controlled = IsLocalFlyControlled();
 		float position[4] = {};
@@ -1313,19 +1350,26 @@ namespace coop
 	{
 		if (!player2 || !IsRemoteInputActiveOnThisThread() ||
 			m_active_remote_input.transform_sequence == 0)
+		{
 			return false;
+		}
+
 		__try
 		{
-			BYTE* bytes = static_cast<BYTE*>(player2);
-			float* const position = reinterpret_cast<float*>(
+			BYTE* const bytes = static_cast<BYTE*>(player2);
+			retail::Vec4& position = *reinterpret_cast<retail::Vec4*>(
 				bytes + kEntityPositionOffset);
-			float* const rotation = reinterpret_cast<float*>(
+			retail::Vec4& rotation = *reinterpret_cast<retail::Vec4*>(
 				bytes + kEntityRotationOffset);
+			const retail::Vec4 position_before = position;
+			const retail::Vec4 rotation_before = rotation;
+			retail::Vec4 remote_position = {};
+			retail::Vec4 remote_rotation = {};
+			memcpy(&remote_position, m_active_remote_input.position,
+				sizeof(remote_position));
+			memcpy(&remote_rotation, m_active_remote_input.rotation,
+				sizeof(remote_rotation));
 
-			// P2's stock controller has just processed the buffered remote input.
-			// Keep that motor result: it owns locomotion, turns and the associated
-			// animation transitions.  The network transform is a correction target,
-			// rather than a full replacement of position every frame.
 			const DWORD now = GetTickCount();
 			DWORD elapsed_ms = m_last_remote_transform_apply_tick == 0 ? 16 :
 				now - m_last_remote_transform_apply_tick;
@@ -1333,27 +1377,69 @@ namespace coop
 			if (elapsed_ms > 50)
 				elapsed_ms = 50;
 			const float delta_seconds = static_cast<float>(elapsed_ms) * 0.001f;
-			const float dx = m_active_remote_input.position[0] - position[0];
-			const float dy = m_active_remote_input.position[1] - position[1];
-			const float dz = m_active_remote_input.position[2] - position[2];
+			const float dx = remote_position.x - position.x;
+			const float dy = remote_position.y - position.y;
+			const float dz = remote_position.z - position.z;
 			const float distance = sqrtf(dx * dx + dy * dy + dz * dz);
 			float speed = distance;
 			if (speed < 9.0f)
 				speed = 9.0f;
 			else if (speed > 13.0f)
 				speed = 13.0f;
-			float factor = speed * 0.7f * delta_seconds;
-			if (factor > 1.0f)
-				factor = 1.0f;
-			for (unsigned index = 0; index != 3; ++index)
+			float position_factor = speed * 0.7f * delta_seconds;
+			if (position_factor > 1.0f)
+				position_factor = 1.0f;
+
+			position.x += (remote_position.x - position.x) * position_factor;
+			position.y += (remote_position.y - position.y) * position_factor;
+			position.z += (remote_position.z - position.z) * position_factor;
+			position.w = remote_position.w;
+
+			const bool remote_abr = m_active_remote_input.player_mode == kAbrModeId;
+			if (remote_abr)
 			{
-				position[index] += (m_active_remote_input.position[index] -
-					position[index]) * factor;
-				rotation[index] += (m_active_remote_input.rotation[index] -
-					rotation[index]) * factor;
+				const float p2_heading_before = rotation.y;
+				const float received_p1_heading = m_active_remote_input.abr_heading;
+				rotation.y = WrapPi(received_p1_heading);
+
+				static DWORD last_heading_wire_trace_tick = 0;
+				if (last_heading_wire_trace_tick == 0 ||
+					static_cast<DWORD>(now - last_heading_wire_trace_tick) >= 200)
+				{
+					last_heading_wire_trace_tick = now;
+					CoopRuntime::Instance().Log(
+						"[abr-heading-wire] valid=%u received-P1=%.3f P2-before=%.3f P2-after=%.3f\\r\\n",
+						m_active_remote_input.abr_heading_valid,
+						received_p1_heading, p2_heading_before, rotation.y);
+				}
 			}
-			position[3] = m_active_remote_input.position[3];
-			rotation[3] = m_active_remote_input.rotation[3];
+			else
+			{
+				m_abr_heading_calibrated = false;
+				rotation.x += (remote_rotation.x - rotation.x) * position_factor;
+				rotation.y += (remote_rotation.y - rotation.y) * position_factor;
+				rotation.z += (remote_rotation.z - rotation.z) * position_factor;
+				rotation.w = remote_rotation.w;
+			}
+
+			static DWORD last_abr_rotation_trace_tick = 0;
+			static std::uint32_t abr_rotation_trace_samples = 0;
+			if (remote_abr && (last_abr_rotation_trace_tick == 0 ||
+				static_cast<DWORD>(now - last_abr_rotation_trace_tick) >= 200))
+			{
+				last_abr_rotation_trace_tick = now;
+				++abr_rotation_trace_samples;
+				CoopRuntime::Instance().Log(
+					"[abr-rotation-trace] sample=%u seq=%u elapsed=%lu pos-factor=%.3f target-pos=(%.3f,%.3f,%.3f,%.3f) pos-pre=(%.3f,%.3f,%.3f,%.3f) pos-post=(%.3f,%.3f,%.3f,%.3f) target-rot=(%.3f,%.3f,%.3f,%.3f) rot-pre=(%.3f,%.3f,%.3f,%.3f) rot-post=(%.3f,%.3f,%.3f,%.3f)\r\n",
+					abr_rotation_trace_samples, m_active_remote_input.transform_sequence,
+					static_cast<unsigned long>(elapsed_ms), position_factor,
+					remote_position.x, remote_position.y, remote_position.z, remote_position.w,
+					position_before.x, position_before.y, position_before.z, position_before.w,
+					position.x, position.y, position.z, position.w,
+					remote_rotation.x, remote_rotation.y, remote_rotation.z, remote_rotation.w,
+					rotation_before.x, rotation_before.y, rotation_before.z, rotation_before.w,
+					rotation.x, rotation.y, rotation.z, rotation.w);
+			}
 			if (!m_logged_remote_transform)
 			{
 				CoopRuntime::Instance().Log(
@@ -1395,7 +1481,7 @@ namespace coop
 		}
 	}
 
-		void __fastcall CoopNetGame::HookWeaponAmmoConsume(void* weapon_record,
+	void __fastcall CoopNetGame::HookWeaponAmmoConsume(void* weapon_record,
 		void*)
 	{
 		Instance().HandleWeaponAmmoConsume(weapon_record);
@@ -1441,33 +1527,33 @@ namespace coop
 		return Instance().HandleTriggerEvent(trigger, event_code);
 	}
 
-		void CoopNetGame::HandleTriggerSpawnFromDefinition(void* trigger)
-		{
-			if (!m_original_trigger_spawn)
-				return;
+	void CoopNetGame::HandleTriggerSpawnFromDefinition(void* trigger)
+	{
+		if (!m_original_trigger_spawn)
+			return;
 
-			m_original_trigger_spawn(trigger);
-			if (!trigger)
-				return;
+		m_original_trigger_spawn(trigger);
+		if (!trigger)
+			return;
 
 		__try
 		{
 			const BYTE* const bytes = static_cast<const BYTE*>(trigger);
-				const std::uint32_t family = *reinterpret_cast<const std::uint32_t*>(
-					bytes + kTriggerFamilyOffset);
-				const std::uint32_t subtype = *reinterpret_cast<const std::uint32_t*>(
-					bytes + kTriggerSubtypeOffset);
-				const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
-					bytes + kTriggerSpawnIdOffset);
-									WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
+			const std::uint32_t family = *reinterpret_cast<const std::uint32_t*>(
+				bytes + kTriggerFamilyOffset);
+			const std::uint32_t subtype = *reinterpret_cast<const std::uint32_t*>(
+				bytes + kTriggerSubtypeOffset);
+			const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
+				bytes + kTriggerSpawnIdOffset);
+			WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
 
-					const bool is_npc_or_monster = family == kMonsterTriggerFamily ||
+			const bool is_npc_or_monster = family == kMonsterTriggerFamily ||
 
-					family == kNpcTriggerFamily;
-				if (!is_npc_or_monster)
-					return;
+				family == kNpcTriggerFamily;
+			if (!is_npc_or_monster)
+				return;
 
-				void* live_entity = NULL;
+			void* live_entity = NULL;
 			BYTE* const registry = *reinterpret_cast<BYTE**>(kEntityRegistry);
 			const size_t list_offsets[] = {
 				kEntityRegistryMonsterListOffset,
@@ -1492,33 +1578,33 @@ namespace coop
 			}
 
 
-				const void* const spawned_object = *reinterpret_cast<void* const*>(
-					bytes + kTriggerSpawnedObjectOffset);
-				const char* const role = IsHost() ? "host" :
-					(IsClient() ? "client" : "none");
-				static volatile LONG s_world_spawn_trace_sequence = 0;
-				const unsigned sequence = static_cast<unsigned>(
-					InterlockedIncrement(&s_world_spawn_trace_sequence));
-				const float* const trigger_position = reinterpret_cast<const float*>(
-					bytes + kTriggerPositionOffset);
-				const float* const entity_position = live_entity ?
-					reinterpret_cast<const float*>(static_cast<const BYTE*>(live_entity) +
-						kEntityPositionOffset) : NULL;
-				CoopRuntime::Instance().Log(
-					"[world-spawn-trace] seq=%u role=%s peer=%d trigger=%p "
-					"family=0x%08X subtype=0x%08X def=%d object=%p live=%p "
-					"trigger_pos=(%.2f,%.2f,%.2f) entity_pos=(%.2f,%.2f,%.2f)\r\n",
-					sequence, role, HasRemotePeer() ? 1 : 0, trigger, family, subtype,
-					definition_id, spawned_object, live_entity, trigger_position[0],
-					trigger_position[1], trigger_position[2],
-					entity_position ? entity_position[0] : 0.0f,
-					entity_position ? entity_position[1] : 0.0f,
-					entity_position ? entity_position[2] : 0.0f);
-				if (live_entity)
-				{
-					WorldSync::Instance().RecordNativeSpawn(trigger, live_entity, family,
-						subtype, definition_id);
-				}
+			const void* const spawned_object = *reinterpret_cast<void* const*>(
+				bytes + kTriggerSpawnedObjectOffset);
+			const char* const role = IsHost() ? "host" :
+				(IsClient() ? "client" : "none");
+			static volatile LONG s_world_spawn_trace_sequence = 0;
+			const unsigned sequence = static_cast<unsigned>(
+				InterlockedIncrement(&s_world_spawn_trace_sequence));
+			const float* const trigger_position = reinterpret_cast<const float*>(
+				bytes + kTriggerPositionOffset);
+			const float* const entity_position = live_entity ?
+				reinterpret_cast<const float*>(static_cast<const BYTE*>(live_entity) +
+					kEntityPositionOffset) : NULL;
+			CoopRuntime::Instance().Log(
+				"[world-spawn-trace] seq=%u role=%s peer=%d trigger=%p "
+				"family=0x%08X subtype=0x%08X def=%d object=%p live=%p "
+				"trigger_pos=(%.2f,%.2f,%.2f) entity_pos=(%.2f,%.2f,%.2f)\r\n",
+				sequence, role, HasRemotePeer() ? 1 : 0, trigger, family, subtype,
+				definition_id, spawned_object, live_entity, trigger_position[0],
+				trigger_position[1], trigger_position[2],
+				entity_position ? entity_position[0] : 0.0f,
+				entity_position ? entity_position[1] : 0.0f,
+				entity_position ? entity_position[2] : 0.0f);
+			if (live_entity)
+			{
+				WorldSync::Instance().RecordNativeSpawn(trigger, live_entity, family,
+					subtype, definition_id);
+			}
 
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
@@ -1528,60 +1614,60 @@ namespace coop
 		}
 	}
 
-		void* CoopNetGame::HandleTriggerFactory(std::uint32_t family,
-			std::uint32_t subtype, void* output)
-		{
-			if (!m_original_trigger_factory)
-				return NULL;
+	void* CoopNetGame::HandleTriggerFactory(std::uint32_t family,
+		std::uint32_t subtype, void* output)
+	{
+		if (!m_original_trigger_factory)
+			return NULL;
 
-			void* const trigger = m_original_trigger_factory(family, subtype, output);
-			WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
-			return trigger;
-		}
+		void* const trigger = m_original_trigger_factory(family, subtype, output);
+		WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
+		return trigger;
+	}
 
-		int CoopNetGame::HandleTriggerEvent(void* trigger, int event_code)
-		{
+	int CoopNetGame::HandleTriggerEvent(void* trigger, int event_code)
+	{
 		if (!m_original_trigger_event)
 			return 0;
 		const int result = m_original_trigger_event(trigger, event_code);
-			if (!trigger || (!IsHost() && !IsClient()))
+		if (!trigger || (!IsHost() && !IsClient()))
+			return result;
+
+		// Replay every map-defined trigger family through the stock dispatcher.
+		// NPC/monster-only handling remains below for HP authority.
+		__try
+		{
+			const BYTE* const bytes = static_cast<const BYTE*>(trigger);
+			const std::uint32_t family = *reinterpret_cast<const std::uint32_t*>(
+				bytes + kTriggerFamilyOffset);
+			const std::uint32_t subtype = *reinterpret_cast<const std::uint32_t*>(
+				bytes + kTriggerSubtypeOffset);
+			const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
+				bytes + kTriggerSpawnIdOffset);
+
+			// Observation is useful before a client connects; packet queueing and
+			// HP authority still require an actual peer.
+			if (!HasRemotePeer())
 				return result;
 
-			// Replay every map-defined trigger family through the stock dispatcher.
-			// NPC/monster-only handling remains below for HP authority.
-			__try
+			const bool is_npc_or_monster = family == kMonsterTriggerFamily ||
+				family == kNpcTriggerFamily;
+			WorldSync::TriggerKey key = {};
+			key.family = family;
+			key.subtype = subtype;
+			key.definition_id = definition_id;
+			key.occurrence = WorldSync::Instance().LocalOccurrence(trigger);
+			WorldSync::Instance().QueueTriggerEvent(key, event_code, result);
+			if (is_npc_or_monster)
 			{
-				const BYTE* const bytes = static_cast<const BYTE*>(trigger);
-				const std::uint32_t family = *reinterpret_cast<const std::uint32_t*>(
-					bytes + kTriggerFamilyOffset);
-				const std::uint32_t subtype = *reinterpret_cast<const std::uint32_t*>(
-					bytes + kTriggerSubtypeOffset);
-				const std::int32_t definition_id = *reinterpret_cast<const std::int32_t*>(
-					bytes + kTriggerSpawnIdOffset);
-
-				// Observation is useful before a client connects; packet queueing and
-				// HP authority still require an actual peer.
-				if (!HasRemotePeer())
-					return result;
-
-				const bool is_npc_or_monster = family == kMonsterTriggerFamily ||
-					family == kNpcTriggerFamily;
-				WorldSync::TriggerKey key = {};
-				key.family = family;
-				key.subtype = subtype;
-				key.definition_id = definition_id;
-				key.occurrence = WorldSync::Instance().LocalOccurrence(trigger);
-				WorldSync::Instance().QueueTriggerEvent(key, event_code, result);
-				if (is_npc_or_monster)
-				{
-					// A gameplay event on a world-linked entity (a whip hit, a shot) is
-					// the HP-authority channel.
-					void* const linked_entity = WorldSync::Instance().EntityOfTrigger(
-						trigger);
-					if (linked_entity)
-						WorldSync::Instance().ReportLocalDamage(linked_entity, event_code);
-				}
+				// A gameplay event on a world-linked entity (a whip hit, a shot) is
+				// the HP-authority channel.
+				void* const linked_entity = WorldSync::Instance().EntityOfTrigger(
+					trigger);
+				if (linked_entity)
+					WorldSync::Instance().ReportLocalDamage(linked_entity, event_code);
 			}
+		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
 			CoopRuntime::Instance().Log(
@@ -1603,11 +1689,11 @@ namespace coop
 		std::uint32_t subtype, std::int32_t definition_id,
 		std::uint32_t occurrence,
 		int event_code)
-		{
-			(void)occurrence;
-			// The client replays a host trigger event on its own matching template.
-			// The native dispatcher is called with the recorded event code so dynamic
-		// children (spiders) spawn through the stock path.
+	{
+		(void)occurrence;
+		// The client replays a host trigger event on its own matching template.
+		// The native dispatcher is called with the recorded event code so dynamic
+	// children (spiders) spawn through the stock path.
 		void* const template_trigger = WorldSync::Instance().FindTemplateTrigger(
 			family, subtype, definition_id);
 		if (!template_trigger)
@@ -1620,192 +1706,192 @@ namespace coop
 		return SpawnWorldFromTrigger(template_trigger);
 	}
 
-			void CoopNetGame::ApplyRemoteDamage(void* trigger, std::uint32_t amount,
-			std::uint32_t world_id, int event_code)
-			{
-			(void)amount;
-			(void)world_id;
-			if (!trigger || !m_original_trigger_event)
-				return;
-			// Replay the original trigger event for local scripted side effects.  HP
-		// itself is changed by WorldSync through the confirmed handler field.
-			m_original_trigger_event(trigger, event_code);
-		}
+	void CoopNetGame::ApplyRemoteDamage(void* trigger, std::uint32_t amount,
+		std::uint32_t world_id, int event_code)
+	{
+		(void)amount;
+		(void)world_id;
+		if (!trigger || !m_original_trigger_event)
+			return;
+		// Replay the original trigger event for local scripted side effects.  HP
+	// itself is changed by WorldSync through the confirmed handler field.
+		m_original_trigger_event(trigger, event_code);
+	}
 
-		void CoopNetGame::HandleHealthComponentSet(void* component,
-			float requested_value, std::uint32_t slot, bool notify, void* caller)
+	void CoopNetGame::HandleHealthComponentSet(void* component,
+		float requested_value, std::uint32_t slot, bool notify, void* caller)
+	{
+		if (!m_original_health_component_set)
+			return;
+
+		const char* owner = NULL;
+		float before = 0.0f;
+		bool tracked = false;
+		__try
 		{
-			if (!m_original_health_component_set)
-				return;
-
-			const char* owner = NULL;
-			float before = 0.0f;
-			bool tracked = false;
-			__try
+			void* const player1 = reinterpret_cast<void**>(kGPigEntityArray)[1];
+			void* const player2 = reinterpret_cast<void**>(kGPigEntityArray)[2];
+			void* const p1_handler = player1 ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(player1) + kEntityHandlerOffset) : NULL;
+			void* const p2_handler = player2 ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(player2) + kEntityHandlerOffset) : NULL;
+			if (p1_handler && component == static_cast<BYTE*>(p1_handler) +
+				(kHandlerHealthOffset - sizeof(float)))
+				owner = "P1";
+			else if (p2_handler && component == static_cast<BYTE*>(p2_handler) +
+				(kHandlerHealthOffset - sizeof(float)))
+				owner = "P2";
+			if (owner && slot < 2u)
 			{
-				void* const player1 = reinterpret_cast<void**>(kGPigEntityArray)[1];
-				void* const player2 = reinterpret_cast<void**>(kGPigEntityArray)[2];
-				void* const p1_handler = player1 ? *reinterpret_cast<void**>(
-					static_cast<BYTE*>(player1) + kEntityHandlerOffset) : NULL;
-				void* const p2_handler = player2 ? *reinterpret_cast<void**>(
-					static_cast<BYTE*>(player2) + kEntityHandlerOffset) : NULL;
-				if (p1_handler && component == static_cast<BYTE*>(p1_handler) +
-					(kHandlerHealthOffset - sizeof(float)))
-					owner = "P1";
-				else if (p2_handler && component == static_cast<BYTE*>(p2_handler) +
-					(kHandlerHealthOffset - sizeof(float)))
-					owner = "P2";
-				if (owner && slot < 2u)
-				{
-					before = *reinterpret_cast<const float*>(
-						static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
-					tracked = true;
-				}
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				tracked = false;
-			}
-
-			m_original_health_component_set(component, requested_value, slot, notify);
-			if (!tracked)
-				return;
-
-			float after = before;
-			__try
-			{
-				after = *reinterpret_cast<const float*>(
+				before = *reinterpret_cast<const float*>(
 					static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
+				tracked = true;
 			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				return;
-			}
-			CoopRuntime::Instance().Log(
-				"[p2-damage-receiver] op=set caller=%p owner=%s component=%p slot=%u before=%.2f requested=%.2f after=%.2f notify=%u\r\n",
-				caller, owner, component, static_cast<unsigned>(slot), before,
-				requested_value, after, notify ? 1u : 0u);
 		}
-
-		void CoopNetGame::HandleHealthComponentAdd(void* component, float delta,
-			std::uint32_t slot, void* caller)
+		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
-			if (!m_original_health_component_add)
-				return;
-
-			const char* owner = NULL;
-			float before = 0.0f;
-			bool tracked = false;
-			__try
-			{
-				void* const player1 = reinterpret_cast<void**>(kGPigEntityArray)[1];
-				void* const player2 = reinterpret_cast<void**>(kGPigEntityArray)[2];
-				void* const p1_handler = player1 ? *reinterpret_cast<void**>(
-					static_cast<BYTE*>(player1) + kEntityHandlerOffset) : NULL;
-				void* const p2_handler = player2 ? *reinterpret_cast<void**>(
-					static_cast<BYTE*>(player2) + kEntityHandlerOffset) : NULL;
-				if (p1_handler && component == static_cast<BYTE*>(p1_handler) +
-					(kHandlerHealthOffset - sizeof(float)))
-					owner = "P1";
-				else if (p2_handler && component == static_cast<BYTE*>(p2_handler) +
-					(kHandlerHealthOffset - sizeof(float)))
-					owner = "P2";
-				if (owner && slot < 2u)
-				{
-					before = *reinterpret_cast<const float*>(
-						static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
-					tracked = true;
-				}
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				tracked = false;
-			}
-
-			m_original_health_component_add(component, delta, slot);
-			if (!tracked)
-				return;
-
-			float after = before;
-			__try
-			{
-				after = *reinterpret_cast<const float*>(
-					static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				return;
-			}
-			CoopRuntime::Instance().Log(
-				"[p2-damage-receiver] op=add caller=%p owner=%s component=%p slot=%u before=%.2f delta=%.2f after=%.2f\r\n",
-				caller, owner, component, static_cast<unsigned>(slot), before, delta,
-				after);
+			tracked = false;
 		}
 
-		void CoopNetGame::HandleHealthComponentSubtract(void* component,
-			float amount, std::uint32_t slot, void* caller)
+		m_original_health_component_set(component, requested_value, slot, notify);
+		if (!tracked)
+			return;
+
+		float after = before;
+		__try
 		{
-			if (!m_original_health_component_subtract)
-				return;
+			after = *reinterpret_cast<const float*>(
+				static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return;
+		}
+		CoopRuntime::Instance().Log(
+			"[p2-damage-receiver] op=set caller=%p owner=%s component=%p slot=%u before=%.2f requested=%.2f after=%.2f notify=%u\r\n",
+			caller, owner, component, static_cast<unsigned>(slot), before,
+			requested_value, after, notify ? 1u : 0u);
+	}
 
-			const char* owner = NULL;
-			float before = 0.0f;
-			bool tracked = false;
-			bool receiver_is_player2 = false;
-			__try
-			{
-				void* const player1 = reinterpret_cast<void**>(kGPigEntityArray)[1];
-				void* const player2 = reinterpret_cast<void**>(kGPigEntityArray)[2];
-				void* const p1_handler = player1 ? *reinterpret_cast<void**>(
-					static_cast<BYTE*>(player1) + kEntityHandlerOffset) : NULL;
-				void* const p2_handler = player2 ? *reinterpret_cast<void**>(
-					static_cast<BYTE*>(player2) + kEntityHandlerOffset) : NULL;
-				if (p1_handler && component == static_cast<BYTE*>(p1_handler) +
-					(kHandlerHealthOffset - sizeof(float)))
-					owner = "P1";
-				else if (p2_handler && component == static_cast<BYTE*>(p2_handler) +
-					(kHandlerHealthOffset - sizeof(float)))
-				{
-					owner = "P2";
-					receiver_is_player2 = true;
-				}
-				if (owner && slot < 2u)
-				{
-					before = *reinterpret_cast<const float*>(
-						static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
-					tracked = true;
-				}
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				tracked = false;
-			}
+	void CoopNetGame::HandleHealthComponentAdd(void* component, float delta,
+		std::uint32_t slot, void* caller)
+	{
+		if (!m_original_health_component_add)
+			return;
 
-			// Temporary P2-only survival workaround. The confirmed P2 hit still takes
-			// the native path, but its health subtraction receives zero. P1 and all
-			// non-player components retain the stock damage amount.
-			const float applied_amount = receiver_is_player2 ? 0.0f : amount;
-			m_original_health_component_subtract(component, applied_amount, slot);
-			if (!tracked)
-				return;
-
-			float after = before;
-			__try
+		const char* owner = NULL;
+		float before = 0.0f;
+		bool tracked = false;
+		__try
+		{
+			void* const player1 = reinterpret_cast<void**>(kGPigEntityArray)[1];
+			void* const player2 = reinterpret_cast<void**>(kGPigEntityArray)[2];
+			void* const p1_handler = player1 ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(player1) + kEntityHandlerOffset) : NULL;
+			void* const p2_handler = player2 ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(player2) + kEntityHandlerOffset) : NULL;
+			if (p1_handler && component == static_cast<BYTE*>(p1_handler) +
+				(kHandlerHealthOffset - sizeof(float)))
+				owner = "P1";
+			else if (p2_handler && component == static_cast<BYTE*>(p2_handler) +
+				(kHandlerHealthOffset - sizeof(float)))
+				owner = "P2";
+			if (owner && slot < 2u)
 			{
-				after = *reinterpret_cast<const float*>(
+				before = *reinterpret_cast<const float*>(
 					static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
+				tracked = true;
 			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				return;
-			}
-			CoopRuntime::Instance().Log(
-				"[p2-damage-receiver] op=subtract caller=%p owner=%s component=%p slot=%u before=%.2f requested=%.2f applied=%.2f after=%.2f\r\n",
-				caller, owner, component, static_cast<unsigned>(slot), before, amount,
-				applied_amount, after);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			tracked = false;
 		}
 
-		void CoopNetGame::HandleWeaponAmmoConsume(void* weapon_record)
+		m_original_health_component_add(component, delta, slot);
+		if (!tracked)
+			return;
+
+		float after = before;
+		__try
+		{
+			after = *reinterpret_cast<const float*>(
+				static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return;
+		}
+		CoopRuntime::Instance().Log(
+			"[p2-damage-receiver] op=add caller=%p owner=%s component=%p slot=%u before=%.2f delta=%.2f after=%.2f\r\n",
+			caller, owner, component, static_cast<unsigned>(slot), before, delta,
+			after);
+	}
+
+	void CoopNetGame::HandleHealthComponentSubtract(void* component,
+		float amount, std::uint32_t slot, void* caller)
+	{
+		if (!m_original_health_component_subtract)
+			return;
+
+		const char* owner = NULL;
+		float before = 0.0f;
+		bool tracked = false;
+		bool receiver_is_player2 = false;
+		__try
+		{
+			void* const player1 = reinterpret_cast<void**>(kGPigEntityArray)[1];
+			void* const player2 = reinterpret_cast<void**>(kGPigEntityArray)[2];
+			void* const p1_handler = player1 ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(player1) + kEntityHandlerOffset) : NULL;
+			void* const p2_handler = player2 ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(player2) + kEntityHandlerOffset) : NULL;
+			if (p1_handler && component == static_cast<BYTE*>(p1_handler) +
+				(kHandlerHealthOffset - sizeof(float)))
+				owner = "P1";
+			else if (p2_handler && component == static_cast<BYTE*>(p2_handler) +
+				(kHandlerHealthOffset - sizeof(float)))
+			{
+				owner = "P2";
+				receiver_is_player2 = true;
+			}
+			if (owner && slot < 2u)
+			{
+				before = *reinterpret_cast<const float*>(
+					static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
+				tracked = true;
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			tracked = false;
+		}
+
+		// Temporary P2-only survival workaround. The confirmed P2 hit still takes
+		// the native path, but its health subtraction receives zero. P1 and all
+		// non-player components retain the stock damage amount.
+		const float applied_amount = receiver_is_player2 ? 0.0f : amount;
+		m_original_health_component_subtract(component, applied_amount, slot);
+		if (!tracked)
+			return;
+
+		float after = before;
+		__try
+		{
+			after = *reinterpret_cast<const float*>(
+				static_cast<const BYTE*>(component) + sizeof(float) * (slot + 1u));
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return;
+		}
+		CoopRuntime::Instance().Log(
+			"[p2-damage-receiver] op=subtract caller=%p owner=%s component=%p slot=%u before=%.2f requested=%.2f applied=%.2f after=%.2f\r\n",
+			caller, owner, component, static_cast<unsigned>(slot), before, amount,
+			applied_amount, after);
+	}
+
+	void CoopNetGame::HandleWeaponAmmoConsume(void* weapon_record)
 
 	{
 		if (!m_original_weapon_ammo_consume)
@@ -2007,51 +2093,6 @@ namespace coop
 	}
 
 
-	void CoopNetGame::RequestRemotePlayerTickDeferral()
-	{
-		// A subsequent level/edge poll of the same local key must not downgrade the
-		// confirmed "wait for Fly_Active" hand-off to a single frame.
-		if (InterlockedCompareExchange(&m_defer_remote_player_tick,
-			kDeferRemotePlayerOneTick, 0) == 0)
-		{
-			CoopRuntime::Instance().Log(
-				"[fly] Darwin-to-Mooch transition: deferring one P2 remote tick\r\n");
-		}
-	}
-
-	bool CoopNetGame::ConsumeRemotePlayerTickDeferral()
-	{
-		const LONG state = InterlockedCompareExchange(&m_defer_remote_player_tick,
-			0, 0);
-		if (state == 0)
-			return false;
-		if (state == kDeferRemotePlayerOneTick)
-		{
-			InterlockedExchange(&m_defer_remote_player_tick, 0);
-			return true;
-		}
-
-		bool fly_active = false;
-		AcquireSRWLockShared(&m_input_lock);
-		fly_active = m_local_input.fly_controlled != 0 && m_local_fly_active_seen;
-		ReleaseSRWLockShared(&m_input_lock);
-		if (fly_active)
-		{
-			InterlockedExchange(&m_defer_remote_player_tick, 0);
-			CoopRuntime::Instance().Log(
-				"[fly] Fly_Active observed; P2 remote tick resumed\r\n");
-			return false;
-		}
-		if (GetTickCount() - m_fly_handoff_started_tick >= kFlyHandoffTimeoutMs)
-		{
-			InterlockedExchange(&m_defer_remote_player_tick, 0);
-			CoopRuntime::Instance().Log(
-				"[fly] Fly_Active was not observed in time; P2 remote tick resumed\r\n");
-			return false;
-		}
-		return true;
-	}
-
 	void CoopNetGame::BuildRemoteScanCodeState()
 	{
 		ZeroMemory(m_active_remote_scan_codes,
@@ -2176,13 +2217,13 @@ namespace coop
 			return false;
 
 		const bool is_remote_thread = IsRemoteInputActiveOnThisThread();
-				const bool is_keyboard_action = (action >= kFirstKeyboardActionId &&
+		const bool is_keyboard_action = (action >= kFirstKeyboardActionId &&
 			action < kFirstKeyboardActionId + kKeyboardActionCount);
 		// 0x488A70 is a level ("is-down now") query.  On P2 return the held state
 
 		// straight from the packet; rising/falling transitions are served by the
 		// dedicated edge hooks (0x488CE0 / 0x488C00) instead.
-				if (is_remote_thread && is_keyboard_action)
+		if (is_remote_thread && is_keyboard_action)
 			return GetActiveRemoteAction(action);
 
 		if (is_keyboard_action && IsMoochAction(action) &&
@@ -2191,7 +2232,7 @@ namespace coop
 			return false;
 		}
 
-				const bool result = m_original_input_action_query(input_manager, device,
+		const bool result = m_original_input_action_query(input_manager, device,
 			action, flags);
 		if (is_keyboard_action && !is_remote_thread)
 			CaptureLocalAction(action, result);
@@ -2245,7 +2286,7 @@ namespace coop
 			if (IsMirrorSuppressedAction(action))
 				return false;
 			const uint32_t action_index = action - kFirstKeyboardActionId;
-				return m_remote_press_edge[action_index];
+			return m_remote_press_edge[action_index];
 		}
 		if (is_keyboard_action && IsMoochAction(action) &&
 			IsRemoteFlyControlled())
@@ -2355,7 +2396,7 @@ namespace coop
 	{
 		if (!m_original_input_raw_pressed_query)
 			return false;
-				if (FindFlyRawActionIndex(action) >= 0 && IsRemoteFlyControlled())
+		if (FindFlyRawActionIndex(action) >= 0 && IsRemoteFlyControlled())
 		{
 			const bool edge = ConsumeRemoteFlyRawEdge(action, true);
 			return edge;
@@ -2506,7 +2547,7 @@ namespace coop
 		m_action_query_hooked = true;
 		return true;
 	}
-bool CoopNetGame::InstallActionUpQueryHook()
+	bool CoopNetGame::InstallActionUpQueryHook()
 	{
 		if (m_action_up_query_hooked)
 			return true;
@@ -2542,7 +2583,7 @@ bool CoopNetGame::InstallActionUpQueryHook()
 		m_axis_query_hooked = true;
 		return true;
 	}
-bool CoopNetGame::InstallThresholdQueryHook()
+	bool CoopNetGame::InstallThresholdQueryHook()
 	{
 		if (m_threshold_query_hooked)
 			return true;
@@ -2559,7 +2600,7 @@ bool CoopNetGame::InstallThresholdQueryHook()
 		m_threshold_query_hooked = true;
 		return true;
 	}
-void CoopNetGame::RemoveActionQueryHook()
+	void CoopNetGame::RemoveActionQueryHook()
 	{
 		if (!m_action_query_hooked)
 			return;
@@ -2568,7 +2609,7 @@ void CoopNetGame::RemoveActionQueryHook()
 		m_original_input_action_query = NULL;
 		m_action_query_hooked = false;
 	}
-void CoopNetGame::RemoveActionUpQueryHook()
+	void CoopNetGame::RemoveActionUpQueryHook()
 	{
 		if (!m_action_up_query_hooked)
 			return;
@@ -2590,7 +2631,7 @@ void CoopNetGame::RemoveActionUpQueryHook()
 		m_original_input_threshold_query = NULL;
 		m_threshold_query_hooked = false;
 	}
-void CoopNetGame::RemoveAxisQueryHook()
+	void CoopNetGame::RemoveAxisQueryHook()
 	{
 		if (!m_axis_query_hooked)
 			return;
@@ -2599,7 +2640,7 @@ void CoopNetGame::RemoveAxisQueryHook()
 		m_original_input_axis_query = NULL;
 		m_axis_query_hooked = false;
 	}
-bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
+	bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 		const std::uint8_t* expected, std::size_t relocate_len, void* hook,
 		BYTE* saved_bytes, BYTE** trampoline_out, const char* label)
 	{
@@ -2997,108 +3038,108 @@ bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 		return true;
 	}
 
-			void CoopNetGame::RemoveWeaponAmmoConsumeHook()
-		{
-			if (!m_weapon_ammo_consume_hooked)
-				return;
-			RemoveJmpHookRaw(kWeaponAmmoConsume, m_original_weapon_ammo_consume_bytes,
-				sizeof(m_original_weapon_ammo_consume_bytes),
-				&m_weapon_ammo_consume_trampoline);
-			m_original_weapon_ammo_consume = NULL;
-			m_weapon_ammo_consume_hooked = false;
-		}
+	void CoopNetGame::RemoveWeaponAmmoConsumeHook()
+	{
+		if (!m_weapon_ammo_consume_hooked)
+			return;
+		RemoveJmpHookRaw(kWeaponAmmoConsume, m_original_weapon_ammo_consume_bytes,
+			sizeof(m_original_weapon_ammo_consume_bytes),
+			&m_weapon_ammo_consume_trampoline);
+		m_original_weapon_ammo_consume = NULL;
+		m_weapon_ammo_consume_hooked = false;
+	}
 
-		bool CoopNetGame::InstallHealthComponentSetHook()
-		{
-			if (m_health_component_set_hooked)
-				return true;
-			if (!InstallJmpHookRaw(kHealthComponentSet, kExpectedHealthComponentSet,
-				sizeof(kExpectedHealthComponentSet),
-				reinterpret_cast<void*>(&HookHealthComponentSet),
-				m_original_health_component_set_bytes,
-				&m_health_component_set_trampoline, "P1/P2 health-set trace"))
-			{
-				return false;
-			}
-			m_original_health_component_set = reinterpret_cast<HealthComponentSetFn>(
-				m_health_component_set_trampoline);
-			m_health_component_set_hooked = true;
+	bool CoopNetGame::InstallHealthComponentSetHook()
+	{
+		if (m_health_component_set_hooked)
 			return true;
-		}
-
-		void CoopNetGame::RemoveHealthComponentSetHook()
+		if (!InstallJmpHookRaw(kHealthComponentSet, kExpectedHealthComponentSet,
+			sizeof(kExpectedHealthComponentSet),
+			reinterpret_cast<void*>(&HookHealthComponentSet),
+			m_original_health_component_set_bytes,
+			&m_health_component_set_trampoline, "P1/P2 health-set trace"))
 		{
-			if (!m_health_component_set_hooked)
-				return;
-			RemoveJmpHookRaw(kHealthComponentSet, m_original_health_component_set_bytes,
-				sizeof(m_original_health_component_set_bytes),
-				&m_health_component_set_trampoline);
-			m_original_health_component_set = NULL;
-			m_health_component_set_hooked = false;
+			return false;
 		}
+		m_original_health_component_set = reinterpret_cast<HealthComponentSetFn>(
+			m_health_component_set_trampoline);
+		m_health_component_set_hooked = true;
+		return true;
+	}
 
-		bool CoopNetGame::InstallHealthComponentAddHook()
-		{
-			if (m_health_component_add_hooked)
-				return true;
-			if (!InstallJmpHookRaw(kHealthComponentAdd, kExpectedHealthComponentAdd,
-				sizeof(kExpectedHealthComponentAdd),
-				reinterpret_cast<void*>(&HookHealthComponentAdd),
-				m_original_health_component_add_bytes,
-				&m_health_component_add_trampoline, "P1/P2 health-add trace"))
-			{
-				return false;
-			}
-			m_original_health_component_add = reinterpret_cast<HealthComponentAddFn>(
-				m_health_component_add_trampoline);
-			m_health_component_add_hooked = true;
+	void CoopNetGame::RemoveHealthComponentSetHook()
+	{
+		if (!m_health_component_set_hooked)
+			return;
+		RemoveJmpHookRaw(kHealthComponentSet, m_original_health_component_set_bytes,
+			sizeof(m_original_health_component_set_bytes),
+			&m_health_component_set_trampoline);
+		m_original_health_component_set = NULL;
+		m_health_component_set_hooked = false;
+	}
+
+	bool CoopNetGame::InstallHealthComponentAddHook()
+	{
+		if (m_health_component_add_hooked)
 			return true;
-		}
-
-		void CoopNetGame::RemoveHealthComponentAddHook()
+		if (!InstallJmpHookRaw(kHealthComponentAdd, kExpectedHealthComponentAdd,
+			sizeof(kExpectedHealthComponentAdd),
+			reinterpret_cast<void*>(&HookHealthComponentAdd),
+			m_original_health_component_add_bytes,
+			&m_health_component_add_trampoline, "P1/P2 health-add trace"))
 		{
-			if (!m_health_component_add_hooked)
-				return;
-			RemoveJmpHookRaw(kHealthComponentAdd, m_original_health_component_add_bytes,
-				sizeof(m_original_health_component_add_bytes),
-				&m_health_component_add_trampoline);
-			m_original_health_component_add = NULL;
-			m_health_component_add_hooked = false;
+			return false;
 		}
+		m_original_health_component_add = reinterpret_cast<HealthComponentAddFn>(
+			m_health_component_add_trampoline);
+		m_health_component_add_hooked = true;
+		return true;
+	}
 
-		bool CoopNetGame::InstallHealthComponentSubtractHook()
-		{
-			if (m_health_component_subtract_hooked)
-				return true;
-			if (!InstallJmpHookRaw(kHealthComponentSubtract,
-				kExpectedHealthComponentSubtract,
-				sizeof(kExpectedHealthComponentSubtract),
-				reinterpret_cast<void*>(&HookHealthComponentSubtract),
-				m_original_health_component_subtract_bytes,
-				&m_health_component_subtract_trampoline, "P1/P2 health-subtract trace"))
-			{
-				return false;
-			}
-			m_original_health_component_subtract =
-				reinterpret_cast<HealthComponentSubtractFn>(
-					m_health_component_subtract_trampoline);
-			m_health_component_subtract_hooked = true;
+	void CoopNetGame::RemoveHealthComponentAddHook()
+	{
+		if (!m_health_component_add_hooked)
+			return;
+		RemoveJmpHookRaw(kHealthComponentAdd, m_original_health_component_add_bytes,
+			sizeof(m_original_health_component_add_bytes),
+			&m_health_component_add_trampoline);
+		m_original_health_component_add = NULL;
+		m_health_component_add_hooked = false;
+	}
+
+	bool CoopNetGame::InstallHealthComponentSubtractHook()
+	{
+		if (m_health_component_subtract_hooked)
 			return true;
-		}
-
-		void CoopNetGame::RemoveHealthComponentSubtractHook()
+		if (!InstallJmpHookRaw(kHealthComponentSubtract,
+			kExpectedHealthComponentSubtract,
+			sizeof(kExpectedHealthComponentSubtract),
+			reinterpret_cast<void*>(&HookHealthComponentSubtract),
+			m_original_health_component_subtract_bytes,
+			&m_health_component_subtract_trampoline, "P1/P2 health-subtract trace"))
 		{
-			if (!m_health_component_subtract_hooked)
-				return;
-			RemoveJmpHookRaw(kHealthComponentSubtract,
-				m_original_health_component_subtract_bytes,
-				sizeof(m_original_health_component_subtract_bytes),
-				&m_health_component_subtract_trampoline);
-			m_original_health_component_subtract = NULL;
-			m_health_component_subtract_hooked = false;
+			return false;
 		}
+		m_original_health_component_subtract =
+			reinterpret_cast<HealthComponentSubtractFn>(
+				m_health_component_subtract_trampoline);
+		m_health_component_subtract_hooked = true;
+		return true;
+	}
 
-		bool CoopNetGame::InstallTriggerSpawnHook()
+	void CoopNetGame::RemoveHealthComponentSubtractHook()
+	{
+		if (!m_health_component_subtract_hooked)
+			return;
+		RemoveJmpHookRaw(kHealthComponentSubtract,
+			m_original_health_component_subtract_bytes,
+			sizeof(m_original_health_component_subtract_bytes),
+			&m_health_component_subtract_trampoline);
+		m_original_health_component_subtract = NULL;
+		m_health_component_subtract_hooked = false;
+	}
+
+	bool CoopNetGame::InstallTriggerSpawnHook()
 
 	{
 		if (m_trigger_spawn_hooked)
@@ -3158,7 +3199,7 @@ bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 
 	bool CoopNetGame::InstallTriggerEventHook()
 	{
-				if (m_trigger_event_hooked)
+		if (m_trigger_event_hooked)
 			return true;
 
 		if (!InstallJmpHookRaw(kTriggerEventDispatcher,
@@ -3261,20 +3302,20 @@ bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 					InstallGPigCameraUpdateHook() &&
 					InstallDefaultModeUpdateHook() && InstallFireHandlerHook() &&
 					InstallWeaponAmmoConsumeHook();
-										if (!InstallHealthComponentSetHook() || !InstallHealthComponentAddHook() ||
-						!InstallHealthComponentSubtractHook())
-					{
-						CoopRuntime::Instance().Log(
-							"[p2-damage-receiver] health trace unavailable; no gameplay behavior changed\r\n");
-					}
-					if (!InstallTriggerFactoryHook() ||
-						!InstallTriggerSpawnHook() ||
-						!InstallTriggerEventHook())
+				if (!InstallHealthComponentSetHook() || !InstallHealthComponentAddHook() ||
+					!InstallHealthComponentSubtractHook())
+				{
+					CoopRuntime::Instance().Log(
+						"[p2-damage-receiver] health trace unavailable; no gameplay behavior changed\r\n");
+				}
+				if (!InstallTriggerFactoryHook() ||
+					!InstallTriggerSpawnHook() ||
+					!InstallTriggerEventHook())
 
-					{
-						CoopRuntime::Instance().Log(
-							"[world-sync] trigger hooks unavailable; NPC/monster registration is disabled\r\n");
-					}
+				{
+					CoopRuntime::Instance().Log(
+						"[world-sync] trigger hooks unavailable; NPC/monster registration is disabled\r\n");
+				}
 				return input_hooks;
 			}
 		}
@@ -3283,12 +3324,12 @@ bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 		return false;
 	}
 
-			void CoopNetGame::RemoveInputHook()
-		{
-			RemoveHealthComponentSubtractHook();
-			RemoveHealthComponentAddHook();
-			RemoveHealthComponentSetHook();
-			RemoveTriggerEventHook();
+	void CoopNetGame::RemoveInputHook()
+	{
+		RemoveHealthComponentSubtractHook();
+		RemoveHealthComponentAddHook();
+		RemoveHealthComponentSetHook();
+		RemoveTriggerEventHook();
 
 		RemoveTriggerSpawnHook();
 		RemoveTriggerFactoryHook();
@@ -3308,11 +3349,11 @@ bool CoopNetGame::InstallJmpHookRaw(std::uintptr_t address,
 		RemoveThresholdQueryHook();
 		RemoveActionUpQueryHook();
 		RemoveActionQueryHook();
-		if (!m_input_hooked || !m_async_key_state_iat_slot ||
-			!m_original_get_async_key_state)
+
+		if (!m_input_hooked || !m_async_key_state_iat_slot || !m_original_get_async_key_state)
 			return;
-		if (*m_async_key_state_iat_slot == reinterpret_cast<ULONG_PTR>(
-			&HookGetAsyncKeyState))
+
+		if (*m_async_key_state_iat_slot == reinterpret_cast<ULONG_PTR>(&HookGetAsyncKeyState))
 		{
 			DWORD old_protection = 0;
 			if (VirtualProtect(m_async_key_state_iat_slot,
