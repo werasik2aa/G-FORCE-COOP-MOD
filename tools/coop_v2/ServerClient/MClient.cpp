@@ -1,5 +1,4 @@
 #include "MClient.h"
-
 #include "MStandalone.h"
 #include "../coop_netgame.h"
 #include "../protocol/packet_view.h"

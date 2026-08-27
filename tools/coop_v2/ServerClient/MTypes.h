@@ -6,6 +6,8 @@
 constexpr int kServerReadBatch = 128;
 constexpr int kClientReadBatch = 32;
 
+struct SteamNetworkingIPAddr;
+
 enum class MConnectState : std::uint8_t
 {
 	None,
@@ -148,3 +150,4 @@ struct ServerPacket : PacketHeader
 
 void Msg(const char* format, ...);
 bool ParseUnsignedDecimal(const char*& cursor, std::uint32_t maximum, std::uint32_t& value);
+bool ParseStandaloneIPv4Address(const char* text, SteamNetworkingIPAddr& address);

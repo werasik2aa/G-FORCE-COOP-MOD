@@ -1346,7 +1346,7 @@ namespace coop
 		ReleaseSRWLockExclusive(&m_input_lock);
 	}
 
-	bool CoopNetGame::ApplyRemotePlayerTransform(void* player2)
+	bool CoopNetGame::ApplyRemotePlayerTransform(void* player2, float modefier)
 	{
 		if (!player2 || !IsRemoteInputActiveOnThisThread() ||
 			m_active_remote_input.transform_sequence == 0)
@@ -1397,22 +1397,7 @@ namespace coop
 
 			const bool remote_abr = m_active_remote_input.player_mode == kAbrModeId;
 			if (remote_abr)
-			{
-				const float p2_heading_before = rotation.y;
-				const float received_p1_heading = m_active_remote_input.abr_heading;
-				rotation.y = WrapPi(received_p1_heading);
-
-				static DWORD last_heading_wire_trace_tick = 0;
-				if (last_heading_wire_trace_tick == 0 ||
-					static_cast<DWORD>(now - last_heading_wire_trace_tick) >= 200)
-				{
-					last_heading_wire_trace_tick = now;
-					CoopRuntime::Instance().Log(
-						"[abr-heading-wire] valid=%u received-P1=%.3f P2-before=%.3f P2-after=%.3f\\r\\n",
-						m_active_remote_input.abr_heading_valid,
-						received_p1_heading, p2_heading_before, rotation.y);
-				}
-			}
+				rotation.y *= m_active_remote_input.abr_heading * atan(m_active_remote_input.abr_heading);
 			else
 			{
 				m_abr_heading_calibrated = false;

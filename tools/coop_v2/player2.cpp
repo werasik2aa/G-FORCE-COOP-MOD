@@ -819,8 +819,6 @@ namespace coop
 
 	}
 
-
-
 	bool Player2Module::TryEnsurePlayer2RdvTask(const char* source)
 	{
 		if (!source)

@@ -16,9 +16,9 @@ namespace coop
 	}
 
 	// A local game pointer is meaningful only in its owning process.  WorldSync
-// assigns the host a small process-neutral id, then binds it to the matching
-// native object on the client.  It deliberately does not own NPC AI, damage or
-// despawn yet; this first layer proves matching and transform replication.
+	// assigns the host a small process-neutral id, then binds it to the matching
+	// native object on the client.  It deliberately does not own NPC AI, damage or
+	// despawn yet; this first layer proves matching and transform replication.
 	class WorldSync final
 	{
 	public:

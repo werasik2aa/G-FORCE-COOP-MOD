@@ -82,7 +82,7 @@ namespace coop
 		// controller tick, which is the frame point where P1's 0x5BCF30 has just
 		// finished driving the shared camera.
 		void PublishLocalCameraYaw(float yaw, bool valid);
-		bool ApplyRemotePlayerTransform(void* player2);
+		bool ApplyRemotePlayerTransform(void* player2, float modifi = 1.0f);
 
 		// Fly position not the noclip, fly is entity.
 		bool ApplyRemoteFlyTransform(void* fly);

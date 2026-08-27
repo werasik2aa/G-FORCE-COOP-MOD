@@ -2,9 +2,9 @@
 
 #include "MClient.h"
 #include "MClientONLINE.h"
+#include "MStandalone.h"
 #include "MServer.h"
 #include "MServerONLINE.h"
-#include "MStandalone.h"
 #include "../coop_netgame.h"
 #include "../ip_connect_dialog.h"
 
