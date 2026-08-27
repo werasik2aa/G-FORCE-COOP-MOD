@@ -44,11 +44,9 @@ namespace coop
 		// The confirmed Darwin-to-Mooch hand-off must settle before P2 enters its
 		// next packet-driven stock tick.
 		void RequestRemotePlayerTickDeferral();
-		bool ConsumeRemotePlayerTickDeferral();
+				bool ConsumeRemotePlayerTickDeferral();
+
 				void BeginLocalInputCapture();
-		// Read-only diagnostic for the observed def=9 object candidate. This does
-		// not treat it as a verified Entity and does not write any of its fields.
-		void LogAbrDef9CandidateState(const char* reason);
 		SHORT HandleGetAsyncKeyState(int virtual_key);
 
 				void PublishLocalPlayerTransform(const void* player);
@@ -90,8 +88,13 @@ namespace coop
 		// driving the stock trigger event dispatcher.
 		void ApplyRemoteDamage(void* trigger, std::uint32_t amount,
 			std::uint32_t world_id, int event_code);
-		bool GetActiveRemoteWeaponType(std::uint32_t& weapon_type) const;
+				bool GetActiveRemoteWeaponType(std::uint32_t& weapon_type) const;
+		// Copies the last received packet ray under the existing input lock. It is
+		// diagnostic-only and never applies, normalizes, or transmits any value.
+		bool GetRemoteAimRaySnapshot(float origin[3], float direction[3],
+			std::uint32_t& transform_sequence) const;
 		bool __fastcall HandleInputActionQuery(void* input_manager,
+
 			void*, std::uint32_t device, std::uint32_t action,
 			std::uint32_t flags);
 		bool __fastcall HandleInputActionUpQuery(void* input_manager,
@@ -198,7 +201,6 @@ namespace coop
 			void HandleHealthComponentSubtract(void* component, float amount,
 				std::uint32_t slot, void* caller);
 
-		void ObserveAbrDef9Candidate(void* trigger, void* spawned_object);
 		// Both NPC and monster trigger vtables reach 0x41F220.  The hook preserves
 
 		// the native call, then hands its trigger-to-live-entity result to WorldSync.
@@ -313,9 +315,6 @@ namespace coop
 		DWORD m_last_send_tick;
 				DWORD m_last_remote_transform_apply_tick;
 				DWORD m_fly_handoff_started_tick;
-		void* m_abr_def9_trigger;
-		void* m_abr_def9_object;
-
 		DWORD m_remote_input_thread_id;
 
 		std::uint32_t m_local_transform_sequence;

@@ -12,7 +12,6 @@ struct CoopConfig
 	volatile LONG enabled;
 	volatile LONG test_windowed;
 	volatile LONG keep_active_in_background;
-	int spawn_key;
 	int window_width;
 	int window_height;
 };

@@ -19,6 +19,7 @@ constexpr uintptr_t kSpawnCall2 = 0x0043F49Du;
 constexpr uintptr_t kSpawnGPig = 0x00545370u;
 constexpr uintptr_t kSelectMode = 0x004B7050u;
 constexpr uintptr_t kDefaultModeActiveStores = 0x005BEAD6u;
+
 constexpr uintptr_t kGPigUpdateVtableSlot = 0x0070C8A4u;
 // XController_Fly uses the same base Update body as GPig, but a different
 // vtable slot.  Both must reach HookControllerUpdate so the fly's native mode
@@ -262,6 +263,7 @@ constexpr size_t kModeConflictMaskOffset = 0x0Cu;
 constexpr size_t kGameInputDeviceOffset = 0x674u;
 constexpr size_t kCameraTargetControllerOffset = 0x900u;
 constexpr size_t kCameraTargetIdOffset = 0xB8u;
+
 // There is exactly ONE camera handler in the process.  0x515C80 returns
 // [[0x915738+0x18]+0x144], and 0x915750 (= 0x915738+0x18) is the level
 // singleton, written only at 0x467CF7/0x468677 — it is not a per-player slot,

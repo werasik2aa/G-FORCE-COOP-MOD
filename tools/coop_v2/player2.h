@@ -62,9 +62,8 @@ private:
 		void* GetController(void* entity);
 	uint32_t GetModeId(void* controller);
 			int FindGPigSlot(void* controller);
-		void LogGPigRuntimeState(const char* tag, uint32_t gpig_id, void* entity);
 
-	void SelectMode(void* controller, uint32_t mode_id);
+		void SelectMode(void* controller, uint32_t mode_id);
 
 	bool RefreshCameraForController(void* controller);
 	uint32_t RestorePlayer1CameraTarget();
@@ -72,7 +71,7 @@ private:
 	// [[0x915738+0x18]+0x144] and 0x915750 is the level singleton, so P1 and P2
 	// share every field 0x5BB1D0 writes there, including the turn magnitude that
 	// decides whether the body follows the camera yaw at all.
-	struct SharedCameraAimState
+		struct SharedCameraAimState
 	{
 		float assist[2];
 		float yaw_state[6];
@@ -83,27 +82,23 @@ private:
 	};
 
 	void* CameraHandler();
+
 	float* CameraFollowTurn();
 	// Reads 0x52AD20 on the shared handler.  Only meaningful right after P1's own
 	// controller tick, because that is when the handler still holds P1's camera.
 			bool ReadLocalCameraYaw(float& yaw);
-		void LogSharedCameraOwnershipState(const char* tag);
-		void LogAbrTaskConfigurationContext(const char* tag);
 		bool SaveSharedCameraAimState(SharedCameraAimState& saved);
 
-	void RestoreSharedCameraAimState(const SharedCameraAimState& saved);
+		void RestoreSharedCameraAimState(const SharedCameraAimState& saved);
 	bool SyncPlayer2WeaponSelection(void* player2);
+
 			bool ApplyPlayer2WeaponSelection(void* player2, uint32_t weapon_type,
 			const char* source);
 
 		void SpawnPlayer2FromSnapshot(const char* trigger);
-			void PollPlayer2SpawnKey();
-		void PollLocalAbrProbeKey();
-		void PollLocalAbrModeTestKey();
 		bool TryEnsurePlayer2RdvTask(const char* source);
 		bool ConfigurePlayer2RdvTask(const char* source, void* player2,
 			void* player2_handler, void* task);
-		void TracePlayer2RdvItemLifecycle(void* player2);
 
 		// P1's stock tick, wrapped in the local half of the network bracket.  Called
 	// only from P1's own array slot, with the controller the game itself handed to
@@ -112,7 +107,6 @@ private:
 	// the mode the moment P1 switches to the fly.
 			void TickPlayer1(void* player1_controller);
 		void HandlePlayer1ModeTransition(void* player1_controller);
-		void LogAbrResourceReferences(const char* tag, void* handler);
 
 	// P2 owns a distinct Default-mode instance.  It must remain fully active for
 	// packet input, but must not occupy the one exclusive Default ownership bit
@@ -126,7 +120,8 @@ private:
 		uintptr_t address, const BYTE expected[5], BYTE original[5]);
 	bool PatchDefaultModeActivePublish();
 
-	static void __fastcall HookControllerUpdate(void* controller, void*);
+		static void __fastcall HookControllerUpdate(void* controller, void*);
+
 	static void* __cdecl HookSpawnGPig(const Vec4* position,
 		const Vec4* rotation, uint32_t gpig_id, void* context);
 	volatile LONG m_player2_ready;
@@ -136,25 +131,15 @@ private:
 	// must run Default mode to consume its packet input, but SelectMode must
 	// never be retried during an unrelated Darwin-to-Mooch transition.
 	bool m_player2_default_mode_initialized;
-	bool m_logged_player2;
-	bool m_logged_blocked_active_publish;
-		void* m_last_logged_mooch_controller;
-	
+				bool m_logged_blocked_active_publish;
 
-	// Last observed mode id of P1's controller, so the diagnostic below fires on
 
-	// the transition only and never every frame.
+			// Last observed P1 mode; used to detect the one real Mooch hand-off and
+		// defer P2 for one stock tick while that native transition settles.
 			uint32_t m_last_player1_mode;
-			bool m_spawn_key_was_down;
-		bool m_abr_probe_key_was_down;
-		bool m_abr_mode_test_key_was_down;
-		bool m_local_abr_mode_test_active;
-		bool m_local_abr_mode_test_tick_observed;
-		bool m_abr_ownership_trace_pending;
+
 		void* m_abr_native_task_player2;
 		void* m_abr_native_task_configured_player2;
-		void* m_rdv_lifecycle_player2;
-		void* m_rdv_lifecycle_items[3];
 
 		bool m_remote_abr_mode_active;
 		uint32_t m_last_weapon_type;
@@ -163,8 +148,9 @@ private:
 	void* m_spawn_context;
 	BYTE m_original_spawn_call1[5];
 	BYTE m_original_spawn_call2[5];
-	BYTE m_original_default_mode_active_stores[10];
+		BYTE m_original_default_mode_active_stores[10];
 	bool m_default_mode_active_stores_patched;
 	ControllerUpdateFn m_original_update;
+
 };
 }

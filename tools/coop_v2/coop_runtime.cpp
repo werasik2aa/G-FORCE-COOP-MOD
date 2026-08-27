@@ -37,7 +37,6 @@ CoopRuntime::CoopRuntime() :
 	m_config.enabled = 1;
 	m_config.test_windowed = 1;
 	m_config.keep_active_in_background = 1;
-	m_config.spawn_key = VK_F6;
 	m_config.window_width = 1280;
 	m_config.window_height = 720;
 }
@@ -264,9 +263,6 @@ void CoopRuntime::LoadConfiguration()
 {
 	InterlockedExchange(&m_config.enabled,
 		GetPrivateProfileIntW(L"coop", L"enabled", 1, m_ini_path) ? 1 : 0);
-	m_config.spawn_key = GetPrivateProfileIntW(L"coop", L"spawn_key", VK_F6, m_ini_path);
-	if (m_config.spawn_key < 0 || m_config.spawn_key > 255)
-		m_config.spawn_key = VK_F6;
 	InterlockedExchange(&m_config.test_windowed,
 		GetPrivateProfileIntW(L"window", L"experimental_windowed", 1,
 			m_ini_path) ? 1 : 0);
@@ -292,8 +288,7 @@ void CoopRuntime::LoadConfiguration()
 		WritePrivateProfileStringW(L"RenderMode", L"FBHeight", height,
 			m_game_ini_path);
 	}
-	Log("[config] enabled=%ld spawn_key=0x%02X\r\n",
-		m_config.enabled, m_config.spawn_key);
+	Log("[config] enabled=%ld\r\n", m_config.enabled);
 	Log("[config-window] experimental_windowed=%ld keep_active_in_background=%ld client=%dx%d\r\n",
 		m_config.test_windowed, m_config.keep_active_in_background,
 		m_config.window_width, m_config.window_height);

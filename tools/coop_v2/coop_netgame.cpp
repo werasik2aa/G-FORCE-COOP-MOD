@@ -167,10 +167,8 @@ namespace coop
 		m_remote_connected(0),
 					m_last_send_tick(0),
 						m_last_remote_transform_apply_tick(0),
-			m_fly_handoff_started_tick(0),
-			m_abr_def9_trigger(NULL),
-			m_abr_def9_object(NULL),
-			m_peer_connected_tick(0),
+		m_fly_handoff_started_tick(0),
+		m_peer_connected_tick(0),
 
 		m_logged_spawn(0),
 		m_remote_input_active(0),
@@ -639,10 +637,10 @@ namespace coop
 		if (!m_original_default_mode_update)
 			return;
 
-		// The normal Default-mode caller takes the globally registered P1 pad and
-		// passes it here.  P2's networked keyboard actions are supplied by the
+				// The normal Default-mode caller takes the globally registered P1 pad and
+		// passes it here. P2's networked keyboard actions are supplied by the
 		// packet-backed query hooks, but its stock motor also makes raw XGamePad
-		// reads that a freshly constructed private pad cannot answer.  Keep the
+		// reads that a freshly constructed private pad cannot answer. Keep the
 		// original pad for normal P2 play so those raw reads retain the stock path.
 		// Only while this machine owns Mooch do we substitute P2's private pad: that
 		// isolates P2's reset/update work from the physical pad which Fly_Active
@@ -656,10 +654,11 @@ namespace coop
 		}
 		m_original_default_mode_update(mode, mode_input, mode_context);
 
-		// Capture P1's stock ray for the packet.  P2's ray is substituted only at
+		// Capture P1's stock ray for the packet. P2's ray is substituted only at
 		// the exact fire-handler call, then immediately restored.
 		if (!IsRemoteInputActiveOnThisThread())
 			CaptureLocalAimRay(mode_input);
+
 	}
 
 	void __fastcall CoopNetGame::HookFireHandler(void* mode, void*,
@@ -674,9 +673,42 @@ namespace coop
 		if (!m_original_fire_handler)
 			return;
 
+		// Diagnostic only: 0x5B8760 is the known Darwin weapon handler. Record
+		// which live GPig owns its mode when it is reached. This neither queries
+		// actions nor changes mode/item ownership, so an ABR test can prove whether
+		// it ever enters the Darwin handler before we investigate another path.
+		const char* owner = "other";
+		void* controller = NULL;
+		void* handler = NULL;
+		__try
+		{
+			controller = mode ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(mode) + 0x04u) : NULL;
+			handler = controller ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(controller) + kControllerOwnerOffset) : NULL;
+			void* const player1 = reinterpret_cast<void**>(kGPigEntityArray)[1];
+			void* const player2 = reinterpret_cast<void**>(kGPigEntityArray)[2];
+			void* const p1_handler = player1 ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(player1) + kEntityHandlerOffset) : NULL;
+			void* const p2_handler = player2 ? *reinterpret_cast<void**>(
+				static_cast<BYTE*>(player2) + kEntityHandlerOffset) : NULL;
+			if (handler && handler == p1_handler)
+				owner = "P1";
+			else if (handler && handler == p2_handler)
+				owner = "P2";
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			owner = "unreadable";
+		}
+
 		float saved_ray[6] = {};
 		const bool remote_ray_applied = IsRemoteInputActiveOnThisThread() &&
 			ApplyActiveRemoteAimRay(input_manager, saved_ray);
+		CoopRuntime::Instance().Log(
+			"[abr-fire-trace] entry=5B8760 owner=%s remote=%u mode=%p controller=%p handler=%p input=%p context=%p remote_ray=%u\r\n",
+			owner, IsRemoteInputActiveOnThisThread() ? 1u : 0u, mode, controller,
+			handler, input_manager, mode_context, remote_ray_applied ? 1u : 0u);
 		// 0x5B8760 copies the cached ray to the projectile command synchronously.
 		// Restricting the swap to this call avoids leaving a P2 ray in P1's shared
 		// XGamePad during Default-mode weapon transitions.
@@ -698,59 +730,7 @@ namespace coop
 			ReleaseSRWLockExclusive(&m_input_lock);
 		}
 
-			void CoopNetGame::ObserveAbrDef9Candidate(void* trigger, void* spawned_object)
-		{
-			// This identity is an observed ABR-level candidate only.  Keeping the
-			// pointer lets later diagnostics compare it with the native RDV enter;
-			// it does not classify the object or write to it.
-			if (!trigger || !spawned_object)
-				return;
-			m_abr_def9_trigger = trigger;
-			m_abr_def9_object = spawned_object;
-			CoopRuntime::Instance().Log(
-				"[abr-def9] observed trigger=%p object=%p\r\n", trigger,
-				spawned_object);
-		}
-
-		void CoopNetGame::LogAbrDef9CandidateState(const char* reason)
-		{
-			void* const object = m_abr_def9_object;
-			if (!object)
-			{
-				CoopRuntime::Instance().Log(
-					"[abr-def9] state reason=%s candidate=none\r\n",
-					reason ? reason : "unknown");
-				return;
-			}
-
-			void* vtable = NULL;
-			void* raw_handler = NULL;
-			float position[4] = {};
-			float rotation[4] = {};
-			bool entity_layout_readable = false;
-			__try
-			{
-				BYTE* const bytes = static_cast<BYTE*>(object);
-				vtable = *reinterpret_cast<void**>(bytes);
-				raw_handler = *reinterpret_cast<void**>(bytes + kEntityHandlerOffset);
-				memcpy(position, bytes + kEntityPositionOffset, sizeof(position));
-				memcpy(rotation, bytes + kEntityRotationOffset, sizeof(rotation));
-				entity_layout_readable = true;
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				entity_layout_readable = false;
-			}
-			CoopRuntime::Instance().Log(
-				"[abr-def9] state reason=%s trigger=%p object=%p vtbl=%p "
-				"entity_layout=%d handler=%p pos=(%.3f,%.3f,%.3f) "
-				"rot=(%.3f,%.3f,%.3f,%.3f)\r\n",
-				reason ? reason : "unknown", m_abr_def9_trigger, object, vtable,
-				entity_layout_readable ? 1 : 0, raw_handler, position[0], position[1],
-				position[2], rotation[0], rotation[1], rotation[2], rotation[3]);
-		}
-
-		void CoopNetGame::CaptureLocalAction(std::uint32_t action, bool is_down)
+			void CoopNetGame::CaptureLocalAction(std::uint32_t action, bool is_down)
 		{
 
 		if (action < kFirstKeyboardActionId ||
@@ -866,7 +846,7 @@ namespace coop
 			m_local_input.fly_raw_down &= ~bit;
 		}
 		ReleaseSRWLockExclusive(&m_input_lock);
-		
+
 
 	}
 
@@ -1212,6 +1192,20 @@ namespace coop
 		return true;
 	}
 
+	bool CoopNetGame::GetRemoteAimRaySnapshot(float origin[3],
+		float direction[3], std::uint32_t& transform_sequence) const
+	{
+		if (!origin || !direction)
+			return false;
+		CoopInput remote = {};
+		if (!GetRemoteInput(remote))
+			return false;
+		memcpy(origin, remote.aim_origin, 3 * sizeof(float));
+		memcpy(direction, remote.aim_direction, 3 * sizeof(float));
+		transform_sequence = remote.transform_sequence;
+		return true;
+	}
+
 	void CoopNetGame::PublishLocalPlayerTransform(const void* player)
 	{
 		if (!player)
@@ -1496,12 +1490,10 @@ namespace coop
 					node = *reinterpret_cast<BYTE**>(node + kIntrusiveListNextOffset);
 				}
 			}
-							const void* const spawned_object = *reinterpret_cast<void* const*>(
-					bytes + kTriggerSpawnedObjectOffset);
-				if (subtype == 0x1F00009Au && definition_id == 9 && spawned_object)
-					ObserveAbrDef9Candidate(trigger,
-						const_cast<void*>(spawned_object));
 
+
+				const void* const spawned_object = *reinterpret_cast<void* const*>(
+					bytes + kTriggerSpawnedObjectOffset);
 				const char* const role = IsHost() ? "host" :
 					(IsClient() ? "client" : "none");
 				static volatile LONG s_world_spawn_trace_sequence = 0;
