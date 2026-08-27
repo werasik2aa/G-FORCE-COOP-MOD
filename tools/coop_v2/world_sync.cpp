@@ -114,6 +114,7 @@ namespace coop
 		m_trigger_templates.clear();
 		m_host_entities.clear();
 		m_client_entities.clear();
+		m_stale_client_world_ids.clear();
 		m_pending_spawns.clear();
 				m_pending_snapshots.clear();
 		m_next_world_id = 1;
@@ -334,17 +335,17 @@ namespace coop
 		return NULL;
 	}
 
-	WorldSync::ClientEntity* WorldSync::FindClientEntity(void* entity)
-	{
-		if (!entity)
-			return NULL;
-		for (ClientEntity& existing : m_client_entities)
+		WorldSync::ClientEntity* WorldSync::FindClientEntity(void* entity)
 		{
-			if (existing.entity == entity)
-				return &existing;
+			if (!entity)
+				return NULL;
+			for (ClientEntity& existing : m_client_entities)
+			{
+				if (existing.entity == entity)
+					return &existing;
+			}
+			return NULL;
 		}
-		return NULL;
-	}
 
 	WorldSync::ClientEntity* WorldSync::FindUnlinkedClientEntity(
 		const TriggerKey& key)
@@ -951,14 +952,33 @@ void WorldSync::RecordNativeSpawn(void* trigger, void* entity,
 			ClientEntity* const entity = FindClientEntityById(it->world_id);
 			if (!entity)
 			{
+				if (std::find(m_stale_client_world_ids.begin(),
+					m_stale_client_world_ids.end(), it->world_id) !=
+					m_stale_client_world_ids.end())
+				{
+					it = m_pending_snapshots.erase(it);
+					continue;
+				}
 				++it;
 				continue;
 			}
 			if (!IsLiveEntity(entity->entity))
 			{
+				const std::uint32_t stale_world_id = entity->world_id;
+				if (std::find(m_stale_client_world_ids.begin(),
+					m_stale_client_world_ids.end(), stale_world_id) ==
+					m_stale_client_world_ids.end())
+				{
+					m_stale_client_world_ids.push_back(stale_world_id);
+				}
 				CoopRuntime::Instance().Log(
-					"[world-snapshot] local id=%u is no longer live; update ignored\r\n",
-					it->world_id);
+					"[world-snapshot] client forgetting stale id=%u entity=%p\r\n",
+					stale_world_id, entity->entity);
+				m_client_entities.erase(std::remove_if(m_client_entities.begin(),
+					m_client_entities.end(), [stale_world_id](const ClientEntity& tracked)
+					{
+						return tracked.world_id == stale_world_id;
+					}), m_client_entities.end());
 				it = m_pending_snapshots.erase(it);
 				continue;
 			}

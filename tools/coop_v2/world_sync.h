@@ -51,7 +51,7 @@ namespace coop
 		// Returns the world id of a linked entity, or zero when untracked.
 		std::uint32_t WorldIdOfEntity(void* entity) const;
 		// Returns the live entity currently bound to a native trigger object.
-				void* EntityOfTrigger(void* trigger) const;
+					void* EntityOfTrigger(void* trigger) const;
 
 		// These methods run only on the game thread, from the already verified
 		// trigger factory/spawn hooks and P1's post-update tick.
@@ -212,9 +212,10 @@ namespace coop
 		std::vector<TriggerCounter> m_client_trigger_counters;
 		std::vector<TriggerTemplate> m_trigger_templates;
 		std::vector<HostEntity> m_host_entities;
-		std::vector<ClientEntity> m_client_entities;
-		std::vector<PendingSpawn> m_pending_spawns;
-		std::vector<WorldSnapshotPacket> m_pending_snapshots;
+			std::vector<ClientEntity> m_client_entities;
+			std::vector<std::uint32_t> m_stale_client_world_ids;
+			std::vector<PendingSpawn> m_pending_spawns;
+			std::vector<WorldSnapshotPacket> m_pending_snapshots;
 		std::uint32_t m_next_world_id;
 		std::uint32_t m_snapshot_sequence;
 		DWORD m_last_snapshot_tick;

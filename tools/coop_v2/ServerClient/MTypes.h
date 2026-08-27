@@ -91,6 +91,9 @@ struct CoopInput
 	std::uint8_t action_press_seq[kCoopActionCount];
 	std::uint8_t action_release_seq[kCoopActionCount];
 	std::uint32_t transform_sequence;
+	// Exact native P1 controller mode after its stock update.  Only explicitly
+	// supported special modes (currently ABR) may be mirrored by the peer.
+	std::uint32_t player_mode;
 	std::uint32_t selected_weapon_type;
 	std::uint32_t weapon_sequence;
 	// The engine's fire handler does not reconstruct this from look_axis. It
@@ -120,7 +123,7 @@ struct CoopInput
 	std::uint8_t fly_raw_release_seq[kCoopFlyRawActionCount];
 };
 
-static_assert(sizeof(CoopInput) == 304,
+static_assert(sizeof(CoopInput) == 308,
 	"CoopInput is the authoritative remote-player state; host and client "
 	"builds must share this exact layout");
 

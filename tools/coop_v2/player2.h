@@ -29,7 +29,15 @@ private:
 
 	typedef void* (__cdecl* SpawnGPigFn)(
 		const Vec4*, const Vec4*, uint32_t, void*);
-	typedef void (__thiscall* ControllerUpdateFn)(void*);
+		typedef void (__thiscall* ControllerUpdateFn)(void*);
+		// Native lazy factory 0x40C9F0: __thiscall(XMotorSystem, bool create).
+		// It owns allocation and insertion of XMotorTask_RDV at handler+0x4EC.
+		typedef void* (__thiscall* EnsureGPigRdvTaskFn)(void*, bool);
+		// Stock post-spawn configurator 0x43EE20: __thiscall(level spawn context,
+		// spawned GPig handler). P1 calls it after its RDV task factory and it
+		// initializes the task's native activation state without manual field writes.
+		typedef void (__thiscall* ConfigureGPigRdvTaskFn)(void*, void*);
+
 	typedef void* (__thiscall* TriggerCloneFn)(void*);
 	typedef void (__thiscall* TriggerSpawnFn)(void*);
 	// 0x4B7050 takes the target mode and a force/reselect flag.  The native
@@ -53,9 +61,11 @@ private:
 	void* GetFlyEntity();
 		void* GetController(void* entity);
 	uint32_t GetModeId(void* controller);
-	int FindGPigSlot(void* controller);
+			int FindGPigSlot(void* controller);
+		void LogGPigRuntimeState(const char* tag, uint32_t gpig_id, void* entity);
 
 	void SelectMode(void* controller, uint32_t mode_id);
+
 	bool RefreshCameraForController(void* controller);
 	uint32_t RestorePlayer1CameraTarget();
 	// There is only one camera handler in the process: 0x515C80 returns
@@ -76,22 +86,34 @@ private:
 	float* CameraFollowTurn();
 	// Reads 0x52AD20 on the shared handler.  Only meaningful right after P1's own
 	// controller tick, because that is when the handler still holds P1's camera.
-	bool ReadLocalCameraYaw(float& yaw);
-	bool SaveSharedCameraAimState(SharedCameraAimState& saved);
+			bool ReadLocalCameraYaw(float& yaw);
+		void LogSharedCameraOwnershipState(const char* tag);
+		void LogAbrTaskConfigurationContext(const char* tag);
+		bool SaveSharedCameraAimState(SharedCameraAimState& saved);
+
 	void RestoreSharedCameraAimState(const SharedCameraAimState& saved);
 	bool SyncPlayer2WeaponSelection(void* player2);
-	bool ApplyPlayer2WeaponSelection(void* player2, uint32_t weapon_type,
-		const char* source);
+			bool ApplyPlayer2WeaponSelection(void* player2, uint32_t weapon_type,
+			const char* source);
+
 		void SpawnPlayer2FromSnapshot(const char* trigger);
-		bool PromoteClientBlackPigToPlayer1(void*& player1_controller);
-				void PollPlayer2SpawnKey();
+			void PollPlayer2SpawnKey();
+		void PollLocalAbrProbeKey();
+		void PollLocalAbrModeTestKey();
+		bool TryEnsurePlayer2RdvTask(const char* source);
+		bool ConfigurePlayer2RdvTask(const char* source, void* player2,
+			void* player2_handler, void* task);
+		void TracePlayer2RdvItemLifecycle(void* player2);
+
 		// P1's stock tick, wrapped in the local half of the network bracket.  Called
 	// only from P1's own array slot, with the controller the game itself handed to
 	// the hook: re-issuing the tick from anywhere else has to re-resolve
 	// [[entity+0x144]+0x510], and that walk stops naming the controller that holds
 	// the mode the moment P1 switches to the fly.
-	void TickPlayer1(void* player1_controller);
+			void TickPlayer1(void* player1_controller);
 		void HandlePlayer1ModeTransition(void* player1_controller);
+		void LogAbrResourceReferences(const char* tag, void* handler);
+
 	// P2 owns a distinct Default-mode instance.  It must remain fully active for
 	// packet input, but must not occupy the one exclusive Default ownership bit
 	// that the stock single-player Mooch hand-off needs for P1.
@@ -113,10 +135,8 @@ private:
 	// This is a mod-side one-shot guard, not a field in the game entity.  P2
 	// must run Default mode to consume its packet input, but SelectMode must
 	// never be retried during an unrelated Darwin-to-Mooch transition.
-		bool m_player2_default_mode_initialized;
-		bool m_client_black_pig_promoted;
-		bool m_client_black_pig_promotion_failed;
-		bool m_logged_player2;
+	bool m_player2_default_mode_initialized;
+	bool m_logged_player2;
 	bool m_logged_blocked_active_publish;
 		void* m_last_logged_mooch_controller;
 	
@@ -124,8 +144,19 @@ private:
 	// Last observed mode id of P1's controller, so the diagnostic below fires on
 
 	// the transition only and never every frame.
-	uint32_t m_last_player1_mode;
-		bool m_spawn_key_was_down;
+			uint32_t m_last_player1_mode;
+			bool m_spawn_key_was_down;
+		bool m_abr_probe_key_was_down;
+		bool m_abr_mode_test_key_was_down;
+		bool m_local_abr_mode_test_active;
+		bool m_local_abr_mode_test_tick_observed;
+		bool m_abr_ownership_trace_pending;
+		void* m_abr_native_task_player2;
+		void* m_abr_native_task_configured_player2;
+		void* m_rdv_lifecycle_player2;
+		void* m_rdv_lifecycle_items[3];
+
+		bool m_remote_abr_mode_active;
 		uint32_t m_last_weapon_type;
 	Vec4 m_spawn_position;
 	Vec4 m_spawn_rotation;

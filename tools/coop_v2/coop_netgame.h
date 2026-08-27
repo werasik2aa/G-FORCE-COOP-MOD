@@ -25,8 +25,8 @@ namespace coop
 		void OnPeerConnected();
 		void OnPeerDisconnected();
 		void OnRemotePacket(const void* data, std::uint32_t size);
-		void NetworkTick();
-		void GameTick();
+			void NetworkTick();
+			void GameTick();
 
 		bool InstallInputHook();
 		void RemoveInputHook();
@@ -45,9 +45,16 @@ namespace coop
 		// next packet-driven stock tick.
 		void RequestRemotePlayerTickDeferral();
 		bool ConsumeRemotePlayerTickDeferral();
-		void BeginLocalInputCapture();
+				void BeginLocalInputCapture();
+		// Read-only diagnostic for the observed def=9 object candidate. This does
+		// not treat it as a verified Entity and does not write any of its fields.
+		void LogAbrDef9CandidateState(const char* reason);
 		SHORT HandleGetAsyncKeyState(int virtual_key);
-		void PublishLocalPlayerTransform(const void* player);
+
+				void PublishLocalPlayerTransform(const void* player);
+		void PublishLocalPlayerMode(std::uint32_t mode);
+		bool IsRemoteAbrMode() const;
+
 		// Mooch ownership is latched only after the EXE has actually selected its
 		// one-frame switch mode.  The active-entity globals are transient during
 		// that hand-off and must not decide who publishes the shared fly.
@@ -140,8 +147,15 @@ namespace coop
 		typedef void(__thiscall* TriggerSpawnFromDefinitionFn)(void*);
 		typedef void* (__cdecl* TriggerFactoryFn)(std::uint32_t,
 			std::uint32_t, void*);
-		typedef int(__thiscall* TriggerEventFn)(void*, int);
-		typedef void* (__thiscall* XGamePadCtorFn)(void*);
+					typedef int(__thiscall* TriggerEventFn)(void*, int);
+			typedef void(__thiscall* HealthComponentSetFn)(void*, float,
+				std::uint32_t, bool);
+			typedef void(__thiscall* HealthComponentAddFn)(void*, float,
+				std::uint32_t);
+			typedef void(__thiscall* HealthComponentSubtractFn)(void*, float,
+				std::uint32_t);
+			typedef void* (__thiscall* XGamePadCtorFn)(void*);
+
 		typedef std::uint32_t(__thiscall* GetCurrentWeaponIdFn)(void*);
 		typedef std::uint32_t(__cdecl* WeaponTypeToItemIdFn)(std::uint32_t);
 		typedef void* (__thiscall* ResolveWeaponRecordFn)(void*, std::uint32_t);
@@ -172,10 +186,21 @@ namespace coop
 		void RestoreAimRay(void* input_manager, const float saved_ray[6]) const;
 		void HandleDefaultModeUpdate(void* mode, void* input_manager,
 			void* mode_context);
-		void HandleFireHandler(void* mode, void* input_manager,
-			void* mode_context);
-		void HandleWeaponAmmoConsume(void* weapon_record);
+					void HandleFireHandler(void* mode, void* input_manager,
+				void* mode_context);
+			void HandleWeaponAmmoConsume(void* weapon_record);
+			// Read-only trace for the two native Handler+0x5A0 health-component
+			// mutators.  It logs only components that are proven to belong to P1/P2.
+			void HandleHealthComponentSet(void* component, float requested_value,
+				std::uint32_t slot, bool notify, void* caller);
+			void HandleHealthComponentAdd(void* component, float delta,
+				std::uint32_t slot, void* caller);
+			void HandleHealthComponentSubtract(void* component, float amount,
+				std::uint32_t slot, void* caller);
+
+		void ObserveAbrDef9Candidate(void* trigger, void* spawned_object);
 		// Both NPC and monster trigger vtables reach 0x41F220.  The hook preserves
+
 		// the native call, then hands its trigger-to-live-entity result to WorldSync.
 		void HandleTriggerSpawnFromDefinition(void* trigger);
 		void* HandleTriggerFactory(std::uint32_t family, std::uint32_t subtype,
@@ -231,8 +256,15 @@ namespace coop
 		void RemoveDefaultModeUpdateHook();
 		bool InstallFireHandlerHook();
 		void RemoveFireHandlerHook();
-		bool InstallWeaponAmmoConsumeHook();
-		void RemoveWeaponAmmoConsumeHook();
+					bool InstallWeaponAmmoConsumeHook();
+			void RemoveWeaponAmmoConsumeHook();
+			bool InstallHealthComponentSetHook();
+			void RemoveHealthComponentSetHook();
+			bool InstallHealthComponentAddHook();
+			void RemoveHealthComponentAddHook();
+			bool InstallHealthComponentSubtractHook();
+			void RemoveHealthComponentSubtractHook();
+
 		bool InstallTriggerSpawnHook();
 		void RemoveTriggerSpawnHook();
 		bool InstallTriggerFactoryHook();
@@ -254,8 +286,15 @@ namespace coop
 			void* input_manager, void* mode_context);
 		static void __fastcall HookFireHandler(void* mode, void*,
 			void* input_manager, void* mode_context);
-		static void __fastcall HookWeaponAmmoConsume(void* weapon_record, void*);
-		static void __fastcall HookTriggerSpawnFromDefinition(void* trigger, void*);
+					static void __fastcall HookWeaponAmmoConsume(void* weapon_record, void*);
+			static void __fastcall HookHealthComponentSet(void* component, void*,
+				float requested_value, std::uint32_t slot, bool notify);
+			static void __fastcall HookHealthComponentAdd(void* component, void*,
+				float delta, std::uint32_t slot);
+			static void __fastcall HookHealthComponentSubtract(void* component, void*,
+				float amount, std::uint32_t slot);
+			static void __fastcall HookTriggerSpawnFromDefinition(void* trigger, void*);
+
 		static void* __cdecl HookTriggerFactory(std::uint32_t family,
 			std::uint32_t subtype, void* output);
 		static int __fastcall HookTriggerEvent(void* trigger, void*, int event_code);
@@ -272,9 +311,13 @@ namespace coop
 		BYTE m_saved_keyboard_state_secondary[256];
 		BYTE m_active_remote_scan_codes[256];
 		DWORD m_last_send_tick;
-		DWORD m_last_remote_transform_apply_tick;
-		DWORD m_fly_handoff_started_tick;
+				DWORD m_last_remote_transform_apply_tick;
+				DWORD m_fly_handoff_started_tick;
+		void* m_abr_def9_trigger;
+		void* m_abr_def9_object;
+
 		DWORD m_remote_input_thread_id;
+
 		std::uint32_t m_local_transform_sequence;
 		std::uint32_t m_local_fly_transform_sequence;
 				bool m_local_fly_active_seen;
@@ -362,8 +405,21 @@ namespace coop
 		BYTE m_original_weapon_ammo_consume_bytes[10];
 		BYTE* m_weapon_ammo_consume_trampoline;
 		WeaponAmmoConsumeFn m_original_weapon_ammo_consume;
-		bool m_weapon_ammo_consume_hooked;
-		BYTE m_original_trigger_spawn_bytes[14];
+					bool m_weapon_ammo_consume_hooked;
+			BYTE m_original_health_component_set_bytes[6];
+			BYTE* m_health_component_set_trampoline;
+			HealthComponentSetFn m_original_health_component_set;
+			bool m_health_component_set_hooked;
+			BYTE m_original_health_component_add_bytes[6];
+			BYTE* m_health_component_add_trampoline;
+			HealthComponentAddFn m_original_health_component_add;
+			bool m_health_component_add_hooked;
+			BYTE m_original_health_component_subtract_bytes[6];
+			BYTE* m_health_component_subtract_trampoline;
+			HealthComponentSubtractFn m_original_health_component_subtract;
+			bool m_health_component_subtract_hooked;
+			BYTE m_original_trigger_spawn_bytes[14];
+
 		BYTE* m_trigger_spawn_trampoline;
 		TriggerSpawnFromDefinitionFn m_original_trigger_spawn;
 		bool m_trigger_spawn_hooked;
@@ -374,8 +430,9 @@ namespace coop
 		BYTE m_original_trigger_event_bytes[11];
 		BYTE* m_trigger_event_trampoline;
 		TriggerEventFn m_original_trigger_event;
-		bool m_trigger_event_hooked;
-		bool m_logged_remote_transform;
+					bool m_trigger_event_hooked;
+			bool m_logged_remote_transform;
+
 		std::uint32_t m_prev_local_action_down[3];
 		std::uint32_t m_prev_remote_action_down[3];
 		// Per-action press/release edge tracking.  m_prev_remote_*_seq holds the last

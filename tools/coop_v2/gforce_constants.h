@@ -25,6 +25,7 @@ constexpr uintptr_t kGPigUpdateVtableSlot = 0x0070C8A4u;
 // edge and its post-motor position can be observed.
 constexpr uintptr_t kFlyUpdateVtableSlot = 0x007180F4u;
 constexpr uintptr_t kOriginalControllerUpdate = 0x005BFBE0u;
+
 constexpr uintptr_t kInputActionQuery = 0x00488A70u;      // is-down (level)
 constexpr uintptr_t kInputActionUpQuery = 0x00488B70u;    // is-up (inverse level)
 constexpr uintptr_t kInputThresholdQuery = 0x00488DC0u;   // hold + threshold
@@ -54,8 +55,25 @@ constexpr uintptr_t kFireHandler = 0x005B8760u;
 // +0x67C round counter, it mirrors that value into the shared HUD ammo pool.
 // Hooking here is later than the controller update and is therefore the only
 // point that can preserve P1's pool without racing the stock write.
-constexpr uintptr_t kWeaponAmmoConsume = 0x0059F650u;
-constexpr uintptr_t kXGamePadCtor = 0x0048B290u;
+	constexpr uintptr_t kWeaponAmmoConsume = 0x0059F650u;
+	// Handler+0x5A0 is the native two-slot health component; its first value is
+	// Handler+0x5A4.  These stock mutators are diagnostic-only hook points.
+	// 0x53EC50 replaces a slot value; 0x53ECF0 applies a signed delta.
+	constexpr uintptr_t kHealthComponentSet = 0x0053EC50u;
+	constexpr uintptr_t kHealthComponentAdd = 0x0053ECF0u;
+	// 0x53EDC0 is the clamped subtraction path: it reads component slot N,
+	// subtracts its first float argument, and writes the resulting slot value.
+	constexpr uintptr_t kHealthComponentSubtract = 0x0053EDC0u;
+	constexpr uint8_t kExpectedHealthComponentSet[] = {
+		0xF3, 0x0F, 0x10, 0x44, 0x24, 0x04
+	};
+	constexpr uint8_t kExpectedHealthComponentAdd[] = {
+		0xF3, 0x0F, 0x10, 0x54, 0x24, 0x04
+	};
+	constexpr uint8_t kExpectedHealthComponentSubtract[] = {
+		0xF3, 0x0F, 0x10, 0x54, 0x24, 0x04
+	};
+	constexpr uintptr_t kXGamePadCtor = 0x0048B290u;
 
 // Retail main menu, verified in IDA 9.1 against XHudMenuMain::BuildMainMenu
 // (0x5EECC0).  0x5EED92 is the original AddChild call immediately after the
@@ -287,8 +305,23 @@ constexpr uint32_t kDefaultModeConflictMask = 0x00000003u;
 constexpr uint32_t kP2DefaultExclusiveMask = 0x00000001u;
 // One-frame Darwin controller mode selected by the local Mooch-switch action.
 // Its next stock update must run on Darwin before P2 is allowed to tick.
-constexpr uint32_t kMoochSwitchModeId = 0x61000065u;
-	// GPig_Mooch::Enter sets the fly state's +0x53 active flag.  The native
+	constexpr uint32_t kMoochSwitchModeId = 0x61000065u;
+	// Controller-owned native ABR presentation mode; it is mirrored only for the
+	// remote Darwin P2 and never treated as a separately spawned world object.
+			constexpr uint32_t kAbrModeId = 0x6100006Eu;
+		// Native lazy factory for XMotorTask_RDV. 0x40C9F0 indexes the state
+		// table at [XMotorSystem+0x2C] (= handler+0x4EC), uses the engine-owned
+		// dynamic index at 0x91568C, allocates the confirmed 0x78-byte task, and
+		// runs its constructor at 0x4BA980. Do not replace this with a manual
+		// allocation or a direct state-table write.
+		constexpr uintptr_t kEnsureGPigRdvTask = 0x0040C9F0u;
+// Stock P1 post-spawn configurator at 0x43EE20. It receives the settled level
+// spawn context and GPig handler, then enables the factory-created RDV task.
+constexpr uintptr_t kConfigureGPigRdvTask = 0x0043EE20u;
+		constexpr uintptr_t kGPigRdvTaskStateIndex = 0x0091568Cu;
+		constexpr uintptr_t kGPigRdvTaskVtable = 0x006FC27Cu;
+
+		// GPig_Mooch::Enter sets the fly state's +0x53 active flag.  The native
 	// Fly_Active::Update body at 0x5B4C30 continues while that flag is set, but
 	// selects 0x34 as soon as it is clear.  Thus 0x33 is Fly_Active and 0x34 is
 	// its idle/follow state.  These IDs only observe an already-confirmed owner
