@@ -208,15 +208,14 @@ namespace coop
 			{
 				if (existing.family == family && existing.subtype == subtype)
 				{
-					found = &existing;
 					CoopRuntime::Instance().Log(
 						"[world-trigger] loose template match family=%08X subtype=%08X host_def=%d local_def=%d\r\n",
 						family, subtype, definition_id, existing.definition_id);
-					break;
+					return existing.trigger;
 				}
 			}
 		}
-		return found ? found->trigger : NULL;
+		return NULL;
 	}
 
 	bool WorldSync::ReadEntityTransform(void* entity, float position[4],

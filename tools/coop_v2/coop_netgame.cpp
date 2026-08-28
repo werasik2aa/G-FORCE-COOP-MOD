@@ -700,10 +700,10 @@ namespace coop
 		float saved_ray[6] = {};
 		const bool remote_ray_applied = IsRemoteInputActiveOnThisThread() &&
 			ApplyActiveRemoteAimRay(input_manager, saved_ray);
-		CoopRuntime::Instance().Log(
-			"[abr-fire-trace] entry=5B8760 owner=%s remote=%u mode=%p controller=%p handler=%p input=%p context=%p remote_ray=%u\r\n",
-			owner, IsRemoteInputActiveOnThisThread() ? 1u : 0u, mode, controller,
-			handler, input_manager, mode_context, remote_ray_applied ? 1u : 0u);
+		//CoopRuntime::Instance().Log(
+			//"[abr-fire-trace] entry=5B8760 owner=%s remote=%u mode=%p controller=%p handler=%p input=%p context=%p remote_ray=%u\r\n",
+			//owner, IsRemoteInputActiveOnThisThread() ? 1u : 0u, mode, controller,
+			//handler, input_manager, mode_context, remote_ray_applied ? 1u : 0u);
 		// 0x5B8760 copies the cached ray to the projectile command synchronously.
 		// Restricting the swap to this call avoids leaving a P2 ray in P1's shared
 		// XGamePad during Default-mode weapon transitions.
@@ -1660,12 +1660,20 @@ namespace coop
 			family, subtype, definition_id);
 		if (!template_trigger)
 			return false;
-		if (m_original_trigger_event)
+		__try
 		{
-			m_original_trigger_event(template_trigger, event_code);
-			return true;
+			if (m_original_trigger_event)
+			{
+				m_original_trigger_event(template_trigger, event_code);
+				return true;
+			}
+			return SpawnWorldFromTrigger(template_trigger);
 		}
-		return SpawnWorldFromTrigger(template_trigger);
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			Msg("PIDORAS CRASH HERE GO OUT THE SHIT (c) werasik2");
+		}
+		return false;
 	}
 
 	void CoopNetGame::ApplyRemoteDamage(void* trigger, std::uint32_t amount,

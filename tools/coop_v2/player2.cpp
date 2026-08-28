@@ -840,12 +840,8 @@ namespace coop
 		void* const player1 = GetGPigEntity(1);
 		void* const player2 = GetGPigEntity(2);
 		if (!player1 || !player2 || GetModeId(GetController(player1)) != kAbrModeId)
-		{
-			CoopRuntime::Instance().Log(
-				"[abr-task] source=%s rejected: P1 ABR and live P2 are required P1=%p P2=%p\r\n",
-				source, player1, player2);
 			return false;
-		}
+
 		if (m_abr_native_task_player2 == player2)
 			return true;
 
