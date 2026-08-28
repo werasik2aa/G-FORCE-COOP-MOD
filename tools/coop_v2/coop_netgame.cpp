@@ -16,7 +16,7 @@
 #include <string.h>
 #include <intrin.h>
 
-namespace
+namespace coop
 {
 	constexpr DWORD kInputSendIntervalMs = 16;
 	constexpr DWORD kNetworkSpawnDelayMs = 1000;
@@ -150,20 +150,6 @@ namespace
 				(1u << (virtual_key % 32))) != 0;
 	}
 
-	float WrapPi(float angle)
-	{
-		constexpr float kPi = 3.14159265358979323846f;
-		constexpr float kTwoPi = 2.0f * kPi;
-		while (angle > kPi)
-			angle -= kTwoPi;
-		while (angle < -kPi)
-			angle += kTwoPi;
-		return angle;
-	}
-}
-
-namespace coop
-{
 	using namespace gforce;
 
 	CoopNetGame& CoopNetGame::Instance()
@@ -241,8 +227,7 @@ namespace coop
 		m_local_weapon_sequence(0),
 		m_last_local_weapon_type(0xFFFFFFFFu),
 		m_logged_remote_transform(false),
-		m_abr_heading_offset(0.0f),
-		m_abr_heading_calibrated(false)
+		m_abr_heading_offset(0.0f)
 	{
 		InitializeSRWLock(&m_input_lock);
 		ZeroMemory(&m_remote_input, sizeof(m_remote_input));
@@ -377,7 +362,6 @@ namespace coop
 			static_cast<LONG>(GetTickCount()));
 		InterlockedExchange(&m_logged_spawn, 0);
 		m_last_remote_transform_apply_tick = 0;
-		m_abr_heading_calibrated = false;
 		WorldSync::Instance().OnPeerConnected();
 		CoopRuntime::Instance().Log(
 			"[netgame] peer connected; P2 spawn queued for game thread\r\n");
@@ -391,7 +375,6 @@ namespace coop
 		ZeroMemory(&m_remote_input, sizeof(m_remote_input));
 		ReleaseSRWLockExclusive(&m_input_lock);
 		m_last_remote_transform_apply_tick = 0;
-		m_abr_heading_calibrated = false;
 		WorldSync::Instance().OnPeerDisconnected();
 		CoopRuntime::Instance().Log("[netgame] remote peer disconnected\r\n");
 	}
@@ -1396,16 +1379,10 @@ namespace coop
 			position.w = remote_position.w;
 
 			const bool remote_abr = m_active_remote_input.player_mode == kAbrModeId;
-			if (remote_abr)
-				rotation.y *= m_active_remote_input.abr_heading * atan(m_active_remote_input.abr_heading);
-			else
-			{
-				m_abr_heading_calibrated = false;
-				rotation.x += (remote_rotation.x - rotation.x) * position_factor;
-				rotation.y += (remote_rotation.y - rotation.y) * position_factor;
-				rotation.z += (remote_rotation.z - rotation.z) * position_factor;
-				rotation.w = remote_rotation.w;
-			}
+			rotation.x += (remote_rotation.x - rotation.x) * position_factor;
+			rotation.y += (remote_rotation.y * modefier - rotation.y) * position_factor;
+			rotation.z += (remote_rotation.z - rotation.z) * position_factor;
+			rotation.w = remote_rotation.w;
 
 			static DWORD last_abr_rotation_trace_tick = 0;
 			static std::uint32_t abr_rotation_trace_samples = 0;

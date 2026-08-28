@@ -3,9 +3,11 @@
 #include "coop_netgame.h"
 #include "coop_runtime.h"
 #include "gforce_constants.h"
+#include "retail/retail_types.h"
 #include "retail/retail_views.h"
 #include "save_sync.h"
 #include "world_sync.h"
+#include "ServerClient/MTypes.h"
 #include "ServerClient/SteamManager.h"
 
 #include <string.h>
@@ -28,6 +30,8 @@ namespace coop
 			{
 				netgame_.EndRemoteInput();
 			}
+
+			CoopInput& GetInput() { return netgame_.GetActiveRemInp(); }
 
 		private:
 			RemoteInputScope(const RemoteInputScope&);
@@ -1117,6 +1121,25 @@ namespace coop
 
 	}
 
+	void Player2Module::ResetForWorldLoad()
+	{
+		// P2 entity pointers become invalid during native save load.
+		// Clearing these flags prevents UpdateController from dereferencing
+		// stale pointers to freed GPig/Fly entities, which caused crashes
+		// after cutscenes and location transitions.
+		InterlockedExchange(&m_player2_ready, 0);
+		InterlockedExchange(&m_spawn_snapshot_ready, 0);
+		InterlockedExchange(&m_spawn_in_progress, 0);
+		m_logged_player2 = false;
+		m_player2_default_mode_initialized = false;
+		m_last_player1_mode = 0;
+		m_fly_controlled_last = false;
+		m_spawn_key_was_down = false;
+		m_npc_spawn_key_was_down = false;
+		m_last_weapon_type = 0xFFFFFFFFu;
+		CoopRuntime::Instance().Log("[reset] P2 state cleared for world load\r\n");
+	}
+
 	void Player2Module::ConfigurePlayer2DefaultMode(void* controller)
 	{
 		if (!controller || GetModeId(controller) != kDefaultModeId)
@@ -1224,6 +1247,16 @@ namespace coop
 			GetModeId(GetController(player1)) == kAbrModeId;
 		if (local_player_is_abr)
 		{
+			auto WrapPi = [](float angle)
+			{
+				constexpr float kPi = 3.14159265358979323846f;
+				constexpr float kTwoPi = 2.0f * kPi;
+				while (angle > kPi)
+					angle -= kTwoPi;
+				while (angle < -kPi)
+					angle += kTwoPi;
+				return angle;
+			};
 			// Vehicle-only levels have one shared HUD. Keeping P2's generic controller
 			// tick out of this state prevents it from resetting that shared reticle,
 			// while transform replication and the native P2 presentation task continue.
@@ -1231,7 +1264,8 @@ namespace coop
 			if (netgame.HasRemotePeer())
 				TryEnsurePlayer2RdvTask("network-ABR");
 			TraceRdvMotorPair(player1, player2);
-			netgame.ApplyRemotePlayerTransform(player2);
+
+			netgame.ApplyRemotePlayerTransform(player2, 1.0f);
 
 			return;
 		}
@@ -1276,8 +1310,8 @@ namespace coop
 			TryEnsurePlayer2RdvTask("network-post-P2-tick");
 		netgame.ApplyRemotePlayerTransform(player2);
 	}
-	void* __cdecl Player2Module::HookSpawnGPig(
-		const Vec4* position, const Vec4* rotation, uint32_t gpig_id, void* context)
+
+	void* __cdecl Player2Module::HookSpawnGPig(const Vec4* position, const Vec4* rotation, uint32_t gpig_id, void* context)
 	{
 		return Instance().SpawnGPig(position, rotation, gpig_id, context);
 	}

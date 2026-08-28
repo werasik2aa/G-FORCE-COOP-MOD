@@ -17,6 +17,9 @@ namespace coop
 		void Remove();
 		void PublishDefaultModeActiveEntity(void* entity);
 		bool EnsureNetworkPlayer2();
+		// Called during native save load / transition to clear P2 state
+		// and prevent crashes from stale entity pointers.
+		void ResetForWorldLoad();
 
 	private:
 		struct Vec4
@@ -29,18 +32,11 @@ namespace coop
 
 		typedef void* (__cdecl* SpawnGPigFn)(const Vec4*, const Vec4*, uint32_t, void*);
 		typedef void(__thiscall* ControllerUpdateFn)(void*);
-		// Native lazy factory 0x40C9F0: __thiscall(XMotorSystem, bool create).
-		// It owns allocation and insertion of XMotorTask_RDV at handler+0x4EC.
 		typedef void* (__thiscall* EnsureGPigRdvTaskFn)(void*, bool);
-		// Stock post-spawn configurator 0x43EE20: __thiscall(level spawn context,
-		// spawned GPig handler). P1 calls it after its RDV task factory and it
-		// initializes the task's native activation state without manual field writes.
 		typedef void(__thiscall* ConfigureGPigRdvTaskFn)(void*, void*);
 
 		typedef void* (__thiscall* TriggerCloneFn)(void*);
 		typedef void(__thiscall* TriggerSpawnFn)(void*);
-		// 0x4B7050 takes the target mode and a force/reselect flag.  The native
-		// function ends in `ret 8`; omitting the flag corrupts its stack contract.
 		typedef bool(__thiscall* SelectModeFn)(void*, uint32_t, bool);
 		typedef void* (__thiscall* GetCameraHandlerFn)(void*);
 		typedef void(__thiscall* RefreshGPigCameraFn)(void*);
@@ -66,10 +62,7 @@ namespace coop
 
 		bool RefreshCameraForController(void* controller);
 		uint32_t RestorePlayer1CameraTarget();
-		// There is only one camera handler in the process: 0x515C80 returns
-		// [[0x915738+0x18]+0x144] and 0x915750 is the level singleton, so P1 and P2
-		// share every field 0x5BB1D0 writes there, including the turn magnitude that
-		// decides whether the body follows the camera yaw at all.
+
 		struct SharedCameraAimState
 		{
 			float assist[2];
@@ -83,8 +76,6 @@ namespace coop
 		void* CameraHandler();
 
 		float* CameraFollowTurn();
-		// Reads 0x52AD20 on the shared handler.  Only meaningful right after P1's own
-		// controller tick, because that is when the handler still holds P1's camera.
 		bool ReadLocalCameraYaw(float& yaw);
 		bool SaveSharedCameraAimState(SharedCameraAimState& saved);
 
@@ -97,17 +88,9 @@ namespace coop
 		bool TryEnsurePlayer2RdvTask(const char* source);
 		bool ConfigurePlayer2RdvTask(const char* source, void* player2, void* player2_handler, void* task);
 
-		// P1's stock tick, wrapped in the local half of the network bracket.  Called
-		// only from P1's own array slot, with the controller the game itself handed to
-		// the hook: re-issuing the tick from anywhere else has to re-resolve
-		// [[entity+0x144]+0x510], and that walk stops naming the controller that holds
-		// the mode the moment P1 switches to the fly.
 		void TickPlayer1(void* player1_controller);
 		void HandlePlayer1ModeTransition(void* player1_controller);
 
-		// P2 owns a distinct Default-mode instance.  It must remain fully active for
-		// packet input, but must not occupy the one exclusive Default ownership bit
-		// that the stock single-player Mooch hand-off needs for P1.
 		void ConfigurePlayer2DefaultMode(void* controller);
 		void UpdateController(void* controller);
 		bool RunStockControllerUpdate(void* controller, const char* context);
@@ -116,20 +99,15 @@ namespace coop
 		bool PatchDefaultModeActivePublish();
 
 		static void __fastcall HookControllerUpdate(void* controller, void*);
-
 		static void* __cdecl HookSpawnGPig(const Vec4* position, const Vec4* rotation, uint32_t gpig_id, void* context);
+
 		volatile LONG m_player2_ready;
 		volatile LONG m_spawn_snapshot_ready;
 		volatile LONG m_spawn_in_progress;
-		// This is a mod-side one-shot guard, not a field in the game entity.  P2
-		// must run Default mode to consume its packet input, but SelectMode must
-		// never be retried during an unrelated Darwin-to-Mooch transition.
 		bool m_player2_default_mode_initialized;
 		bool m_logged_blocked_active_publish;
+		bool m_logged_player2;
 
-
-		// Last observed P1 mode; used to detect the one real Mooch hand-off and
-		// defer P2 for one stock tick while that native transition settles.
 		uint32_t m_last_player1_mode;
 
 		void* m_abr_native_task_player2;
@@ -146,5 +124,8 @@ namespace coop
 		bool m_default_mode_active_stores_patched;
 		ControllerUpdateFn m_original_update;
 
+		bool m_spawn_key_was_down;
+		bool m_npc_spawn_key_was_down;
+		bool m_fly_controlled_last;
 	};
 }

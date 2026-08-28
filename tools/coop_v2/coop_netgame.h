@@ -119,6 +119,8 @@ namespace coop
 		
 		// 0x5BCF30, __thiscall(mode), no stack arguments.
 		void __fastcall HandleGPigCameraUpdate(void* mode, void*);
+
+		CoopInput& GetActiveRemInp() { return m_active_remote_input; }
 	private:
 		typedef SHORT(WINAPI* GetAsyncKeyStateFn)(int);
 		typedef bool(__thiscall* InputActionQueryFn)(void*, std::uint32_t, std::uint32_t, std::uint32_t);
@@ -399,7 +401,6 @@ namespace coop
 		bool m_trigger_event_hooked;
 		bool m_logged_remote_transform;
 		float m_abr_heading_offset;
-		bool m_abr_heading_calibrated;
 
 		std::uint32_t m_prev_local_action_down[3];
 		std::uint32_t m_prev_remote_action_down[3];

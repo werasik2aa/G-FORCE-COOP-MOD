@@ -3,6 +3,8 @@
 #include "coop_netgame.h"
 #include "coop_runtime.h"
 #include "gforce_constants.h"
+#include "player2.h"
+#include "retail/retail_types.h"
 #include "retail/retail_views.h"
 #include "protocol/packet_view.h"
 #include "ServerClient/MClient.h"
@@ -135,9 +137,11 @@ namespace coop
 		ReleaseSRWLockExclusive(&m_damage_lock);
 	}
 
-	void WorldSync::ResetForWorldLoad()
+		void WorldSync::ResetForWorldLoad()
 	{
 		ClearGameState();
+		// Reset P2 state so stale entity pointers don't crash on update.
+		Player2Module::Instance().ResetForWorldLoad();
 		AcquireSRWLockExclusive(&m_packet_lock);
 		m_outgoing_spawns.clear();
 		m_outgoing_snapshots.clear();

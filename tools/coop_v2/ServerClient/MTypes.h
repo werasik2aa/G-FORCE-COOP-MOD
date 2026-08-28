@@ -75,8 +75,9 @@ constexpr std::uint32_t kCoopActionCount = 68;
 // logical action table.  They are controller semantics, not player key binds.
 constexpr std::uint32_t kCoopFlyRawActionCount = 6;
 
-struct CoopInput
+class CoopInput
 {
+public:
 	std::uint32_t virtual_keys[8];
 	float position[4];
 	float rotation[4];
