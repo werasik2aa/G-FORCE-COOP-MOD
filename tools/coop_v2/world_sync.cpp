@@ -520,12 +520,10 @@ namespace coop
 		{
 			for (const ClientEntity& tracked : m_client_entities)
 			{
-				if (!tracked.entity || !tracked.world_id)
-					continue;
 				void* const entity_trigger = *reinterpret_cast<void* const*>(
 					static_cast<const BYTE*>(tracked.entity) +
 					gforce::kEntityTriggerOffset);
-				if (entity_trigger == trigger)
+				if (entity_trigger == trigger && tracked.entity && tracked.world_id)
 					return tracked.entity;
 			}
 		}
@@ -1285,14 +1283,11 @@ namespace coop
 			}
 			if (!entity)
 			{
-				if (m_pending_damage.size() < kMaxPendingWorldPackets)
-				{
-					PendingDamage pending = {};
-					pending.world_id = packet.world_id;
-					pending.hp_bits = packet.hp_bits;
-					pending.event_code = packet.event_code;
-					m_pending_damage.push_back(pending);
-				}
+				PendingDamage pending = {};
+				pending.world_id = packet.world_id;
+				pending.hp_bits = packet.hp_bits;
+				pending.event_code = packet.event_code;
+				m_pending_damage.push_back(pending);
 				continue;
 			}
 			// A dead/despawned entity may still sit in the tracked list with a

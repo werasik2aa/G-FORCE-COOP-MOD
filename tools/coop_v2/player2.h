@@ -57,7 +57,6 @@ namespace coop
 		void* GetController(void* entity);
 		uint32_t GetModeId(void* controller);
 		int FindGPigSlot(void* controller);
-		bool IsGPigDeathMode(void* controller) const;
 
 		void SelectMode(void* controller, uint32_t mode_id);
 

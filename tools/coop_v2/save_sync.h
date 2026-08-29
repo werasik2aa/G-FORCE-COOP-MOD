@@ -16,15 +16,12 @@ namespace coop
 		// Called from P1's game-thread tick after a world is loaded.  Capturing here
 		// keeps the network worker from reading live menu/game state.
 		void CaptureLoadedHostSlot();
-		// Called before the host's validated Load Game call. The selected save is
-		// sent to every connected peer before native loading starts.
-		void OnHostLoadGame(std::uint32_t slot);
 		void SendHostJoinSave(CSteamOfflineSocketServer* server, std::int32_t connection);
 		bool OnRemotePacket(const void* data, std::uint32_t size);
-		// Runs from the P1 game-thread tick after the network worker has written the
-		// selected DATA<n>. Entering the stock loader here keeps all level-state
-		// work out of the socket thread and does not depend on D3D Present.
-		bool OnMainFrame();
+		// Runs from the render/game thread after the network worker has written the
+		// selected DATA<n>.  Entering the stock loader here keeps all level-state
+		// work out of the socket thread.
+		void OnMainFrame();
 
 	private:
 		SaveSync() :

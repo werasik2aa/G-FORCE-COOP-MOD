@@ -245,7 +245,6 @@ namespace coop
 		m_last_weapon_type(0xFFFFFFFFu),
 		m_spawn_context(NULL),
 		m_default_mode_active_stores_patched(false),
-		m_fly_controlled_last(false),
 		m_original_update(
 			reinterpret_cast<ControllerUpdateFn>(kOriginalControllerUpdate))
 
@@ -378,30 +377,6 @@ namespace coop
 			}
 		}
 		return 0;
-	}
-
-	bool Player2Module::IsGPigDeathMode(void* controller) const
-	{
-		if (!controller)
-			return false;
-		__try
-		{
-			BYTE* const mode = *reinterpret_cast<BYTE**>(
-				static_cast<BYTE*>(controller) + kControllerModeOffset);
-			if (!mode)
-				return false;
-			const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(mode);
-			return vtable == kGPigDeathModeVtable ||
-				vtable == kGPigDeathModeInactiveVtable ||
-				vtable == kGPigDeathModeActiveVtable ||
-				vtable == kGPigDeathModeFallVtable ||
-				vtable == kGPigDeathModeDeathVtable ||
-				vtable == kGPigDeathModeRespawnVtable;
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			return false;
-		}
 	}
 
 	void Player2Module::SelectMode(void* controller, uint32_t mode_id)
@@ -1088,12 +1063,6 @@ namespace coop
 	void Player2Module::TickPlayer1(void* player1_controller)
 
 	{
-		// A remote host load is initiated from this guaranteed game-thread hook.
-		// The old controller may be destroyed by the loader, so do not touch it or
-		// continue the stock update after a load was started.
-		if (SaveSync::Instance().OnMainFrame())
-			return;
-
 		// The first real P1 controller tick cannot happen in the main menu.  It is
 		// therefore the safe boundary for turning a normal loaded save into an IP
 		// host, without advertising or probing Steam during startup.
@@ -1164,9 +1133,6 @@ namespace coop
 		m_spawn_key_was_down = false;
 		m_npc_spawn_key_was_down = false;
 		m_last_weapon_type = 0xFFFFFFFFu;
-		m_spawn_context = NULL;
-		m_abr_native_task_player2 = NULL;
-		m_abr_native_task_configured_player2 = NULL;
 		CoopRuntime::Instance().Log("[reset] P2 state cleared for world load\r\n");
 	}
 
@@ -1239,44 +1205,13 @@ namespace coop
 			return;
 		}
 
-		if (slot == static_cast<int>(retail::PlayerSlot::RemoteP2) &&
-			IsGPigDeathMode(controller))
-		{
-			static bool logged_remote_death = false;
-			if (!logged_remote_death)
-			{
-				CoopRuntime::Instance().Log(
-					"[death-guard] P2 death mode update suppressed; no native respawn\r\n");
-				logged_remote_death = true;
-			}
-			return;
-		}
-
 		void* const fly = GetFlyEntity();
 		if (controller && controller == GetController(fly))
 		{
-			CoopNetGame& netgame = CoopNetGame::Instance();
-			const bool local_fly_controlled = netgame.IsLocalFlyControlled();
-			const bool remote_fly_controlled = !local_fly_controlled &&
-				netgame.IsRemoteFlyControlled();
-			// GPig_Mooch::Enter normally sets fly-state +0x53. The remote side
-			// never runs that local hand-off, so mirror only this lifecycle flag.
-			// Fly_Idle then selects Fly_Active itself, and the existing raw-action
-			// hooks drive the native Active -> Scanning -> fire path.
-			if (remote_fly_controlled)
-				netgame.SetFlyControlActiveState(fly, true);
-			else if (m_fly_controlled_last && !local_fly_controlled)
-				netgame.SetFlyControlActiveState(fly, false);
-			if (remote_fly_controlled != m_fly_controlled_last)
-			{
-				CoopRuntime::Instance().Log(
-					"[fly-sync] remote native control state=%u\r\n",
-					remote_fly_controlled ? 1u : 0u);
-			}
-			m_fly_controlled_last = remote_fly_controlled;
 			const uint32_t mode_before = GetModeId(controller);
 			if (RunStockControllerUpdate(controller, "fly"))
 			{
+				CoopNetGame& netgame = CoopNetGame::Instance();
 				netgame.ObserveLocalFlyMode(mode_before, GetModeId(controller));
 				netgame.MaintainLocalFlyActiveEntity(fly);
 				netgame.PublishLocalFlyTransform(fly);
@@ -1324,12 +1259,9 @@ namespace coop
 			m_remote_abr_mode_active = netgame.IsRemoteAbrMode();
 			if (netgame.HasRemotePeer())
 				TryEnsurePlayer2RdvTask("network-ABR");
-			if (RunStockControllerUpdate(controller, "remote-player2-ABR"))
-			{
-				TraceRdvMotorPair(player1, player2);
-				// Native RDV owns orientation; reconcile only the position.
-				netgame.ApplyRemotePlayerTransform(player2, 0.0f);
-			}
+			TraceRdvMotorPair(player1, player2);
+
+			netgame.ApplyRemotePlayerTransform(player2, 1.0f);
 
 			return;
 		}

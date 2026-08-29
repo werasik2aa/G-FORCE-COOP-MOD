@@ -107,17 +107,11 @@ namespace coop
 		// host save slot, not a guessed DATA file number.
 		constexpr uintptr_t kLoadSaveManager = 0x00915B40u;
 		constexpr uintptr_t kBeginNativeSaveLoad = 0x005F1920u;
-		// Exact validated Load Game menu call. It passes the selected row to the
-		// native loader after the stock availability checks.
-		constexpr uintptr_t kHostLoadGameCall = 0x005EDC5Du;
 		constexpr size_t kLoadSaveSelectedSlotOffset = 0x4BECu;
 		constexpr uint32_t kVisibleSaveSlotCount = 5u;
 		constexpr uint8_t kExpectedBeginNativeSaveLoad[] = {
 			0x8B, 0x44, 0x24, 0x04, 0x56, 0x8B, 0xF1, 0x6A, 0x09,
 			0x89, 0x86, 0xEC, 0x4B, 0x00, 0x00
-		};
-		constexpr uint8_t kExpectedHostLoadGameCall[] = {
-			0xE8, 0xBE, 0x3C, 0x00, 0x00
 		};
 		constexpr uintptr_t kGamePointer = 0x00912784u;
 		// The process-wide XGamePad selected by XGamePad::Register at 0x487F10.
@@ -141,10 +135,6 @@ namespace coop
 		// flag while the remote peer owns the shared fly.
 		constexpr uintptr_t kFlyActiveStateIndex = 0x009155FCu;
 		constexpr size_t kHandlerFlyStateTableOffset = 0x4ECu;
-		// Fly_Idle::Update selects Fly_Active when this native state byte is set.
-		// Mirroring this flag lets the receiving controller follow its own normal
-		// Active -> Scanning mode transitions instead of forcing a mode directly.
-		constexpr size_t kFlyControlActiveOffset = 0x53u;
 		constexpr uintptr_t kCameraManager = 0x00915738u;
 
 		constexpr uintptr_t kKeyboardStateOwner = 0x00AA6580u;
@@ -318,14 +308,6 @@ namespace coop
 		// One-frame Darwin controller mode selected by the local Mooch-switch action.
 		// Its next stock update must run on Darwin before P2 is allowed to tick.
 		constexpr uint32_t kMoochSwitchModeId = 0x61000065u;
-		// XGPigDeathMode family vtables. A remote P2 must not run these mode updates:
-		// their native Respawn path owns checkpoint/start-position restart behavior.
-		constexpr uintptr_t kGPigDeathModeVtable = 0x00700EC4u;
-		constexpr uintptr_t kGPigDeathModeInactiveVtable = 0x00700F1Cu;
-		constexpr uintptr_t kGPigDeathModeActiveVtable = 0x00700F74u;
-		constexpr uintptr_t kGPigDeathModeFallVtable = 0x00700FCCu;
-		constexpr uintptr_t kGPigDeathModeDeathVtable = 0x00701024u;
-		constexpr uintptr_t kGPigDeathModeRespawnVtable = 0x0070107Cu;
 		// Controller-owned native ABR presentation mode; it is mirrored only for the
 		// remote Darwin P2 and never treated as a separately spawned world object.
 		constexpr uint32_t kAbrModeId = 0x6100006Eu;
@@ -343,12 +325,13 @@ namespace coop
 		// XMotorFunction_GPigRDV resource used by the native RDV task.
 		constexpr uintptr_t kGPigRdvMotorFunctionVtable = 0x007040DCu;
 
-		// These are transient modes observed around the native Mooch hand-off.
-		// The controller's actual Active and Scanning modes are 0x61000007 and
-		// 0x61000087; ownership is therefore tracked by the native +0x53 state flag,
-		// not by treating either transient mode as the complete lifecycle.
-		constexpr uint32_t kFlyRespawnModeId = 0x61000034u;
-		constexpr uint32_t kFlyOrbitModeId = 0x61000033u;
+		// GPig_Mooch::Enter sets the fly state's +0x53 active flag.  The native
+	// Fly_Active::Update body at 0x5B4C30 continues while that flag is set, but
+	// selects 0x34 as soon as it is clear.  Thus 0x33 is Fly_Active and 0x34 is
+	// its idle/follow state.  These IDs only observe an already-confirmed owner
+	// lifecycle; they never manufacture a transition.
+		constexpr uint32_t kFlyIdleModeId = 0x61000034u;
+		constexpr uint32_t kFlyControlledModeId = 0x61000033u;
 
 		constexpr uint32_t kFirstKeyboardActionId = 0x10000000u;
 		constexpr uint32_t kKeyboardActionCount = 0x43u;
