@@ -32,6 +32,7 @@ namespace coop
 		void RemoveInputHook();
 		void BeginRemoteInput();
 		void EndRemoteInput();
+		void ResetForWorldLoad();
 
 		// The stock ammo-consume callback may run after P2's controller scope has
 		// returned.  Record P2's concrete WeaponAmmoItem pointer while that scope is
@@ -61,8 +62,8 @@ namespace coop
 		// that hand-off and must not decide who publishes the shared fly.
 		void ConfirmLocalFlyControl();
 
-		// 0x61000034 is a short native entry signal.  Read both sides of the fly's
-		// tick so the hand-off latch cannot miss it when the same tick ends in 0x33.
+		// 0x61000034/0x61000033 are short Respawn/Orbit signals. Read both sides
+		// of the fly's tick so the hand-off latch cannot miss the transition.
 		void ObserveLocalFlyMode(std::uint32_t mode_before, std::uint32_t mode_after);
 		bool IsLocalFlyControlled() const;
 
@@ -70,6 +71,7 @@ namespace coop
 		// the one stock shared Mooch controller tick.
 		bool IsRemoteFlyControlled() const;
 		bool GetRemoteFlyFireAction() const;
+		bool SetFlyControlActiveState(void* fly, bool active) const;
 
 		// Fly_Active::Enter normally publishes Mooch as both active entities, but
 		// P1's still-ticking Default controller later overwrites those globals.  Keep
@@ -100,7 +102,7 @@ namespace coop
 		// Copies the last received packet ray under the existing input lock. It is
 		// diagnostic-only and never applies, normalizes, or transmits any value.
 		bool GetRemoteAimRaySnapshot(float origin[3], float direction[3], std::uint32_t& transform_sequence) const;
-		bool __fastcall HandleInputActionQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags);
+		bool __fastcall HandleInputActionQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags, std::uintptr_t caller_return_address);
 		bool __fastcall HandleInputActionUpQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags);
 		bool __fastcall HandleInputThresholdQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, float threshold, std::uint32_t flags);
 		bool __fastcall HandleInputPressedQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags);
@@ -249,6 +251,8 @@ namespace coop
 		void RemoveTriggerFactoryHook();
 		bool InstallTriggerEventHook();
 		void RemoveTriggerEventHook();
+		bool InstallLoadGameHook();
+		void RemoveLoadGameHook();
 
 		// Generic 5-byte E9 detour installer.  relocate_len original bytes are copied
 		// into a freshly allocated trampoline which then jumps back to address +
@@ -265,6 +269,7 @@ namespace coop
 		static void __fastcall HookHealthComponentAdd(void* component, void*, float delta, std::uint32_t slot);
 		static void __fastcall HookHealthComponentSubtract(void* component, void*, float amount, std::uint32_t slot);
 		static void __fastcall HookTriggerSpawnFromDefinition(void* trigger, void*);
+		static bool __fastcall HookHostLoadGame(void* manager, void*, std::uint32_t slot);
 
 		static void* __cdecl HookTriggerFactory(std::uint32_t family, std::uint32_t subtype, void* output);
 		static int __fastcall HookTriggerEvent(void* trigger, void*, int event_code);
@@ -399,8 +404,10 @@ namespace coop
 		BYTE* m_trigger_event_trampoline;
 		TriggerEventFn m_original_trigger_event;
 		bool m_trigger_event_hooked;
+		bool m_load_game_hooked;
 		bool m_logged_remote_transform;
 		float m_abr_heading_offset;
+		BYTE m_original_load_game_call_bytes[5];
 
 		std::uint32_t m_prev_local_action_down[3];
 		std::uint32_t m_prev_remote_action_down[3];
