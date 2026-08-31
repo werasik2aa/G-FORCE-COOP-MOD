@@ -4,6 +4,7 @@
 #include "gforce_constants.h"
 #include "protocol/packet_view.h"
 #include "player2.h"
+#include "save_sync.h"
 #include "retail/retail_types.h"
 #include "world_sync.h"
 
@@ -49,7 +50,8 @@ namespace coop
 		std::uint32_t device, std::uint32_t action, std::uint32_t flags)
 	{
 		return coop::CoopNetGame::Instance().HandleInputActionQuery(
-			input_manager, edx, device, action, flags);
+			input_manager, edx, device, action, flags,
+			reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
 	}
 
 	bool __fastcall HookInputActionUpQuery(void* input_manager, void* edx,
@@ -78,7 +80,8 @@ namespace coop
 		std::uint32_t device, std::uint32_t action, std::uint32_t flags)
 	{
 		return coop::CoopNetGame::Instance().HandleInputPressedQuery(
-			input_manager, edx, device, action, flags);
+			input_manager, edx, device, action, flags,
+			reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
 	}
 
 	bool __fastcall HookInputReleasedQuery(void* input_manager, void* edx,
@@ -216,12 +219,14 @@ namespace coop
 		m_trigger_event_trampoline(NULL),
 		m_original_trigger_event(NULL),
 		m_trigger_event_hooked(false),
+		m_load_game_hooked(false),
 		m_remote_input_thread_id(0),
 
 		m_local_transform_sequence(0),
 		m_local_fly_transform_sequence(0),
 		m_local_fly_active_seen(false),
 		m_local_mooch_exit_key_down(false),
+		m_remote_fly_forced_exit(false),
 
 		m_logged_fly_active_entity_repair(false),
 		m_local_weapon_sequence(0),
@@ -373,6 +378,7 @@ namespace coop
 		InterlockedExchange(&m_peer_connected_tick, 0);
 		AcquireSRWLockExclusive(&m_input_lock);
 		ZeroMemory(&m_remote_input, sizeof(m_remote_input));
+		m_remote_fly_forced_exit = false;
 		ReleaseSRWLockExclusive(&m_input_lock);
 		m_last_remote_transform_apply_tick = 0;
 		WorldSync::Instance().OnPeerDisconnected();
@@ -393,10 +399,26 @@ namespace coop
 		// This is a state buffer, not a one-frame input event.  It deliberately
 	// remains valid until a later packet replaces it, so held keys survive
 	// packet pacing and the remote controller sees a stable input state.
-		const bool remote_fly_controlled = packet.input.fly_controlled != 0 &&
+		bool remote_fly_controlled = packet.input.fly_controlled != 0 &&
 			packet.input.fly_transform_sequence != 0;
 		bool client_yielded_fly = false;
 		AcquireSRWLockExclusive(&m_input_lock);
+		if (m_remote_fly_forced_exit)
+		{
+			if (remote_fly_controlled)
+			{
+				packet.input.fly_controlled = 0;
+				packet.input.fly_transform_sequence = 0;
+				packet.input.fly_raw_down = 0;
+				remote_fly_controlled = false;
+			}
+			else
+			{
+				// The owner acknowledged its native exit. A later fresh entry may be
+				// mirrored normally again.
+				m_remote_fly_forced_exit = false;
+			}
+		}
 		m_remote_input = packet.input;
 		// Mooch is a single world object.  If both peers obtain the local hand-off
 		// in the same network window, the client yields to the host.  In all normal
@@ -956,6 +978,34 @@ namespace coop
 			(1u << (action_index % 32))) != 0;
 	}
 
+	bool CoopNetGame::SetFlyControlActiveState(void* fly, bool active) const
+	{
+		if (!fly)
+			return false;
+		__try
+		{
+			BYTE* const handler = *reinterpret_cast<BYTE**>(
+				static_cast<BYTE*>(fly) + kEntityHandlerOffset);
+			if (!handler)
+				return false;
+			void** const state_table = *reinterpret_cast<void***>(
+				handler + kHandlerFlyStateTableOffset);
+			const std::uint32_t state_index =
+				*reinterpret_cast<const std::uint32_t*>(kFlyActiveStateIndex);
+			if (!state_table)
+				return false;
+			BYTE* const state = static_cast<BYTE*>(state_table[state_index]);
+			if (!state)
+				return false;
+			state[kFlyControlActiveOffset] = active ? 1u : 0u;
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+	}
+
 	bool CoopNetGame::IsLocalFlyControlled() const
 	{
 		AcquireSRWLockShared(const_cast<SRWLOCK*>(&m_input_lock));
@@ -1059,8 +1109,8 @@ namespace coop
 			// The mode can be 0x34 at the beginning of its first tick and 0x33 at
 			// the end of that same tick.  Observing either side catches the real
 			// entry without treating the subsequent idle/follow state as an exit.
-			if (mode_before == kFlyControlledModeId ||
-				mode_after == kFlyControlledModeId)
+			if (mode_before == kFlyOrbitModeId ||
+				mode_after == kFlyOrbitModeId)
 			{
 				active_seen = !m_local_fly_active_seen;
 				m_local_fly_active_seen = true;
@@ -1378,30 +1428,10 @@ namespace coop
 			position.z += (remote_position.z - position.z) * position_factor;
 			position.w = remote_position.w;
 
-			const bool remote_abr = m_active_remote_input.player_mode == kAbrModeId;
 			rotation.x += (remote_rotation.x - rotation.x) * position_factor;
 			rotation.y += (remote_rotation.y * modefier - rotation.y) * position_factor;
 			rotation.z += (remote_rotation.z - rotation.z) * position_factor;
 			rotation.w = remote_rotation.w;
-
-			static DWORD last_abr_rotation_trace_tick = 0;
-			static std::uint32_t abr_rotation_trace_samples = 0;
-			if (remote_abr && (last_abr_rotation_trace_tick == 0 ||
-				static_cast<DWORD>(now - last_abr_rotation_trace_tick) >= 200))
-			{
-				last_abr_rotation_trace_tick = now;
-				++abr_rotation_trace_samples;
-				CoopRuntime::Instance().Log(
-					"[abr-rotation-trace] sample=%u seq=%u elapsed=%lu pos-factor=%.3f target-pos=(%.3f,%.3f,%.3f,%.3f) pos-pre=(%.3f,%.3f,%.3f,%.3f) pos-post=(%.3f,%.3f,%.3f,%.3f) target-rot=(%.3f,%.3f,%.3f,%.3f) rot-pre=(%.3f,%.3f,%.3f,%.3f) rot-post=(%.3f,%.3f,%.3f,%.3f)\r\n",
-					abr_rotation_trace_samples, m_active_remote_input.transform_sequence,
-					static_cast<unsigned long>(elapsed_ms), position_factor,
-					remote_position.x, remote_position.y, remote_position.z, remote_position.w,
-					position_before.x, position_before.y, position_before.z, position_before.w,
-					position.x, position.y, position.z, position.w,
-					remote_rotation.x, remote_rotation.y, remote_rotation.z, remote_rotation.w,
-					rotation_before.x, rotation_before.y, rotation_before.z, rotation_before.w,
-					rotation.x, rotation.y, rotation.z, rotation.w);
-			}
 			if (!m_logged_remote_transform)
 			{
 				CoopRuntime::Instance().Log(
@@ -1489,12 +1519,44 @@ namespace coop
 		return Instance().HandleTriggerEvent(trigger, event_code);
 	}
 
+	bool __fastcall CoopNetGame::HookHostLoadGame(void* manager, void*,
+		std::uint32_t slot)
+	{
+		CoopNetGame& game = Instance();
+		if (game.IsHost() && game.HasRemotePeer())
+			SaveSync::Instance().OnHostLoadGame(slot);
+
+		using BeginNativeLoadFn = bool(__thiscall*)(void*, std::uint32_t);
+		BeginNativeLoadFn load = reinterpret_cast<BeginNativeLoadFn>(
+			gforce::kBeginNativeSaveLoad);
+		bool result = false;
+		__try
+		{
+			result = load(manager, slot);
+		}
+		__except (CoopRuntime::Instance().LogException(
+			GetExceptionInformation(), "host-native-load"))
+		{
+			result = false;
+		}
+		return result;
+	}
+
 	void CoopNetGame::HandleTriggerSpawnFromDefinition(void* trigger)
 	{
 		if (!m_original_trigger_spawn)
 			return;
 
-		m_original_trigger_spawn(trigger);
+		__try
+		{
+			m_original_trigger_spawn(trigger);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log(
+				"[world] native trigger spawn fault trigger=%p\r\n", trigger);
+			return;
+		}
 		if (!trigger)
 			return;
 
@@ -1582,23 +1644,35 @@ namespace coop
 		if (!m_original_trigger_factory)
 			return NULL;
 
-		void* const trigger = m_original_trigger_factory(family, subtype, output);
+		void* trigger = NULL;
+		__try
+		{
+			trigger = m_original_trigger_factory(family, subtype, output);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log(
+				"[world] native trigger factory fault family=0x%08X subtype=0x%08X output=%p\r\n",
+				family, subtype, output);
+			return NULL;
+		}
 		WorldSync::Instance().RecordTriggerTemplate(trigger, family, subtype);
 		return trigger;
 	}
 
 	int CoopNetGame::HandleTriggerEvent(void* trigger, int event_code)
 	{
-		if (!m_original_trigger_event)
+		if (!m_original_trigger_event || !trigger)
 			return 0;
-		const int result = m_original_trigger_event(trigger, event_code);
-		if (!trigger || (!IsHost() && !IsClient()))
-			return result;
-
-		// Replay every map-defined trigger family through the stock dispatcher.
-		// NPC/monster-only handling remains below for HP authority.
+		int result = 0;
 		__try
 		{
+			result = m_original_trigger_event(trigger, event_code);
+			if (!trigger || (!IsHost() && !IsClient()))
+				return result;
+
+			// Replay every map-defined trigger family through the stock dispatcher.
+			// NPC/monster-only handling remains below for HP authority.
 			const BYTE* const bytes = static_cast<const BYTE*>(trigger);
 			const std::uint32_t family = *reinterpret_cast<const std::uint32_t*>(
 				bytes + kTriggerFamilyOffset);
@@ -1685,7 +1759,16 @@ namespace coop
 			return;
 		// Replay the original trigger event for local scripted side effects.  HP
 	// itself is changed by WorldSync through the confirmed handler field.
-		m_original_trigger_event(trigger, event_code);
+		__try
+		{
+			m_original_trigger_event(trigger, event_code);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log(
+				"[world-damage] native event fault trigger=%p id=%u event=%d\r\n",
+				trigger, world_id, event_code);
+		}
 	}
 
 	void CoopNetGame::HandleHealthComponentSet(void* component,
@@ -1723,6 +1806,8 @@ namespace coop
 			tracked = false;
 		}
 
+		// Keep the shared health component untouched. Death suppression belongs at
+		// the P2 controller's death-mode transition, not in this generic setter.
 		m_original_health_component_set(component, requested_value, slot, notify);
 		if (!tracked)
 			return;
@@ -1837,9 +1922,10 @@ namespace coop
 			tracked = false;
 		}
 
-		// Temporary P2-only survival workaround. The confirmed P2 hit still takes
-		// the native path, but its health subtraction receives zero. P1 and all
-		// non-player components retain the stock damage amount.
+		// The player health component is shared by the local P1 gameplay state. P2 is
+		// only a replicated remote body, so preserve its hit path but do not subtract
+		// the hit from the local P1 pool. P1 and all non-player components retain the
+		// original amount.
 		const float applied_amount = receiver_is_player2 ? 0.0f : amount;
 		m_original_health_component_subtract(component, applied_amount, slot);
 		if (!tracked)
@@ -2015,6 +2101,34 @@ namespace coop
 		ZeroMemory(m_active_remote_scan_codes, sizeof(m_active_remote_scan_codes));
 	}
 
+	void CoopNetGame::ResetForWorldLoad()
+	{
+		m_remote_p2_weapon_record = NULL;
+		m_logged_remote_p2_ammo_restore = false;
+		m_remote_gamepad = NULL;
+		m_remote_gamepad_unavailable = false;
+		m_logged_remote_gamepad = false;
+		m_last_remote_transform_apply_tick = 0;
+		AcquireSRWLockExclusive(&m_input_lock);
+		ZeroMemory(&m_remote_input, sizeof(m_remote_input));
+		ZeroMemory(&m_active_remote_input, sizeof(m_active_remote_input));
+		ZeroMemory(&m_local_input, sizeof(m_local_input));
+		m_remote_fly_forced_exit = false;
+		ReleaseSRWLockExclusive(&m_input_lock);
+		ZeroMemory(m_prev_remote_press_seq, sizeof(m_prev_remote_press_seq));
+		ZeroMemory(m_prev_remote_release_seq, sizeof(m_prev_remote_release_seq));
+		ZeroMemory(m_prev_remote_fly_raw_press_seq,
+			sizeof(m_prev_remote_fly_raw_press_seq));
+		ZeroMemory(m_prev_remote_fly_raw_release_seq,
+			sizeof(m_prev_remote_fly_raw_release_seq));
+		ZeroMemory(m_remote_press_edge, sizeof(m_remote_press_edge));
+		ZeroMemory(m_remote_release_edge, sizeof(m_remote_release_edge));
+		ZeroMemory(m_remote_action_held, sizeof(m_remote_action_held));
+		ZeroMemory(m_remote_hold_start_tick, sizeof(m_remote_hold_start_tick));
+		InterlockedExchange(&m_remote_input_active, 0);
+		m_remote_input_thread_id = 0;
+	}
+
 	void CoopNetGame::ArmRemoteP2AmmoOwner(void* player2)
 	{
 		m_remote_p2_weapon_record = NULL;
@@ -2181,7 +2295,8 @@ namespace coop
 	}
 
 	bool __fastcall CoopNetGame::HandleInputActionQuery(void* input_manager,
-		void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags)
+		void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags,
+		std::uintptr_t caller_return_address)
 	{
 		if (!m_original_input_action_query)
 			return false;
@@ -2194,12 +2309,30 @@ namespace coop
 		// straight from the packet; rising/falling transitions are served by the
 		// dedicated edge hooks (0x488CE0 / 0x488C00) instead.
 		if (is_remote_thread && is_keyboard_action)
+		{
+			// The remote snapshot must not make Darwin fire when the remote player
+			// is driving the separate Fly controller.  Fly_Scan is handled below
+			// by its native return address instead of by the global fire action.
+			if (action == kFireActionId && IsRemoteFlyControlled())
+				return false;
 			return GetActiveRemoteAction(action);
+		}
 
 		if (is_keyboard_action && IsMoochAction(action) &&
 			IsRemoteFlyControlled())
 		{
 			return false;
+		}
+
+		// Fly_Scan fire: 0x5B6B0C queries kFireActionId during the Fly's own
+		// tick, outside BeginRemoteInput/EndRemoteInput.  Restrict this override
+		// to that exact native call site; a global fire override would also make
+		// the local P1/Darwin logic see the remote Fly's held fire.
+		if (!is_remote_thread && is_keyboard_action &&
+			action == kFireActionId && IsRemoteFlyControlled() &&
+			caller_return_address == kFlyScanFireActionQueryReturn)
+		{
+			return GetRemoteFlyFireAction();
 		}
 
 		const bool result = m_original_input_action_query(input_manager, device,
@@ -2237,7 +2370,8 @@ namespace coop
 	}
 
 	bool __fastcall CoopNetGame::HandleInputPressedQuery(void* input_manager,
-		void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags)
+		void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags,
+		std::uintptr_t caller_return_address)
 	{
 		if (!m_original_input_pressed_query)
 			return false;
@@ -2261,7 +2395,27 @@ namespace coop
 		if (is_keyboard_action && IsMoochAction(action) &&
 			IsRemoteFlyControlled())
 		{
-			return false;
+			// Block remote Darwin from entering Mooch, but let the shared fly's
+			// exact native exit query consume this machine's local Q.
+			if (caller_return_address != kFlyExitActionQueryReturn)
+				return false;
+			const bool result = m_original_input_pressed_query(input_manager, device,
+				action, flags);
+			if (result)
+			{
+				AcquireSRWLockExclusive(&m_input_lock);
+				m_remote_fly_forced_exit = true;
+				m_remote_input.fly_controlled = 0;
+				m_remote_input.fly_transform_sequence = 0;
+				m_remote_input.fly_raw_down = 0;
+				m_active_remote_input.fly_controlled = 0;
+				m_active_remote_input.fly_transform_sequence = 0;
+				m_active_remote_input.fly_raw_down = 0;
+				ReleaseSRWLockExclusive(&m_input_lock);
+				CoopRuntime::Instance().Log(
+					"[fly] local Q forced exit from remotely owned Mooch\r\n");
+			}
+			return result;
 		}
 
 		const bool result = m_original_input_pressed_query(input_manager, device,
@@ -3188,6 +3342,54 @@ namespace coop
 		return true;
 	}
 
+	bool CoopNetGame::InstallLoadGameHook()
+	{
+		if (m_load_game_hooked)
+			return true;
+		BYTE* const call = reinterpret_cast<BYTE*>(gforce::kHostLoadGameCall);
+		if (memcmp(call, gforce::kExpectedHostLoadGameCall,
+			sizeof(gforce::kExpectedHostLoadGameCall)) != 0)
+		{
+			CoopRuntime::Instance().Log(
+				"[save-sync] host Load Game call mismatch at 0x%08X\r\n",
+				static_cast<unsigned>(gforce::kHostLoadGameCall));
+			return false;
+		}
+		memcpy(m_original_load_game_call_bytes, call,
+			sizeof(m_original_load_game_call_bytes));
+		BYTE replacement[5] = { 0xE8, 0, 0, 0, 0 };
+		const intptr_t displacement = reinterpret_cast<BYTE*>(&HookHostLoadGame) -
+			(call + sizeof(replacement));
+		const int32_t relative = static_cast<int32_t>(displacement);
+		memcpy(replacement + 1, &relative, sizeof(relative));
+		if (!MemoryPatch::Write(call, replacement, sizeof(replacement)))
+			return false;
+		m_load_game_hooked = true;
+		CoopRuntime::Instance().Log(
+			"[save-sync] host Load Game call hooked at 0x%08X\r\n",
+			static_cast<unsigned>(gforce::kHostLoadGameCall));
+		return true;
+	}
+
+	void CoopNetGame::RemoveLoadGameHook()
+	{
+		if (!m_load_game_hooked)
+			return;
+		BYTE* const call = reinterpret_cast<BYTE*>(gforce::kHostLoadGameCall);
+		if (memcmp(call, m_original_load_game_call_bytes,
+			sizeof(m_original_load_game_call_bytes)) != 0)
+		{
+			CoopRuntime::Instance().Log(
+				"[save-sync] Load Game call changed; leaving it untouched\r\n");
+		}
+		else
+		{
+			MemoryPatch::Write(call, m_original_load_game_call_bytes,
+				sizeof(m_original_load_game_call_bytes));
+		}
+		m_load_game_hooked = false;
+	}
+
 	void CoopNetGame::RemoveTriggerEventHook()
 	{
 		if (!m_trigger_event_hooked)
@@ -3286,6 +3488,9 @@ namespace coop
 					CoopRuntime::Instance().Log(
 						"[world-sync] trigger hooks unavailable; NPC/monster registration is disabled\r\n");
 				}
+				if (!InstallLoadGameHook())
+					CoopRuntime::Instance().Log(
+						"[save-sync] host Load Game synchronization unavailable\r\n");
 				return input_hooks;
 			}
 		}
@@ -3296,6 +3501,7 @@ namespace coop
 
 	void CoopNetGame::RemoveInputHook()
 	{
+		RemoveLoadGameHook();
 		RemoveHealthComponentSubtractHook();
 		RemoveHealthComponentAddHook();
 		RemoveHealthComponentSetHook();

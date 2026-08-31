@@ -5,6 +5,7 @@
 #include "gforce_constants.h"
 #include "world_sync.h"
 #include "ServerClient/MServer.h"
+#include "ServerClient/MServerONLINE.h"
 #include "ServerClient/MTypes.h"
 
 #include <string.h>
@@ -23,6 +24,8 @@ namespace
 		std::uint32_t save_size;
 		std::uint32_t checksum;
 	};
+	static_assert(sizeof(CoopSaveSlotPacketHeader) == 36,
+		"save packet header must remain a 36-byte wire record");
 
 	std::uint32_t SaveChecksum(const BYTE* data, std::size_t size)
 	{
@@ -213,6 +216,44 @@ namespace
 		}
 		return true;
 	}
+
+	bool SendSaveToServer(CSteamOfflineSocketServer* server,
+		std::int32_t connection, std::uint32_t slot)
+	{
+		if (!server || !server->IsSteamSocketOpen() ||
+			slot >= coop::gforce::kVisibleSaveSlotCount)
+			return false;
+
+		std::vector<BYTE> save;
+		if (!ReadWholeSave(slot, save))
+			return false;
+
+		CoopSaveSlotPacketHeader header = {};
+		header.packet.m_PacketID = kCoopPacketSaveSlot;
+		header.packet.m_RealSize = static_cast<std::uint32_t>(
+			sizeof(header) - sizeof(PacketHeader) + save.size());
+		header.packet.m_SizeOne = header.packet.m_RealSize;
+		header.slot = slot;
+		header.version = kSavePacketVersion;
+		header.save_size = static_cast<std::uint32_t>(save.size());
+		header.checksum = SaveChecksum(save.data(), save.size());
+
+		std::vector<BYTE> packet(sizeof(header) + save.size());
+		memcpy(packet.data(), &header, sizeof(header));
+		memcpy(packet.data() + sizeof(header), save.data(), save.size());
+		if (!server->SendRaw(connection, packet.data(),
+			static_cast<std::uint32_t>(packet.size()),
+			k_nSteamNetworkingSend_Reliable))
+		{
+			coop::CoopRuntime::Instance().Log(
+				"[save-sync] failed to send host DATA%u\r\n", slot);
+			return false;
+		}
+		coop::CoopRuntime::Instance().Log(
+			"[save-sync] sent host DATA%u (slot %u, %u bytes)\r\n",
+			slot, slot, header.save_size);
+		return true;
+	}
 }
 
 namespace coop
@@ -239,6 +280,28 @@ namespace coop
 		}
 	}
 
+	void SaveSync::OnHostLoadGame(std::uint32_t slot)
+	{
+		if (!CoopNetGame::Instance().IsHost() ||
+			!CoopNetGame::Instance().HasRemotePeer() ||
+			slot >= gforce::kVisibleSaveSlotCount)
+			return;
+
+		CSteamOfflineSocketServer* servers[] = { SteamOServer, SteamSServer };
+		for (CSteamOfflineSocketServer* server : servers)
+		{
+			if (!server || !server->IsSteamSocketOpen())
+				continue;
+			for (const HSteamNetConnection connection : server->GetPlayers())
+				SendSaveToServer(server, connection, slot);
+		}
+
+		// The native loader invalidates every world pointer. Clear both the host
+		// registry and Player2 cached native objects before it starts destroying
+		// the current level.
+		WorldSync::Instance().ResetForWorldLoad();
+	}
+
 	void SaveSync::SendHostJoinSave(CSteamOfflineSocketServer* server,
 		std::int32_t connection)
 	{
@@ -258,19 +321,18 @@ namespace coop
 		if (!ReadWholeSave(slot, save))
 			return;
 
-		std::vector<BYTE> packet(sizeof(CoopSaveSlotPacketHeader) + save.size());
-		CoopSaveSlotPacketHeader* header =
-			reinterpret_cast<CoopSaveSlotPacketHeader*>(packet.data());
-		ZeroMemory(header, sizeof(*header));
-		header->packet.m_PacketID = kCoopPacketSaveSlot;
-		header->packet.m_RealSize = static_cast<std::uint32_t>(
-			packet.size() - sizeof(PacketHeader));
-		header->packet.m_SizeOne = header->packet.m_RealSize;
-		header->version = kSavePacketVersion;
-		header->slot = slot;
-		header->save_size = static_cast<std::uint32_t>(save.size());
-		header->checksum = SaveChecksum(save.data(), save.size());
-		memcpy(packet.data() + sizeof(*header), save.data(), save.size());
+		CoopSaveSlotPacketHeader header = {};
+		header.packet.m_PacketID = kCoopPacketSaveSlot;
+		header.packet.m_RealSize = static_cast<std::uint32_t>(
+		sizeof(header) - sizeof(PacketHeader) + save.size());
+		header.packet.m_SizeOne = header.packet.m_RealSize;
+		header.version = kSavePacketVersion;
+		header.slot = slot;
+		header.save_size = static_cast<std::uint32_t>(save.size());
+		header.checksum = SaveChecksum(save.data(), save.size());
+		std::vector<BYTE> packet(sizeof(header) + save.size());
+		memcpy(packet.data(), &header, sizeof(header));
+		memcpy(packet.data() + sizeof(header), save.data(), save.size());
 
 		if (server->SendRaw(connection, packet.data(),
 			static_cast<std::uint32_t>(packet.size()),
@@ -278,7 +340,7 @@ namespace coop
 		{
 			CoopRuntime::Instance().Log(
 				"[save-sync] sent host DATA%u (slot %u, %u bytes)\r\n", slot, slot,
-				header->save_size);
+				header.save_size);
 		}
 		else
 		{
@@ -291,56 +353,56 @@ namespace coop
 	{
 		if (!data || size < sizeof(CoopSaveSlotPacketHeader))
 			return false;
-		const CoopSaveSlotPacketHeader* header =
-			static_cast<const CoopSaveSlotPacketHeader*>(data);
-		if (header->packet.m_PacketID != kCoopPacketSaveSlot)
+		CoopSaveSlotPacketHeader header = {};
+		memcpy(&header, data, sizeof(header));
+		if (header.packet.m_PacketID != kCoopPacketSaveSlot)
 			return false;
 
 		if (!CoopNetGame::Instance().IsClient() ||
 			CoopNetGame::Instance().IsHost() ||
-			header->version != kSavePacketVersion ||
-			header->slot >= gforce::kVisibleSaveSlotCount ||
-			header->save_size == 0 || header->save_size > kMaxSaveBytes ||
-			header->packet.Size() != size ||
-			size != sizeof(*header) + header->save_size)
+			header.version != kSavePacketVersion ||
+			header.slot >= gforce::kVisibleSaveSlotCount ||
+			header.save_size == 0 || header.save_size > kMaxSaveBytes ||
+			header.packet.Size() != size ||
+			size != sizeof(header) + header.save_size)
 		{
 			CoopRuntime::Instance().Log("[save-sync] rejected invalid host save packet\r\n");
 			return true;
 		}
 
-		const BYTE* save = reinterpret_cast<const BYTE*>(header + 1);
-		if (SaveChecksum(save, header->save_size) != header->checksum)
+		const BYTE* save = static_cast<const BYTE*>(data) + sizeof(header);
+		if (SaveChecksum(save, header.save_size) != header.checksum)
 		{
 			CoopRuntime::Instance().Log(
-				"[save-sync] rejected host DATA%u checksum\r\n", header->slot);
+				"[save-sync] rejected host DATA%u checksum\r\n", header.slot);
 			return true;
 		}
-		if (WriteWholeJoinSave(header->slot, save, header->save_size))
+		if (WriteWholeJoinSave(header.slot, save, header.save_size))
 		{
 			InterlockedExchange(&m_pending_slot,
-				static_cast<long>(header->slot));
+				static_cast<long>(header.slot));
 			InterlockedExchange(&m_pending_load, 1);
 			CoopRuntime::Instance().Log(
 				"[save-sync] received host DATA%u (%u bytes); native load queued\r\n",
-				header->slot, header->save_size);
+				header.slot, header.save_size);
 		}
 		return true;
 	}
 
-	void SaveSync::OnMainFrame()
+	bool SaveSync::OnMainFrame()
 	{
 		if (InterlockedExchange(&m_pending_load, 0) == 0)
-			return;
+			return false;
 
 		if (!CoopNetGame::Instance().IsClient() || CoopNetGame::Instance().IsHost())
-			return;
+			return false;
 
 		const long pending_slot = InterlockedExchange(&m_pending_slot, -1);
 		if (pending_slot < 0 || static_cast<std::uint32_t>(pending_slot) >=
 			gforce::kVisibleSaveSlotCount || !VerifyNativeLoadPath())
 		{
 			CoopRuntime::Instance().Log("[save-sync] queued host slot is invalid\r\n");
-			return;
+			return false;
 		}
 
 		typedef bool(__thiscall* BeginNativeLoadFn)(void*, std::uint32_t);
@@ -350,8 +412,18 @@ namespace coop
 		// All local entity pointers become invalid during the stock load.  Clear the
 		// client match table before the loader starts constructing the next world.
 		WorldSync::Instance().ResetForWorldLoad();
-		if (begin_native_load(load_save_manager,
-			static_cast<std::uint32_t>(pending_slot)))
+		bool loaded = false;
+		__try
+		{
+			loaded = begin_native_load(load_save_manager,
+				static_cast<std::uint32_t>(pending_slot));
+		}
+		__except (CoopRuntime::Instance().LogException(
+			GetExceptionInformation(), "client-native-load"))
+		{
+			loaded = false;
+		}
+		if (loaded)
 		{
 			CoopRuntime::Instance().Log(
 				"[save-sync] entering stock Load Game for DATA%u (slot %u)\r\n",
@@ -364,5 +436,6 @@ namespace coop
 				"[save-sync] stock Load Game rejected DATA%u\r\n",
 				static_cast<unsigned>(pending_slot));
 		}
+		return loaded;
 	}
 }
