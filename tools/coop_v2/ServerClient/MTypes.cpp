@@ -18,8 +18,7 @@ void Msg(const char* format, ...)
 
 	OutputDebugStringA(buffer);
 	OutputDebugStringA("\n");
-	coop::CoopRuntime::Instance().Log("[pid=%lu] %s\r\n",
-		GetCurrentProcessId(), buffer);
+	coop::CoopRuntime::Instance().Log("%s\r\n", buffer);
 }
 
 bool ParseUnsignedDecimal(const char*& cursor, std::uint32_t maximum, std::uint32_t& value)

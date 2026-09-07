@@ -1,8 +1,17 @@
 # coop_v2
 
 Единственная актуальная реализация local co-op для проверенного retail
-`GForce.exe`. Полный статус и подтверждённые адреса находятся в
-`E:\G-Force\g_force\README.md`.
+`GForce.exe`. Canonical-статус, структура и границы состояний — в
+`IMPLEMENTATION.md`; адреса, ABI и confidence — в `../../re_cache/RE_CATALOG.md`.
+Корневой README — только обзор проекта.
+
+## Canonical docs for agents
+
+Сначала читать `IMPLEMENTATION.md`: это компактная карта модулей, ownership и
+границ состояний. Затем читать `../../re_cache/RE_CATALOG.md`: это единственный
+каталог retail-регионов, адресов и статусов `approved` / `guess` / `not-tested`.
+Этот README сохраняет подробности, исторические объяснения и рецепты; он не
+должен использоваться как повод повторно угадывать уже задокументированный ABI.
 
 Перед поиском новых функций прочитать в основном README раздел
 «Как находились адреса и как продолжать реверс». Там зафиксированы правила для
@@ -15,31 +24,38 @@ IDA, `vftable`, x86 calling convention, rel32, field offsets и expected bytes.
 - `coop_runtime.h/.cpp` — `CoopRuntime`, `CoopConfig`, лог и проверка версии EXE;
   `MemoryPatch` отвечает за безопасную запись патчей в память.
 - `gforce_constants.h` — адреса, offset, ID и проверочные байты retail EXE.
-- `player2.h/.cpp` — класс `Player2Module`: GPig factory, спавн P2 по `F6`, оружие,
-  маршрутизация input-device и возврат цели камеры к P1.
+- `player2.h/.cpp` — slot/spawn/controller routing для P1, remote P2 и Mooch:
+  GPig factory, сетевой и debug-спавн P2, оружие и input scopes.
+- `shared_camera.h/.cpp` — единственный shared retail camera handler: native
+  refresh, безопасный snapshot/restore aim state и local yaw. Он не знает про
+  P2 или transport, поэтому будущий P3 не должен дублировать camera-код.
 - `ServerClient/` — самостоятельный сетевой слой без зависимостей от X-Ray:
   standalone GNS, Steam P2P, клиент, сервер и `CSteamManager`.
+- `menu_connect_hook.h/.cpp` — native-добавка к `XHudMenuMain`: после
+  штатного `Credits` создаёт строку `Connect by IP` через retail factory и
+  container. Нажатие ставит тот же запрос `CSteamManager`, что и `F8`; здесь
+  нет GDI-оверлея, отдельного сокета или нового сетевого протокола.
 - `window_hook.h/.cpp` — класс `WindowHook` и оконный режим через D3D9.
 - `winmm_proxy.h/.cpp/.def` — класс `WinmmProxy`, ABI-прокси системного WinMM и
   загрузка `coop_dll.dll`. Кроме функций самой игры, прокси экспортирует mixer,
   wave-in и wave-out API, которые импортирует Steam `steamclient.dll`.
 - `coop.ini` — устройство P2 и смещение спавна.
 - `[window]` в `coop.ini` — экспериментальное перетягиваемое D3D9-окно 1280x720 для
-  будущих тестов host/client. При `keep_active_in_background=1` (по умолчанию) DLL
-  сохраняет известный EXE-флаг активности после `WM_ACTIVATE`/`WM_KILLFOCUS` и перед
-  D3D9 `Present`; `GetForegroundWindow` и `IsIconic` остаются дополнительным узким
-  перехватом. Неактивное окно должно продолжать симуляцию и рендер, но его клавиатурный
-  ввод не подменяется.
+  будущих тестов host/client. Focus/minimize pause постоянно обходится независимо от
+  `coop.ini`: DLL сохраняет известный EXE-флаг активности после
+  `WM_ACTIVATE`/`WM_KILLFOCUS` и перед D3D9 `Present`; `GetForegroundWindow` и
+  `IsIconic` остаются дополнительным узким перехватом. Неактивное окно должно
+  продолжать симуляцию и рендер, но его клавиатурный ввод не подменяется.
   Оконный режим отключается `experimental_windowed=0`.
 - `GForceCoop.sln` — Visual Studio solution для ручной разработки: `coop_dll`,
-  `winmm_proxy` и `proxy_smoke`, только целевая платформа Win32.
-- `F5` — локальный debug-spawn: берёт случайный уже загруженный шаблон
-  monster/appliance из штатного списка уровня (если таких нет — generic NPC),
-  клонирует его native trigger-путём и создаёт у P1. Это проверка фабрики, а
-  не сетевой NPC: объект пока существует только на той машине, где нажали F5.
+  `winmm_proxy`, только целевая платформа Win32. `proxy_smoke` в текущем
+  исходном дереве и solution отсутствует; упоминания о нём относятся к старому
+  smoke-test эксперименту.
+- `debug_actions.h/.cpp` — единственная точка временных F1–F7 и F9 действий. Она
+  исполняется только после штатного тика P1 на game thread, а не из сетевого worker.
 - `build.bat` — сборка x86 и подготовка runtime DLL.
-- `dump_info.cpp`, `proxy_smoke.cpp` — проверочные утилиты; `proxy_smoke` загружает
-  локальный WinMM-прокси и выполняет настоящий `SteamAPI_Init` для AppID `480`.
+- `dump_info.cpp` — вспомогательный исходник для анализа. Старый
+  `proxy_smoke.cpp` не является частью текущего дерева и не собирается.
 - Локальные дизассемблеры, извлечённые игровые данные, базы IDA и результаты сборки
   намеренно не входят в репозиторий. Исходники используют только проверенные
   константы из `gforce_constants.h`.
@@ -48,23 +64,177 @@ IDA, `vftable`, x86 calling convention, rel32, field offsets и expected bytes.
 переменным. В `player2.cpp` свободным оставлен только x86 `__declspec(naked)`
 trampoline и его C-bridge: MSVC запрещает `naked` для методов класса.
 
+## Подключение по IP из главного меню
+
+`MenuConnectHook` включается только после fingerprint-проверки exact retail EXE.
+Он пропускает весь stock `XHudMenuMain::BuildMainMenu`, затем перехватывает ровно
+тот `AddChild`, который добавляет `Credits`: сначала вызывает исходный `AddChild`,
+после чего один раз строит следующую native-строку через найденные factory,
+callback и container ABI.
+
+Для подписи используется project-private `XAText` ID; hook resolver-а возвращает
+`Connect by IP` только для него и передаёт все retail ID исходному resolver-у.
+Callback не открывает свой Win32/GDI UI и не трогает transport: он только вызывает
+`CSteamManager::RequestIpConnectionPrompt()`. Поэтому `F8` остаётся равнозначным
+fallback-путём к тому же IP-диалогу.
+
+Статически проверены entry bytes и ABI; видимость строки и клик в живом retail
+меню пока **not-tested**. При несовпадении любого fingerprint hook не ставится,
+меню остаётся stock, а `F8` доступен.
+
+## Правило доступа к памяти retail EXE
+
+Raw offsets являются необходимой частью ABI-границы с игрой, но не должны
+расползаться по feature-коду. Допустимый слой для `BYTE* + offset`, `void*`,
+SEH и native function calls — `retail/`, где адреса и частичные layout-ы
+собраны в typed views. Игровые подсистемы должны пользоваться
+`EntityView`, `EntityRegistryView`, `ControllerView`, `ModeView`, `MotorSystemView`, `MotorTaskView`,
+`SpawnContextView`, `CameraHandlerView`, `CameraStateView`, `InputManagerView`,
+`WeaponAmmoItemView`, `AmmoPoolEntryView`, `TriggerView`, `EntitySlotRepository`
+и `NativeGameApi`/`TryRead`/`TryWrite`.
+
+Для новых игровых ID и счётчиков используется `std::uint32_t` /
+`std::int32_t`, для условий — обычный `bool`; custom-алиасы вроде `NBool` или
+`NDword` не вводятся. Нулевой указатель в C++-коде — `nullptr`, не `NULL`.
+`BYTE` остаётся только для точных byte-блоков патчей и DirectInput, а `DWORD` —
+на границе Win32 (tick/API): там это часть чужого ABI, а не стиль модели игры.
+
+В частности, P2 RDV/ABR factory больше не раскрывает в `player2.cpp` вручную
+`handler + 0x4C0`, state table или task bytes: известная часть контракта живёт
+в `retail/`. Это не делает ABR синхронизацию подтверждённой — для неё всё ещё
+нужен live test двух процессов.
+
+Проверка ABR стоит раньше `RemoteSnapshotInputScope` в P2 controller hook: если
+в ABR находится P1 или P2, выполняется только native vehicle tick. Обычный
+P2-путь не получает input, camera, weapon или root-transform ownership машины.
+
+Обход live NPC/monster registry также больше не раскрывает узлы `BYTE*` в
+`world_sync.cpp` или сети: `EntityRegistryView` читает только подтверждённые
+`next`/`entity` и берёт `next` до callback-а. Лимит 512 — предохранитель от
+повреждённого или циклического списка, а не предположение о числе сущностей.
+
+То же относится к единственному shared camera handler: target, aim snapshot и
+follow-turn вынесены в `CameraHandlerView`/`CameraStateView`. P2 spawn, weapon,
+RDV task и controller state dispatch идут через `NativeGameApi`/`ControllerView`,
+а не из feature-логики через адресные casts. Только hook/trampoline plumbing
+остаётся низкоуровневой границей с проверенными expected bytes.
+
+Cached aim ray (`origin` + `direction`) и native Fly control flag тоже имеют
+свои узкие views: сетевой fire-handler не копирует `BYTE*` вручную, а Mooch
+меняет только подтверждённый byte активного Fly state через `HandlerView`.
+
+Например, выражение
+`reinterpret_cast<BYTE*>(entity) + kEntityPositionOffset` допустимо внутри
+реализации retail view, но в `player2.cpp`, `world_sync.cpp` или сетевом коде
+считается долгом рефакторинга. Это не означает, что offsets нужно убрать:
+нужно централизовать их, проверять доступ и возвращать typed values.
+
+`EntitySlot` описывает шесть ячеек native-таблицы, а не готовый universal player
+pool. IDA подтверждает cleanup для `0..5`, но два retail selector-а сознательно
+перебирают только P1–P3 (`1..3`); `Mooch` занимает `4`, назначение `5` не
+установлено. Поэтому P3 — отдельная будущая задача, а P4/P5 нельзя включать
+расширением цикла: сначала нужны factory, destruction, input и camera ownership
+для каждого нового controllable slot.
+
+`EntitySlotBinding` лишь разово связывает slot с текущими entity/handler/controller
+указателями. Он не даёт P3 права на tick, input или camera: такие права должны
+появиться отдельно после live-проверки native lifecycle.
+
+## P2: ledge/fall и outer DeathMode recovery — on-foot only, not live-tested
+
+Проблема не лечится поддельным нажатием Shift/Space и не лечится отключением
+физики. Retail `XGPigLedgeMode` сначала делает собственный contact query и
+выбирает native state; отключить его означало бы потерять нормальные прыжки,
+падение и collision.
+
+До замены remote snapshot сетевой вход отбрасывает `NaN`/`Inf` в P1/Fly
+transform, analog axes, aim ray и valid camera yaw: предыдущий конечный snapshot
+остаётся рабочим. Повторная проверка перед on-foot transform write чинит уже
+неконечный root P2 от свежей конечной цели. Это containment, не отключение physics;
+логи `[net-input-reject]`, `[net-transform-recovery]` и non-finite
+`[p2-recovery]` нужны для последующей проверки.
+
+Обычный remote P2 получает плавную transform-коррекцию после своего native
+controller tick. Затем retail scheduler `0x0043C9E0` ещё раз применяет motor
+delta и может утащить P2 в старую ledge/fall позицию. Поэтому после штатного
+scheduler pass co-op проверяет только on-foot P2:
+
+- при расхождении `>= 2.5` units записывает свежий сетевой transform сразу;
+- при остатке `>= 0.75` units делает один safety-snap не чаще раза в 2 секунды;
+- при `>= 3.0` units и только вне Mooch ставит один native logical edge
+  `0x1000000D` для следующего P2 input scope;
+- оставляет native ledge/fall state machine и физику включёнными;
+- полностью пропускает ABR/RDV: по packet mode, controller P2 и controller P1.
+
+`0x1000000D` — подтверждённый retail pressed-edge route из второго namespace
+`0x4008000A` к inner `Ledge → Inactive`; это **не** имя физической клавиши.
+При сильном расхождении co-op не вызывает Ledge напрямую и не подделывает
+Shift/Space: он выдаёт этот один logical edge только в следующем scoped P2 query.
+`[p2-ledge-detach] queued ...` означает, что он поставлен, `served ...` — что
+его увидел native query; визуальный выход с уступа всё ещё требует live-проверки.
+
+Строка `[p2-recovery]` в `gforce_coop.log` означает, что recovery действительно
+сработал. До двухпроцессного прогона это только статически обоснованный маршрут,
+а не заявленное исправление runtime-бага.
+
+Отдельно существует outer `XGPigDeathMode`: это не Ledge substate. Раньше P2 в
+нём целиком пропускал native update, чтобы не запускать локальный checkpoint
+respawn, но из-за этого мог навсегда остаться в hide/death pose. Теперь, только
+если P2 распознан по проверенной DeathMode vtable и peer прислал ненулевой
+`Default` snapshot с sequence **новее snapshot на входе P2 в DeathMode**,
+вызывается штатный dispatcher `SelectMode(Default)`. Он делает native Exit/Enter
+и повторно настраивает P2 Default conflict mask. Не трогаются Ledge, collision,
+падение, physics и ABR; stale packet либо peer не в `Default` оставляют
+ожидаемую строку `[p2-death-guard]`. `[p2-death-recovery]`
+— необходимое runtime-подтверждение; пока это **not-tested**.
+Этот guard работает только при реальном remote peer: local P2 от F5 не ждёт
+несуществующий сетевой snapshot и проходит свой stock DeathMode flow.
+
 ## Тестовый сценарий
 
 1. Агент проверяет, что `GForce.exe` закрыт, и устанавливает сборку.
 2. Пользователь запускает игру и проходит вступительную катсцену.
-3. Пользователь нажимает `F6` один раз.
+3. Пользователь нажимает `F5` один раз.
 4. Проверяются: P2 стоит на полу, камера остаётся за P1, управление P2 работает.
-5. Переключить фокус на второе окно: первое не должно замереть или перестать рисовать.
-6. Анализируется только хвост `E:\G-Force\gforce_coop.log`; при включённом фоне там
-   должна быть строка `background simulation and rendering stay active`.
+5. Переключить фокус на второе окно или свернуть первое: оба процесса не должны
+   замереть, терять simulation tick или переставать рисовать.
+6. Анализируется только хвост `E:\G-Force\gforce_coop.log`: при загрузке ожидается
+   `[window] co-op focus-pause hook installed ...`. F7 для включения больше не нужен:
+   он только повторно проверяет и печатает состояние уже постоянного bypass.
+
+### Критичные проверки двух процессов
+
+На обеих сторонах должна быть одна свежая DLL-ревизия. В этой ревизии
+`WorldObjectEventPacket` имеет 52 байта и добавляет route-поле; смешивание со
+старой DLL недопустимо (так же, как старые 332-byte версии `CoopInput`).
+
+| Проверка | Действие | Подтверждение в логах / игре |
+| --- | --- | --- |
+| P2 ledge/fall | Увести удалённого P2 на уступ или в падение и довести рассинхрон до ~3 м. | Сначала `[p2-ledge-detach] queued logical action=0x1000000D ...`, затем `served logical action=...`; P2 должен штатно отпустить уступ. `[p2-recovery]` остаётся только у on-foot P2; fake Shift/Space и отключения physics нет. `[net-input-reject]` означает, что плохой snapshot сохранён не был. |
+| P2 пропал / DeathMode | Дать удалённому P2 попасть в outer DeathMode, пока peer P1 уже снова в `Default`. | После одного более нового packet: `[p2-death-recovery] ... seq=N entry_seq=M`; P2 выходит из hide/death pose. Пока peer не в `Default`, `[p2-death-guard]` ожидаем и не означает crash. |
+| Main-menu Connect by IP | В exact retail EXE открыть главное меню и нажать строку сразу после `Credits`. | Пока **not-tested**: сначала ожидаются `[menu-init] ... installed`, затем по одному `[menu] BuildMainMenu observed`, `Credits AddChild seam observed`, `native Connect by IP row added` и `Connect by IP label resolved`. Клик должен дать тот же IP-диалог, что `F8`, и `F8 request queued`. Если ABI не совпал, лог называет конкретный адрес, строки не будет, но `F8` должен остаться. |
+| F1 local Mooch laser | В одном foreground-процессе, без клиента и без входа в Q, поставить Муху в кадр и один раз нажать F1. | Ожидается `[debug-F1] native Mooch dual-laser raw button fired target=(...)`. F1 подаёт тот же exact raw edge в shadow `Fly_Active::Update`, но временно ставит origin XGamePad в центр Мухи. После прохода возвращаются камера, включая Fly request/apply window `+0x91C..+0x9B7`, HUD/ownership и сеть не меняются; не должно быть рывка P1-камеры. При несовпадении профиля логируется direct visual fallback. Боевой live-result всё ещё **not-tested**. |
+| Лазер и поворот Мухи | Local owner Мухи резко поворачивает её и нажимает штатную атаку, пока receiver остаётся за обычным P1 или в Q. | Owner: `[fly-laser] queued ... post_tick_fly_seq=N`; receiver применяет packet только после transform `N`, затем пишет **полный** `fly_rotation` без подмены одного компонента `camera_yaw` и запускает native `Fly_Active::Update` с лучом из центра Мухи. Режим, камера и HUD receiver не выбираются; direct pulse остаётся fallback. Визуальный/боевой live-result ещё **not-tested**. |
+| P2/P3 scanner / HUD | Дать оружие со сканированием remote P2 (или существующему P3), затем проверить P1. | Открытая проблема. Экспериментальный P2/P3 scanner guard удалён: он не исправил общий зелёный HUD. Не считать scanner синхронизированным или изолированным, пока не найден и не проверен настоящий presentation route. |
+| Смерть Мухи | Убить/respawn Mooch, пока peer подключён. | Owner публикует `local Fly_Deactivated ... zero-owner exit`; peer получает `remote ownership 1 -> 0`. Если receiver локально пытается войти в `Fly_Deactivated`, пока peer ещё присылает живую Муху, ожидается `[fly-lifecycle ... suppressed receiver Fly_Deactivated ...]`; после zero-owner packet этот guard больше не действует и stock respawn разрешён. Это пока **not-tested** вживую. |
+| ABR/RDV | Войти в ABR через F6 при P2, затем подвигаться/повернуть машину. | Нет `[p2-recovery]` и нет обычной P2 camera/weapon/root-transform коррекции в ABR. Реальный vehicle turn остаётся отдельным **not-tested** маршрутом. |
+| F2/F3/F4 | На sandbox-level нажать кнопки у подходящих trigger. | Только соответствующие `[debug-F2]`, `[debug-F3]`, `[debug-F4]`; F3 не должен придумывать event code, F4 работает лишь для verified ComputerBox. |
+| Реальная активация trigger | Игроком или Мухой реально активировать объект/кнопку, в том числе в одиночной игре. | Сразу после native dispatcher ожидается `[trigger-activation] source=game|fly-local|fly-shadow ... family=... subtype=... definition=... pos=(...)`. Это факт вызова retail event, а не угадывание назначения; `result` — возврат dispatcher. |
+| Дверь/панель через карту | На двух процессах с одной свежей DLL игроком или Мухой активировать уже наблюдённую зелёную/зелёно-красную дверь. | Source: один или несколько `[world-object] queued seq=... route=1|2` в порядке native chain. Peer: те же `peer received`, затем `native route result route=...` и `applied`; дверь действительно меняет состояние. Это уже **observed live** для проверенной двери. `direct forwarder skipped noncanonical` не маскировать — приложить строку. `0x41080010` сам по себе не «open door». |
+| Вентиляция / динамические мобы | Сначала пройти `XTrigger_MO_Blender`/`Mouse` на host, затем свежим запуском — на client; второй процесс видит место. | На **обоих** окнах должна быть одна свежая DLL: `WorldSpawn` fixed 76 bytes. Client-run: `[world-entity-trigger] client request queued ... native dispatcher continues`, затем `[world-spawn-local] client allowed native spawn ... awaiting host id`, `[world-id] client candidate ... sig=...`; host создаёт canonical entity и посылает `WorldSpawn`; client получает `[world-spawn] ...` и связывает тот же local entity через `[world-link] host id=... match=signature`. Route 3 не запускает dispatcher повторно. Host-run: когда client не активировал trigger сам, остаётся fallback `client invoking native trigger ...` для создания его реплики. Для одного mob id не должно быть `client missing ...` или повторного local spawn. |
+| Гонка spawn/kill NPC | На host вызвать mob-trigger и сразу убить созданного моба до того, как client увидит его. | Client может получить HP раньше entity: это допустимо. После `[world-link] client id=...` queued `WorldDamage` применяет последний host HP; убитый моб не остаётся живым. Client не должен отправлять HP обратно: `WorldDamage` — только host → client. Нужен свежий запуск уровня: старые уже созданные retail entity намеренно не удаляются сырым указателем. |
+| F9 catalog | После того как уровень загрузился, нажать F9 и приложить блок от `[debug-F9] trigger catalog begin` до `end`. | Логируется каждый ещё живой зарегистрированный factory-trigger с точной position, distance от P1, family/subtype/definition, flags и последним реально увиденным event. `approved` означает только exact ComputerBox; `observed`, `guess` и `unknown` — кандидаты для исследования, а не разрешение их активировать. |
 
 Никогда не возвращать автоматический спавн во время катсцены и не смешивать эту
 сборку со старым `coop_test`.
 
 ## Visual Studio
 
-Открыть `GForceCoop.sln` и собирать `Release | Win32`. Результаты попадают в
-`build\Release`; для Debug — в `build\Debug`.
+Открыть `GForceCoop.sln` в Visual Studio 2022 и собирать `Release | Win32`.
+Проект закреплён на `PlatformToolset v143`; результаты попадают в
+`build\Release`; для Debug — в `build\Debug`. `build.bat` сначала ищет VS2022
+и принимает явный путь через `GFORCE_VCVARSALL`; более новый установленный
+компилятор — лишь локальный fallback.
 
 Проект `coop_dll` использует локально установленный x86 SDK Steamworks и
 GameNetworkingSockets в папке `SteamWorksSDK` (эта папка не публикуется). Путь
@@ -73,18 +243,170 @@ Runtime-путь задаётся свойством `GnsRuntimeRoot`. В лин
 `GameNetworkingSockets.lib` и `steam_api.lib`; runtime DLL автоматически копируются
 в каталог сборки.
 
-Для запуска к игре понадобятся совместимые Win32 runtime-файлы из
-`C:\GamesAndSource\SHOC\xr_build\bin\Win32\Release`:
+Для запуска к игре понадобятся совместимые Win32 runtime-файлы. По умолчанию
+`build.bat` берёт их из `C:\GamesAndSource\SHOC\xr_build\bin\Win32\Release`,
+но путь следует переопределять переменной `GFORCE_RUNTIME_ROOT`:
 `GameNetworkingSockets.dll`, `steam_api.dll`, `libprotobuf.dll`,
 `libcrypto-3.dll` и `abseil_dll.dll`.
 
 `.lib` нужны только при сборке и уже находятся в `SteamWorksSDK`. В каталог игры
 они не копируются. Runtime `.dll`, напротив, должны лежать рядом с `GForce.exe`.
 
+`build.bat` вызывает `GForceCoop.sln` через MSBuild, поэтому `.vcxproj` —
+единственный список production `.cpp`; результат лежит в `build\Release`.
+`build.bat` не перезаписывает запущенную игру. Для явной установки двух собранных
+мод-DLL в закрытую копию игры надо передать отдельный target; `coop.ini` при этом
+сохраняется как пользовательская настройка:
+
+```bat
+set GFORCE_DEPLOY_ROOT=E:\G-Force
+build.bat
+```
+
+Если `GFORCE_RUNTIME_ROOT` не задан, тот же `GFORCE_DEPLOY_ROOT` используется и
+как источник пяти runtime DLL для staging-каталога `build`.
+
 WinMM-прокси нельзя снова сокращать только до экспортов, которые напрямую импортирует
 `GForce.exe`: после `SteamAPI_Init` загружается `steamclient.dll`, которому также
 нужны `waveOutGetDevCapsW`, `waveOutMessage`, mixer API и wave-in API. Отсутствие
 любого из этих экспортов останавливает игру ещё до входа в `main`.
+
+## Временные debug-клавиши
+
+Это диагностические действия над одним строго проверенным retail EXE. Они не являются
+пользовательским UI и пишут результат в `gforce_coop.log`.
+
+Отдельно от клавиш каждый реально прошедший через retail `TriggerEventDispatcher`
+event печатается сразу как `[trigger-activation]`. Это работает без соединения:
+`source=fly-shadow` означает F1 или receiver-side native Fly shadow pass,
+`fly-local` — штатный local Fly event, `game` — всё остальное. Запись сообщает
+факт dispatcher-вызова и его точку, но не присваивает неизвестному trigger имя
+или право на F4-активацию.
+
+Кнопки и прочие map-objects не обязаны использовать этот dispatcher. Второй,
+независимый byte-gated diagnostic hook печатает `[global-event]` для каждого
+контекстного `0x41xxxxxx` события, прошедшего через подтверждённый global
+seven-listener forwarder. В строке есть receiver/source, event, native result и
+позиция P1 в момент действия. Это не координаты source-объекта и не доказательство,
+что маршрут покрывает все кнопки: запись нужна, чтобы не спутать отдельный button
+callback с proximity-trigger’ом.
+
+Живой тест текущей заблокированной и разблокированной кнопок уже дал отрицательный
+факт: при установленном `[netgame] global event diagnostic hook installed` обе не
+дали ни `[trigger-activation]`, ни `[global-event]`. Это исключает только эти две
+проверенные активации из двух известных downstream-маршрутов, но не обобщается на
+все кнопки уровня. Поэтому локальные реальные edge-опросы пишутся раньше:
+`[input-edge-local] kind=logical|raw action=... caller=...`. `caller` — точный
+адрес retail-кода, запросившего нажатие; `action` — его logical/raw id. Одинаковый
+consumer подавляется на одну секунду: некоторые retail raw `pressed` queries возвращают
+`true` несколько кадров подряд и иначе засыпают лог одинаковыми строками. Лог ничего
+не подменяет, не реплицирует и не называет объект, а служит следующей точкой для
+статического разбора. Scoped F1 и receiver-side synthetic Fly pass намеренно не
+попадают в этот лог.
+
+Для поиска и синхронизации world-кнопок используются byte-gated relay `0x41E890`
+и forwarder `0x46D6F0`. `[object-event]` содержит route, caller, RTTI (если
+валидно), vtable и state flags. После успешного native шага каждый валидный
+top-level map-template route отправляется надёжно и по порядку: relay — route 1,
+независимый direct forwarder — route 2. Relay или forwarder, вложенный в другой
+native object route, не дублируется. Direct route допускается только с verified
+literal ECX receiver `0x00912AA8` (`mov ecx, imm32`, не разыменованный global);
+иначе остаётся лог
+`direct forwarder skipped noncanonical`. Peer ищет объект по vtable +
+family/subtype + definition + transform-signature, вызывает соответствующий
+original route под non-echo scope, а ambiguity/unresolved означает «ничего не
+делать», не угадывать адрес.
+
+`XTrigger_MO_Blender` (`family=0x1E000002`) и похожие NPC/monster dispatcher
+события не идут через старый generic `WorldTriggerEvent`. Client отправляет request
+(route 4) host-у **и продолжает собственный native dispatcher**: так retail создаёт
+его local entity в том же месте, где он появился бы без сети. Host создаёт canonical
+entity и назначает `world_id`; пришедший `WorldSpawn` связывает уже созданный client
+entity по live transform-signature. Activation notice (route 3) **не вызывает
+dispatcher на client** — он лишь регистрирует точный trigger и ждёт `WorldSpawn`.
+Поэтому request не даёт вторую client-сущность от host. Старые generic entity packets
+по-прежнему отбрасываются, чтобы не вернуть известный риск dispatcher replay.
+
+После подключения client **не блокирует** свой local NPC/monster spawn: он записывается
+кандидатом без id, после чего `WorldSpawn` host-а назначает ему canonical `world_id`.
+Если trigger активировал только host, client использует старый armed fallback. Перед
+проверкой signature transform читается заново: factory-time cached transform у
+map-trigger может устареть к моменту вентиляционной цепочки. `definition` остается
+диагностическим полем: retail может выдать разные значения в двух процессах, а
+несколько `MO_Mouse` могут одновременно иметь одинаковые `definition=0` и
+`occurrence=1`. При ненулевой signature нет fallback по этому слабому ключу:
+ambiguity означает «не привязывать», а не связать случайного моба. Никакие retail
+object pointers не удаляются вручную — task/AI/list ссылки движка остаются валидными.
+Host остаётся authority для `world_id`, transform и HP; client применяет эту state как
+реплику и откатывает свой локальный AI/collision HP вместо отправки его обратно.
+`WorldDamage`, пришедший раньше link, остаётся pending и применяется после link,
+так что ранняя смерть не превращается в вечного client-моба. Это собранный контракт,
+который ещё требует живого теста указанной гонки.
+
+`WorldSpawnPacket` имеет fixed размер 76 bytes. Текущая пара DLL обязана быть
+одной ревизии: старый peer получит `[world-sync] rejected WorldSpawn wire size=...;
+peer DLL mismatch`, а не тихо создаст неполную реплику.
+
+| Клавиша | Действие | Граница безопасности |
+| --- | --- | --- |
+| `F1` | Локальная одноразовая проверка dual laser Мухи: берёт transform Мухи и текущий P1 aim, временно центрирует native XGamePad ray и запускает shadow `Fly_Active` с synthetic raw edge. | Не выбирает controller mode и не меняет ownership, scanner/HUD/camera; не использует сеть. Не требует входа в Q или клиента. При peer-owned Мухе это локальный native-проход для проверки receiver-side реакции; direct item pulse используется только при несовпадении runtime-профиля. |
+| `F2` | Повторяет native spawn ближайшего зарегистрированного trigger с `kTriggerHasSpawnDefinition`. | Может создать ещё один объект, поэтому это только sandbox/debug. |
+| `F3` | Повторяет последний реально наблюдённый native event ближайшего trigger. | Не угадывает event code. |
+| `F4` | Посылает `ComputerBox` event `0x41080022` только ближайшему template с subtype `0x1F000095`, definition `43`. | Другие статически найденные `0x41xxxxxx` коды не являются подтверждёнными кнопками и намеренно не вызываются. |
+| `F5` | Создаёт local P2 в этом процессе из сохранённого native P1 spawn context. | Не нужен второй процесс; допустимы только P1 Default/ABR. |
+| `F6` | Сначала гарантирует `F5`, затем запрашивает native ABR для P1. | Локальная P2 ABR task всё ещё network-only experiment. |
+| `F7` | Повторно проверяет и логирует уже постоянный co-op bypass focus/minimize pause. | При запуске hooks ставятся и в fullscreen, и в test-windowed; `Present` также принудительно пишет active state. `test_windowed` теперь меняет только presentation/style. Результат в фоне всё ещё **не проверен вживую**. См. `re_cache/RE_CATALOG.md`. |
+| `F9` | Печатает read-only каталог всех ещё живых зарегистрированных trigger-точек. | Не вызывает trigger и не создаёт entity. `approved` — только exact ComputerBox; `observed` — уже виденный native event; `guess` — spawn-template; `unknown` — остальное. Координаты и identity наблюдены, но имя/назначение не угадываются. |
+
+`Fly_Deactivated` (`0x61000075`) — локальный native-переход в `Fly_Respawn`, а не
+сетевой флаг смерти. Его `Enter` разрушает локальное visual/task состояние, поэтому
+receiver нельзя чинить одним сохранением `m_remote_input` после перехода. Guard на
+`StateMachine_SelectState` (`0x004B7050`) перехватывает только запрос этого state
+для exact Mooch controller **до** `Exit`/`Enter`, когда local owner отсутствует, а
+последний принятый remote input всё ещё несёт
+`fly_controlled=1` / ненулевой `fly_transform_sequence`. В этом единственном случае
+он возвращает native-success и оставляет текущий presentation state. Он не касается
+P2, ABR, другой машины состояний и настоящей смерти локального владельца.
+
+`GPig Scan` — отдельный state `0x6100000C`, зарегистрированный
+`XController_GPig`; его `Enter` создаёт native scan-task, а `Update`
+продолжает shared scan/camera path. Из-за этого P2/P3 scanner может менять
+process-global presentation P1. Попытка блокировать этот state через
+`StateMachine_SelectState` и `Scan::Update` не исправила зелёный HUD и намеренно
+не входит в эту ревизию. Scanner/HUD остаётся открытой задачей: нужны live-тест и
+доказанный route, а не предположение по RTTI или одному mode-id.
+
+Только процесс-владелец очищает **своё** `fly_controlled` и сразу повышает общий
+`transform_sequence`; следующий input snapshot несёт `fly_controlled=0` /
+`fly_transform_sequence=0`. После принятия именно упорядоченного raw-перехода
+`fly_controlled: 1 -> 0` network ingress лишь ставит sequence в private pending
+slot: он не вызывает retail-код с socket thread. На следующем tick exact Mooch
+игровой поток один раз вызывает штатный `SelectMode(Fly_Deactivated)`, только если
+ни local, ни remote owner уже не существуют. Поэтому ранее подавленный ложный
+Deactivated не оставляет receiver навечно в старом presentation state. Более новый
+remote claim или local hand-off очищает pending до dispatcher. Старый live-packet не
+может оживить Муху после принятого выхода.
+
+Для проверки смерти сравни обе `gforce_coop.log`: у владельца должен быть
+`[fly-lifecycle ... local Fly_Deactivated ... input_seq=N ... published ordered zero-owner exit]`,
+а у второго процесса — `[fly-packet ... remote ownership 1 -> 0 input_seq=N fly_seq=0]`.
+После неё ожидаются `[fly-lifecycle ... queued ordered remote zero-owner input_seq=N ...]`
+и `[fly-lifecycle ... consumed ordered remote zero-owner input_seq=N; requested stock
+Fly_Deactivated ...]` на receiver. `accepted=1` подтверждает только возврат
+dispatcher; окончательный визуальный результат всё ещё требует живого прогона.
+`[fly-lifecycle ... suppressed receiver Fly_Deactivated ...]` обязателен только если
+на receiver действительно воспроизвёлся прежний локальный ложный transition; его
+отсутствие само по себе не означает ошибку. После zero-owner строки suppression уже
+не должен удерживать Respawn. Всё это остаётся **not-tested** до двухпроцессного
+прогона.
+
+## Historical research archive (noncanonical)
+
+The material below records earlier experiments, hypotheses and traces. It can
+help choose a new reverse-engineering question, but it is not a current
+implementation contract. The source, `IMPLEMENTATION.md`, and
+`../../re_cache/RE_CATALOG.md` win if it differs from them; in particular, do
+not revive a route, packet layout or address merely because it appears below.
 
 ## Первый сетевой milestone
 
@@ -98,9 +420,11 @@ WinMM-прокси нельзя снова сокращать только до 
   порт можно не писать — тогда используется `44139`. `Enter` подключает, `Esc`
   отменяет. Последний успешно начатый адрес остаётся значением по умолчанию до
   закрытия игры.
-- `F7` не имеет co-op действия. Полученный Steam rich-presence Join закрывает
-  локальные listener-ы и фиксирует процесс в client-режиме, поэтому joiner не
-  становится временным host при загрузке полученного `DATA4`.
+- Focus/minimize pause постоянно отключена для co-op процесса; F7 только выводит
+  diagnostic повторной проверки. Полученный Steam rich-presence Join по-прежнему
+  закрывает local listener-ы и фиксирует процесс в
+  client-режиме, поэтому joiner не становится временным host при загрузке полученного
+  `DATA4`.
 - После соединения клиент и сервер обмениваются `GFCOOP_HELLO_v1` / 
   `GFCOOP_WELCOME_v1`; строки лога содержат PID процесса.
 - После соединения P2 автоматически создаётся на host и client. Спавн выполняется
@@ -131,8 +455,9 @@ WinMM-прокси нельзя снова сокращать только до 
   Выбранный weapon type передаётся штатному setter P2 только при смене типа. Ранняя запись
   `direction()` перед P2 update была откатана: она регрессировала подтверждённый remote fire.
 - Подтверждено: action `fire` удалённого P1 доходит до штатного контроллера P2 и вызывает
-  удалённый выстрел. Это не означает отдельную сетевую authority для пули, урона или ammo:
-  NPC, damage, kills и сюжет пока не синхронизируются.
+  удалённый выстрел. Это не означает отдельную сетевую authority для пули, ammo или сюжета.
+  Для NPC уже есть отдельный host-authority путь spawn/transform/HP; его полный
+  жизненный цикл и gameplay-реакции всё ещё требуют live-теста.
 - Локомоция P2 ещё не подтверждена как результат удалённого movement input. Отдельно
   остаётся torso/weapon aim: кости P2 пока могут брать направление камеры машины-
   получателя. Это другой путь от aim ray выстрела и его нельзя маскировать копированием
@@ -144,7 +469,7 @@ WinMM-прокси нельзя снова сокращать только до 
    `loaded world: IP=ready Steam=ready`.
 2. Для LAN во втором окне нажать `F8`; для удалённого подключения выполнить
    обычный Steam Join из второго процесса.
-3. P2 должен появиться в обоих процессах без `F6`.
+3. P2 должен появиться в обоих процессах автоматически, без `F5` или `F6`.
 4. При фокусе client его настроенный `fire` должен вызвать выстрел P2 на host; при фокусе
    host — наоборот. WASD не является требованием.
 5. Отдельно проверить, что movement запускает locomotion P2, а torso/оружие P2 направлены
@@ -189,9 +514,12 @@ WinMM-прокси нельзя снова сокращать только до 
   маской `[this + 0x1F8]` (`EXHeadTracking` `0x8A9D64`, `EXSpineModifier` `0x8A9D4C`),
   а не в контроллере.
 - Открытая гипотеза по хлысту P2, который ведёт себя как зажатый LMB: преамбула melee
-  `0x5BC844..0x5BC8E1` читает второе пространство действий `0x4008xxxx` через
-  неперехваченные `0x48AE10`/`0x48AF10`/`0x48AF90`. Тот же `0x48AE10` вызывается и в
-  Default-тике из `0x5B92A0` с ID `0x4008000A`. Не подтверждено.
+  `0x5BC844..0x5BC8E1` читает второе пространство действий `0x4008xxxx`. Прямого
+  packet-backed хука для всего этого namespace нет; шесть Fly-ID обрабатываются
+  отдельно. Но конкретный `0x4008000A` из `0x5B92A0` статически переводится
+  `0x489FD0` в обычный press-edge action `0x1000000D`, поэтому уже проходит через
+  существующий packet action stream. Его физический bind и результат в уровне всё
+  ещё не проверены.
 
 ## Почему тело не разворачивается в режиме прицела
 
@@ -281,9 +609,10 @@ WinMM-прокси нельзя снова сокращать только до 
   перенесённого `cmp`. Это закрывает всех читателей сразу: `0x5BBB67`
   (поворот тела при прицеливании) и `0x5B8DB7` (yaw движения = `atan2(оси)` +
   yaw камеры).
-- Отправитель публикует свой yaw через `PublishLocalCameraYaw` сразу после
-  собственного тика P1 — в единственной точке кадра, где общий handler ещё
-  держит состояние P1.
+- В обычном P1-кадре отправитель публикует yaw через
+  `PublishLocalCameraYaw` сразу после собственного тика P1. Во время local
+  Mooch P1-публикация пропускается: yaw снимается после native Fly tick, иначе
+  в пакет ушёл бы старый угол Darwin вместо угла Мухи.
 - На время тика P2 `[state + 0x3C]` follow-состояния принудительно обнуляется,
   чтобы `bl`-гейт `0x5BBA98` ушёл в ветку `0x5BBB67` (yaw камеры → удалённый
   yaw), а не в `0x5BBB89` (собственный yaw). Значение P1 возвращается прежним
@@ -300,8 +629,23 @@ WinMM-прокси нельзя снова сокращать только до 
   идёт перед float. Пролог `56 8B 74 24 0C` — чистые 5 байт. Пока он был не
   перехвачен, ветка прицела P2 решалась локальной физической мышью, а не
   принятым snapshot.
-- `CoopInput` вырос с 256 до **264 байт** (`camera_yaw` + `camera_yaw_valid`),
-  поэтому на host и client обязательно должна стоять одинаковая DLL.
+- `CoopInput` сейчас имеет размер **336 байт**. В нём есть четыре native
+  XGamePad-оси (`0..3`): P2 использует `0`/`1`, а локальный `Fly_Active` читает
+  все четыре. В пакет также входят sequence/control-поля fly, полный transform
+  Мухи (`position` и `rotation`), ABI-reserved `fly_debug_fire_sequence` и
+  дополнительные состояния ввода. F1 также не использует это unreliable поле
+  и не отправляет свой локальный debug-выстрел в сеть.
+  Первый реальный remote-shot теперь идёт отдельным 44-byte fixed
+  `FlyAbilityPacket` по reliable-каналу: пока это только dual laser Мухи; packet
+  несёт world target, но не указатель, HUD, camera или controller state. В нём
+  намеренно нет ABR motor heading: машина имеет отдельный native motor path,
+  для которого remote-sync ещё не подтверждён. Поэтому на host и client
+  обязательно должна стоять одинаковая DLL-ревизия.
+- Input-снапшоты идут по Steam unreliable-каналу. Приёмник принимает только
+  строго более новый ненулевой `transform_sequence` (с корректным обходом
+  overflow) и сохраняет последний принятый state до следующего. Поэтому
+  запоздалый пакет не может откатить P2 или полный transform Мухи, включая её
+  `rotation`; ноль остаётся sentinel до первого опубликованного тика P1.
 
 ## Какие действия не зеркалятся на P2 (TAB и Q)
 
@@ -341,12 +685,12 @@ WinMM-прокси нельзя снова сокращать только до 
 - Исключение применяется на стороне ответа, а не захвата: `GetActiveRemoteAction`,
   `GetActiveRemoteHold` и обе edge-ветки (`0x488CE0`, `0x488C00`) отдают `false`.
   Инверсный запрос `0x488B70` из-за этого отдаёт «отпущено». Формат `CoopInput`
-  **не менялся** (по-прежнему 264 байта).
+  **сейчас составляет 336 байт**; исключение TAB/Q не добавляет новых полей.
 - Оба сырых пути тоже закрыты: `BuildRemoteScanCodeState` не выставляет `VK_TAB`
   и `Q` в подменяемые DirectInput-буферы `+0x04`/`+0x204`, а
-  `HandleGetAsyncKeyState` возвращает для них `0`. Это важно, потому что
-  пространство `0x4008xxxx` (`0x48AE10`) ещё не перехвачено и читает буфер напрямую.
-  Для `TAB` это единственный работающий механизм — см. ниже.
+  `HandleGetAsyncKeyState` возвращает для них `0`. Входы `0x4008xxxx` уже
+  перехвачены, но packet-backed ответы существуют только для шести Fly-ID; для
+  `TAB` физический DirectInput-фильтр остаётся единственным работающим механизмом.
 
 Почему исключение по scan-коду пришлось выбросить: клавиши переназначаемы, и
 привязка к `DIK` ломается первым же ребиндом. Семантический индекс статикой не
@@ -386,22 +730,34 @@ truth, и она отличается от всего, что было видн�
   может только пропуск `VK_TAB` в `BuildRemoteScanCodeState` и
   `HandleGetAsyncKeyState`; пинить там нечего и ребиндить тоже нечего.
 
-Переход на муху не должен удерживать удалённый контекст ввода: при обнаружении
-edge-нажатия `Q`/`T` локальный capture ставит одноразовый флаг, и тик P2 на этом
-кадре пропускается. Это оставляет движку один кадр на смену active entity, после
-чего `BeginRemoteInput`/`EndRemoteInput` снова используются только вокруг обычного
-тика P2. Постоянная блокировка по `IsFlyControlled()` удалена: она не является
-надёжным признаком переходного состояния и останавливала движение P2. Результат
-перехода на муху нужно проверять в игре отдельно — DLL игру не запускает.
+На кадре hand-off `Q`/`T` P2 по-прежнему пропускается, чтобы EXE успел сменить
+active entity. После подтверждённого remote ownership receiver не запускает обычный
+remote controller tick Мухи и не передаёт ей камеру/HUD. После stock idle tick он
+применяет полученный transform, а отдельный reliable laser event может запустить
+короткий shadow `Fly_Active::Update` с private XGamePad и exact raw-button edge;
+state-machine guard не даёт этому проходу сменить реальный режим. Локальный owner
+публикует полный transform после native Fly tick; raw laser edge помечает именно
+следующий post-tick `fly_transform_sequence`, поэтому receiver ждёт этот epoch до
+shadow pass. Так remote Mooch остаётся presentation-only как controller, но её
+laser item/world route получает native возможность обработать выстрел. Receiver
+копирует полный native `fly_rotation` без splice одного компонента из
+`camera_yaw`: это были разные representation и такая splice давала кривой pose/
+направление луча.
+Каждый shadow laser pass возвращает также изменяемое `Fly_Active` окно shared
+camera `handler+0x91C..+0x9B7`; без него камера P1 дёргается к Мухе на один кадр.
+Живой двухпроцессный тест поворота и реакций всё ещё обязателен.
 
 Ещё не закрыто:
 
 - `0x5B8D60` (поворот от движения) читает тот же глобальный yaw камеры на `0x5B8DB7`.
   Полный список читателей `0x52AD20`: `0x4F4E61`, `0x587E59`, `0x5B4E5A`, `0x5B521E`,
   `0x5B55C5`, `0x5B8DB7`, `0x5B92EA`, `0x5BBB67`, `0x5BDE9A`. Хук подменяет yaw
-  для всех них разом, пока идёт тик P2.
+  только на scoped remote P2 tick; peer-owned Муха не получает remote controller tick.
 - Ещё одна деталь `0x5B8D60`: `[turn_task + 0x20]` обновляется **только если** ось
   сдвинулась больше чем на `[0x6F645C]` либо выросла квадратичная длина. Если remote
   оси приходят неизменными, прежний целевой yaw сохраняется.
-- `0x48AE10` / `0x4008000A` из `0x5B92A0` — второе пространство действий
-  `0x4008xxxx` не перехвачено.
+- `0x48AE10` / `0x4008000A` из `0x5B92A0` уже разобран до `0x1000000D` через
+  `0x489FD0` и стандартный `0x488CE0` press-edge. Это не даёт имени физической
+  клавиши. При расхождении P2 `>=3 м` один native logical edge ставится без
+  fake key; проверить нужно `[p2-ledge-detach] queued`, затем `served` и выход
+  P2 с уступа в двух процессах.

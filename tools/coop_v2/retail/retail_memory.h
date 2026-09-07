@@ -74,6 +74,21 @@ namespace retail
         return TryReadAddress(address, out.value) && static_cast<bool>(out);
     }
 
+    inline bool TryReadPointer(Address address, InventoryRef& out)
+    {
+        return TryReadAddress(address, out.value) && static_cast<bool>(out);
+    }
+
+    inline bool TryReadPointer(Address address, ModeRef& out)
+    {
+        return TryReadAddress(address, out.value) && static_cast<bool>(out);
+    }
+
+    inline bool TryReadPointer(Address address, MotorResourceRef& out)
+    {
+        return TryReadAddress(address, out.value) && static_cast<bool>(out);
+    }
+
     inline bool TryReadPointer(Address address, TriggerRef& out)
     {
         return TryReadAddress(address, out.value) && static_cast<bool>(out);

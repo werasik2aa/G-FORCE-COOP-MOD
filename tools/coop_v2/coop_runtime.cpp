@@ -23,9 +23,9 @@ namespace coop
 	}
 
 	CoopRuntime::CoopRuntime() :
-		m_module(NULL),
+		m_module(nullptr),
 		m_log(INVALID_HANDLE_VALUE),
-		m_log_mutex(NULL),
+		m_log_mutex(nullptr),
 		m_log_lock_ready(false)
 	{
 		ZeroMemory(&m_log_lock, sizeof(m_log_lock));
@@ -36,7 +36,6 @@ namespace coop
 		ZeroMemory(&m_config, sizeof(m_config));
 		m_config.enabled = 1;
 		m_config.test_windowed = 1;
-		m_config.keep_active_in_background = 1;
 		m_config.window_width = 1280;
 		m_config.window_height = 720;
 	}
@@ -82,8 +81,8 @@ namespace coop
 		if (m_log == INVALID_HANDLE_VALUE)
 		{
 			m_log = CreateFileW(m_log_path, FILE_APPEND_DATA,
-				FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
-				FILE_ATTRIBUTE_NORMAL, NULL);
+				FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+				FILE_ATTRIBUTE_NORMAL, nullptr);
 		}
 		if (m_log != INVALID_HANDLE_VALUE && m_log_mutex)
 		{
@@ -91,7 +90,7 @@ namespace coop
 			if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED)
 			{
 				DWORD written = 0;
-				WriteFile(m_log, line, static_cast<DWORD>(line_length), &written, NULL);
+				WriteFile(m_log, line, static_cast<DWORD>(line_length), &written, nullptr);
 				ReleaseMutex(m_log_mutex);
 			}
 		}
@@ -103,7 +102,7 @@ namespace coop
 		const DWORD code = exception && exception->ExceptionRecord ?
 			exception->ExceptionRecord->ExceptionCode : 0;
 		void* address = exception && exception->ExceptionRecord ?
-			exception->ExceptionRecord->ExceptionAddress : NULL;
+			exception->ExceptionRecord->ExceptionAddress : nullptr;
 		Log("[exception] stage=%s code=0x%08X address=%p\r\n",
 			stage, code, address);
 		return EXCEPTION_EXECUTE_HANDLER;
@@ -151,11 +150,11 @@ namespace coop
 	bool CoopRuntime::HashExecutable(BYTE digest[32])
 	{
 		wchar_t executable[MAX_PATH] = {};
-		if (!GetModuleFileNameW(NULL, executable, _countof(executable)))
+		if (!GetModuleFileNameW(nullptr, executable, _countof(executable)))
 			return false;
 
-		HANDLE file = CreateFileW(executable, GENERIC_READ, FILE_SHARE_READ, NULL,
-			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+		HANDLE file = CreateFileW(executable, GENERIC_READ, FILE_SHARE_READ, nullptr,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
 		if (file == INVALID_HANDLE_VALUE)
 			return false;
 
@@ -166,15 +165,15 @@ namespace coop
 			return false;
 		}
 
-		BCRYPT_ALG_HANDLE algorithm = NULL;
-		BCRYPT_HASH_HANDLE hash = NULL;
-		PUCHAR hash_object = NULL;
+		BCRYPT_ALG_HANDLE algorithm = nullptr;
+		BCRYPT_HASH_HANDLE hash = nullptr;
+		PUCHAR hash_object = nullptr;
 		DWORD object_length = 0;
 		DWORD result_length = 0;
 		bool success = false;
 
 		if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(
-			&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0)))
+			&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0)))
 			goto cleanup;
 		if (!BCRYPT_SUCCESS(BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH,
 			reinterpret_cast<PUCHAR>(&object_length), sizeof(object_length),
@@ -185,14 +184,14 @@ namespace coop
 		if (!hash_object)
 			goto cleanup;
 		if (!BCRYPT_SUCCESS(BCryptCreateHash(algorithm, &hash, hash_object,
-			object_length, NULL, 0, 0)))
+			object_length, nullptr, 0, 0)))
 			goto cleanup;
 
 		BYTE buffer[64 * 1024];
 		for (;;)
 		{
 			DWORD bytes_read = 0;
-			if (!ReadFile(file, buffer, sizeof(buffer), &bytes_read, NULL))
+			if (!ReadFile(file, buffer, sizeof(buffer), &bytes_read, nullptr))
 				goto cleanup;
 			if (bytes_read == 0)
 				break;
@@ -221,7 +220,7 @@ namespace coop
 
 	bool CoopRuntime::VerifyExecutable()
 	{
-		BYTE* base = reinterpret_cast<BYTE*>(GetModuleHandleW(NULL));
+		BYTE* base = reinterpret_cast<BYTE*>(GetModuleHandleW(nullptr));
 		if (reinterpret_cast<uintptr_t>(base) != kImageBase)
 		{
 			Log("[error] unexpected image base: %p\r\n", base);
@@ -266,9 +265,6 @@ namespace coop
 		InterlockedExchange(&m_config.test_windowed,
 			GetPrivateProfileIntW(L"window", L"experimental_windowed", 1,
 				m_ini_path) ? 1 : 0);
-		InterlockedExchange(&m_config.keep_active_in_background,
-			GetPrivateProfileIntW(L"window", L"keep_active_in_background", 1,
-				m_ini_path) ? 1 : 0);
 		m_config.window_width = GetPrivateProfileIntW(L"window", L"width", 1280,
 			m_ini_path);
 		m_config.window_height = GetPrivateProfileIntW(L"window", L"height", 720,
@@ -289,8 +285,8 @@ namespace coop
 				m_game_ini_path);
 		}
 		Log("[config] enabled=%ld\r\n", m_config.enabled);
-		Log("[config-window] experimental_windowed=%ld keep_active_in_background=%ld client=%dx%d\r\n",
-			m_config.test_windowed, m_config.keep_active_in_background,
+		Log("[config-window] experimental_windowed=%ld focus_pause=permanent-bypass client=%dx%d\r\n",
+			m_config.test_windowed,
 			m_config.window_width, m_config.window_height);
 	}
 
@@ -308,9 +304,9 @@ namespace coop
 
 	void** MemoryPatch::FindImportAddress(const char* module_name, const char* function_name)
 	{
-		BYTE* base = reinterpret_cast<BYTE*>(GetModuleHandleW(NULL));
+		BYTE* base = reinterpret_cast<BYTE*>(GetModuleHandleW(nullptr));
 		if (!base)
-			return NULL;
+			return nullptr;
 
 		IMAGE_DOS_HEADER* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
 		IMAGE_NT_HEADERS32* nt = reinterpret_cast<IMAGE_NT_HEADERS32*>(
@@ -318,7 +314,7 @@ namespace coop
 		const IMAGE_DATA_DIRECTORY& imports =
 			nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 		if (!imports.VirtualAddress)
-			return NULL;
+			return nullptr;
 
 		IMAGE_IMPORT_DESCRIPTOR* descriptor =
 			reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
@@ -332,11 +328,11 @@ namespace coop
 
 			IMAGE_THUNK_DATA32* original = descriptor->OriginalFirstThunk ?
 				reinterpret_cast<IMAGE_THUNK_DATA32*>(
-					base + descriptor->OriginalFirstThunk) : NULL;
+					base + descriptor->OriginalFirstThunk) : nullptr;
 			IMAGE_THUNK_DATA32* current = reinterpret_cast<IMAGE_THUNK_DATA32*>(
 				base + descriptor->FirstThunk);
 			if (!original)
-				return NULL;
+				return nullptr;
 			for (; original->u1.AddressOfData; ++original, ++current)
 			{
 				if (IMAGE_SNAP_BY_ORDINAL32(original->u1.Ordinal))
@@ -351,7 +347,7 @@ namespace coop
 				}
 			}
 		}
-		return NULL;
+		return nullptr;
 	}
 
 	bool CoopRuntime::Initialize()
@@ -364,7 +360,7 @@ namespace coop
 			DeleteCriticalSection(&m_log_lock);
 			return false;
 		}
-		m_log_mutex = CreateMutexW(NULL, TRUE, L"Local\\GForceCoopRuntimeLog");
+		m_log_mutex = CreateMutexW(nullptr, TRUE, L"Local\\GForceCoopRuntimeLog");
 		const DWORD mutex_status = GetLastError();
 		if (!m_log_mutex)
 		{
@@ -395,7 +391,7 @@ namespace coop
 		if (m_log_mutex)
 		{
 			CloseHandle(m_log_mutex);
-			m_log_mutex = NULL;
+			m_log_mutex = nullptr;
 		}
 		m_log_lock_ready = false;
 		DeleteCriticalSection(&m_log_lock);

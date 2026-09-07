@@ -10,22 +10,22 @@ WinmmProxy& WinmmProxy::Instance()
 }
 
 WinmmProxy::WinmmProxy() :
-	m_proxy_module(NULL),
-	m_real_winmm(NULL),
-	m_coop_module(NULL),
-	m_time_begin_period(NULL),
-	m_time_end_period(NULL),
-	m_time_get_dev_caps(NULL),
-	m_time_get_time(NULL),
-	m_wave_out_close(NULL),
-	m_wave_out_open(NULL),
-	m_wave_out_pause(NULL),
-	m_wave_out_prepare_header(NULL),
-	m_wave_out_reset(NULL),
-	m_wave_out_restart(NULL),
-	m_wave_out_set_volume(NULL),
-	m_wave_out_unprepare_header(NULL),
-	m_wave_out_write(NULL)
+	m_proxy_module(nullptr),
+	m_real_winmm(nullptr),
+	m_coop_module(nullptr),
+	m_time_begin_period(nullptr),
+	m_time_end_period(nullptr),
+	m_time_get_dev_caps(nullptr),
+	m_time_get_time(nullptr),
+	m_wave_out_close(nullptr),
+	m_wave_out_open(nullptr),
+	m_wave_out_pause(nullptr),
+	m_wave_out_prepare_header(nullptr),
+	m_wave_out_reset(nullptr),
+	m_wave_out_restart(nullptr),
+	m_wave_out_set_volume(nullptr),
+	m_wave_out_unprepare_header(nullptr),
+	m_wave_out_write(nullptr)
 {
 	InitOnceInitialize(&m_init_once);
 }
@@ -102,7 +102,7 @@ void WinmmProxy::Initialize()
 	if (!initialize || !initialize())
 	{
 		FreeLibrary(m_coop_module);
-		m_coop_module = NULL;
+		m_coop_module = nullptr;
 	}
 }
 
@@ -114,7 +114,7 @@ BOOL CALLBACK WinmmProxy::InitializeOnce(PINIT_ONCE, PVOID, PVOID*)
 
 void WinmmProxy::EnsureInitialized()
 {
-	InitOnceExecuteOnce(&m_init_once, InitializeOnce, NULL, NULL);
+	InitOnceExecuteOnce(&m_init_once, InitializeOnce, nullptr, nullptr);
 }
 
 FARPROC WinmmProxy::ResolveReal(const char* procedure_name)
@@ -122,7 +122,7 @@ FARPROC WinmmProxy::ResolveReal(const char* procedure_name)
 	if (!m_real_winmm)
 		EnsureInitialized();
 	return m_real_winmm && procedure_name ?
-		GetProcAddress(m_real_winmm, procedure_name) : NULL;
+		GetProcAddress(m_real_winmm, procedure_name) : nullptr;
 }
 
 DWORD WINAPI WinmmProxy::EarlyInitializeThread(LPVOID)
@@ -136,7 +136,7 @@ DWORD WINAPI WinmmProxy::EarlyInitializeThread(LPVOID)
 void WinmmProxy::StartEarlyInitialization()
 {
 	HANDLE thread = CreateThread(
-		NULL, 0, EarlyInitializeThread, NULL, 0, NULL);
+		nullptr, 0, EarlyInitializeThread, nullptr, 0, nullptr);
 	if (thread)
 		CloseHandle(thread);
 }

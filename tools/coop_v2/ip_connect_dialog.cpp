@@ -1,10 +1,10 @@
 #include "ip_connect_dialog.h"
 
 IpConnectDialog::IpConnectDialog() :
-	m_window(NULL),
-	m_edit(NULL),
-	m_owner(NULL),
-	m_output(NULL),
+	m_window(nullptr),
+	m_edit(nullptr),
+	m_owner(nullptr),
+	m_output(nullptr),
 	m_output_size(0),
 	m_owner_was_enabled(false),
 	m_finished(false),
@@ -20,8 +20,8 @@ bool IpConnectDialog::RegisterWindowClass()
 	WNDCLASSEXA window_class = {};
 	window_class.cbSize = sizeof(window_class);
 	window_class.lpfnWndProc = WindowProc;
-	window_class.hInstance = GetModuleHandleA(NULL);
-	window_class.hCursor = LoadCursor(NULL, IDC_ARROW);
+	window_class.hInstance = GetModuleHandleA(nullptr);
+	window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
 	window_class.lpszClassName = "GForceCoopIpConnectDialog";
 	atom = RegisterClassExA(&window_class);
@@ -59,8 +59,8 @@ bool IpConnectDialog::Prompt(HWND owner, const char* default_address,
 
 	m_window = CreateWindowExA(WS_EX_DLGMODALFRAME, "GForceCoopIpConnectDialog", "G-Force Co-op: Connect by IP",
 		WS_POPUP | WS_CAPTION | WS_SYSMENU,
-		bounds.left, bounds.top, kDialogWidth, kDialogHeight, m_owner, NULL,
-		GetModuleHandleA(NULL), this);
+		bounds.left, bounds.top, kDialogWidth, kDialogHeight, m_owner, nullptr,
+		GetModuleHandleA(nullptr), this);
 	if (!m_window)
 		return false;
 
@@ -70,7 +70,7 @@ bool IpConnectDialog::Prompt(HWND owner, const char* default_address,
 	// EnableWindow sends a synchronous message that can deadlock the
 	// game's main thread while the worker's dialog pumps messages.
 	m_owner_was_enabled = m_owner && IsWindowEnabled(m_owner) &&
-		GetWindowThreadProcessId(m_owner, NULL) == GetCurrentThreadId();
+		GetWindowThreadProcessId(m_owner, nullptr) == GetCurrentThreadId();
 	if (m_owner_was_enabled)
 		EnableWindow(m_owner, FALSE);
 	ShowWindow(m_window, SW_SHOW);
@@ -81,7 +81,7 @@ bool IpConnectDialog::Prompt(HWND owner, const char* default_address,
 	MSG message = {};
 	while (!m_finished)
 	{
-		const BOOL result = GetMessageA(&message, NULL, 0, 0);
+		const BOOL result = GetMessageA(&message, nullptr, 0, 0);
 		if (result <= 0)
 		{
 			if (result == 0)
@@ -114,20 +114,20 @@ bool IpConnectDialog::Prompt(HWND owner, const char* default_address,
 void IpConnectDialog::CreateControls()
 {
 	CreateWindowExA(0, "STATIC", "Host IP address and port:",
-		WS_CHILD | WS_VISIBLE, 20, 18, 390, 18, m_window, NULL,
-		GetModuleHandleA(NULL), NULL);
+		WS_CHILD | WS_VISIBLE, 20, 18, 390, 18, m_window, nullptr,
+		GetModuleHandleA(nullptr), nullptr);
 	m_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
 		WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
 		20, 40, 400, 24, m_window,
 		reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAddressControlId)),
-		GetModuleHandleA(NULL), NULL);
+		GetModuleHandleA(nullptr), nullptr);
 	CreateWindowExA(0, "STATIC", "Enter - connect    Esc - cancel",
-		WS_CHILD | WS_VISIBLE, 20, 82, 390, 18, m_window, NULL,
-		GetModuleHandleA(NULL), NULL);
+		WS_CHILD | WS_VISIBLE, 20, 82, 390, 18, m_window, nullptr,
+		GetModuleHandleA(nullptr), nullptr);
 	CreateWindowExA(0, "STATIC",
 		"Port is optional (44139). Example: 192.168.1.25",
-		WS_CHILD | WS_VISIBLE, 20, 105, 390, 18, m_window, NULL,
-		GetModuleHandleA(NULL), NULL);
+		WS_CHILD | WS_VISIBLE, 20, 105, 390, 18, m_window, nullptr,
+		GetModuleHandleA(nullptr), nullptr);
 }
 
 void IpConnectDialog::Complete(bool accepted)
@@ -168,7 +168,7 @@ LRESULT CALLBACK IpConnectDialog::WindowProc(HWND window, UINT message,
 	if (message == WM_DESTROY)
 	{
 		if (dialog)
-			dialog->m_window = NULL;
+			dialog->m_window = nullptr;
 		return 0;
 	}
 	return DefWindowProcA(window, message, wparam, lparam);

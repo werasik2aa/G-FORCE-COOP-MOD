@@ -14,6 +14,9 @@ namespace coop
 
 		bool Install();
 		void Remove();
+		// Co-op keeps the game active permanently. F7 only rechecks/logs the
+		// installed hooks for diagnosis; it is not the switch that enables it.
+		bool EnableDebugPauseBypass();
 
 	private:
 		typedef IDirect3D9* (WINAPI* Direct3DCreate9Fn)(UINT);
@@ -31,6 +34,9 @@ namespace coop
 		void ApplyExperimentalWindowStyle(HWND window);
 		void ConfigureWindowedPresentation(HWND focus_window, DWORD* behavior_flags, D3DPRESENT_PARAMETERS* parameters);
 		void InstallWindowProcedureHook();
+		void CaptureForegroundGameWindow();
+		bool InstallFocusPauseHooks();
+		bool ShouldBypassFocusPause() const;
 		void ForceGameActiveState();
 		HRESULT Reset(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* parameters);
 		HRESULT Present(IDirect3DDevice9* device, const RECT* source_rectangle, const RECT* destination_rectangle, HWND destination_window, const RGNDATA* dirty_region);
@@ -63,5 +69,6 @@ namespace coop
 		WNDPROC m_original_window_procedure;
 		HWND m_window_procedure_window;
 		HWND m_game_window;
+		volatile LONG m_debug_pause_bypass;
 	};
 }

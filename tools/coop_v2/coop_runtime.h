@@ -11,7 +11,6 @@ namespace coop
 	{
 		volatile LONG enabled;
 		volatile LONG test_windowed;
-		volatile LONG keep_active_in_background;
 		int window_width;
 		int window_height;
 	};

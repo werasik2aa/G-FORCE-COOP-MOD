@@ -38,14 +38,19 @@ enum CoopPacketId : std::uint32_t
 	// Sent by the client after its stock save load has reached a real P1 tick.
 	// It asks the host to send the current living-world baseline again.
 	kCoopPacketWorldReady = 32,
-	// Sent by the host when a dynamic trigger event occurs (e.g. computer
-	// activation that spawns spiders).  The client repeats the native trigger
-	// on its matching trigger template.
+	// Reliable map-trigger dispatcher event. NPC/monster trigger events never use
+	// this route: their host entity/HP/snapshot channel avoids duplicate spawns.
 	kCoopPacketWorldTriggerEvent = 33,
 	// Either side reports local-player damage on a world-linked entity.
 	kCoopPacketWorldDamage = 34,
 	// Host -> client: entity has been despawned/died.  Client removes it.
-	kCoopPacketWorldDespawn = 35
+	kCoopPacketWorldDespawn = 35,
+	// Reliable root object-relay event for a validated map XTrigger. It carries
+	// a process-neutral source fingerprint, never a process pointer.
+	kCoopPacketWorldObjectEvent = 36,
+	// Reliable, owner-authoritative Mooch ability event. It contains no process
+	// pointer, HUD state, controller mode, or camera state.
+	kCoopPacketFlyAbility = 40
 
 };
 
@@ -74,6 +79,9 @@ constexpr std::uint32_t kCoopActionCount = 68;
 // Fly_Active uses six fixed raw 0x4008xxxx queries in addition to the normal
 // logical action table.  They are controller semantics, not player key binds.
 constexpr std::uint32_t kCoopFlyRawActionCount = 6;
+// XGamePad exposes four analog axes.  Normal GPig movement consumes 0/1, while
+// Fly_Active also reads 2/3 for its native steering and presentation state.
+constexpr std::uint32_t kCoopInputAnalogAxisCount = 4;
 
 class CoopInput
 {
@@ -81,7 +89,7 @@ public:
 	std::uint32_t virtual_keys[8];
 	float position[4];
 	float rotation[4];
-	float look_axis[2];
+	float analog_axis[kCoopInputAnalogAxisCount];
 	// Held level, one bit per action index.  A held key is a stable state, not a
 	// one-frame event, so it survives packet pacing on the receiver.
 	std::uint32_t action_down[3];
@@ -99,7 +107,7 @@ public:
 	std::uint32_t player_mode;
 	std::uint32_t selected_weapon_type;
 	std::uint32_t weapon_sequence;
-	// The engine's fire handler does not reconstruct this from look_axis. It
+	// The engine's fire handler does not reconstruct this from analog_axis. It
 	// copies the cached XGamePad ray verbatim into its shot command, so send the
 	// exact ray calculated on the controlling machine.
 	float aim_origin[3];
@@ -112,24 +120,27 @@ public:
 	// instead of it.
 	float camera_yaw;
 	std::uint32_t camera_yaw_valid;
-	float abr_heading;
-	std::uint32_t abr_heading_valid;
-	// Mooch exists exactly once in the game world.  While its owner controls it,
-	// send its live position separately from the owner's Darwin transform.  The
-	// receiver applies this after Mooch's own stock tick, so it is presentation
-	// only and cannot give the other player control of the shared fly.
+	// Mooch exists exactly once in the game world. While its owner controls it,
+	// send its complete live transform separately from the owner's Darwin
+	// transform. The receiver applies it after Mooch's own stock tick, so it is
+	// presentation only and cannot give the other player control of the shared fly.
 	float fly_position[4];
+	float fly_rotation[4];
 	std::uint32_t fly_transform_sequence;
 	std::uint32_t fly_controlled;
-	// Held and edge state for Fly_Active's raw controller queries.  Without this
-	// the remote side can enter Mooch but never reaches its native scan/fire mode.
+	// Preserved 336-byte input ABI slot from the earlier Fly-fire prototype.
+	// Current F1 never writes or consumes it. A real remote Fly shot must use a
+	// separate reliable event, never this unreliable state snapshot.
+	std::uint32_t fly_debug_fire_sequence;
+	// Captured raw Fly state is retained in this ABI revision, but it must not
+	// activate remote Mooch control or change the receiver's player/camera.
 	std::uint32_t fly_raw_down;
 	std::uint8_t fly_raw_press_seq[kCoopFlyRawActionCount];
 	std::uint8_t fly_raw_release_seq[kCoopFlyRawActionCount];
 };
 
-static_assert(sizeof(CoopInput) == 316,
-	"CoopInput is the authoritative remote-player state; host and client "
+static_assert(sizeof(CoopInput) == 336,
+	"CoopInput contains only shared input, on-foot and Fly state; host and client "
 	"builds must share this exact layout");
 
 struct CoopInputPacket : PacketHeader

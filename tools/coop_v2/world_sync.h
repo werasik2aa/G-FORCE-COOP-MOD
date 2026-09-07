@@ -39,27 +39,59 @@ namespace coop
 		// assigning a new one on first sight for either connected role.
 		std::uint32_t LocalOccurrence(void* trigger);
 		// Returns the local trigger object matching a process-neutral trigger key,
-		// or NULL when this process has not built that template yet.
+		// or nullptr when this process has not built that template yet.
 		void* FindTemplateTrigger(std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id);
 		// Queues one reliable native trigger-event packet for the connected peer.
 		void QueueTriggerEvent(const TriggerKey& key, int event_code,
 			int result);
-		// Game-thread: publishes the entity's current absolute HP through a reliable
-		// packet.  Both roles may call this after a local hit or HP change.
+		// Queues one validated native event route after its local call succeeds.
+		// Relay/direct-forwarder routes carry map objects; the two entity routes are
+		// the separate host-authoritative NPC/monster dispatcher request/activation.
+		bool QueueObjectEvent(void* source, std::uint32_t source_vtable,
+			int event_code, std::uint32_t route);
+		// Game-thread: the host publishes an entity's current absolute HP through a
+		// reliable packet. Client replicas never feed their local AI damage back.
 		bool ReportLocalDamage(void* entity, int event_code);
 		// Returns the world id of a linked entity, or zero when untracked.
 		std::uint32_t WorldIdOfEntity(void* entity) const;
+		// Read-only game-thread lookup used by the native health hooks. It proves
+		// that a health component belongs to one registered world entity before a
+		// diagnostic line names that entity; it never changes health or lifecycle.
+		bool DescribeTrackedHealthComponent(void* component,
+			std::uint32_t& world_id, void*& entity) const;
 		// Returns the live entity currently bound to a native trigger object.
 		void* EntityOfTrigger(void* trigger) const;
+		// Game-thread-only diagnostics. They never invent a retail pointer or event
+		// code: targets come from the native factory registry, and F3 replays only
+		// an event that this process has already observed.
+		bool DebugSpawnNearestTrigger();
+		bool DebugDispatchNearestRecordedEvent();
+		bool DebugActivateNearestKnownInteractive();
+		// F9-only read-only catalogue of every still-live registered trigger.
+		// It reports exact observed identity/position and deliberately keeps all
+		// non-ComputerBox classifications below "approved".
+		bool DebugLogInteractiveCandidates();
 
 		// These methods run only on the game thread, from the already verified
 		// trigger factory/spawn hooks and P1's post-update tick.
-		void RecordTriggerTemplate(void* trigger, std::uint32_t family,	std::uint32_t subtype);
+		void RecordTriggerTemplate(void* trigger, std::uint32_t family,
+			std::uint32_t subtype);
+		void RecordTriggerEvent(void* trigger, int event_code);
 		void RecordNativeSpawn(void* trigger, void* entity, std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id);
+		// True only during the one native client-replica spawn requested by an
+		// already received host WorldSpawn packet. All other post-connect NPC/monster
+		// spawn attempts are suppressed before they can create an unlinked local AI.
+		bool IsExpectedClientReplicaSpawn(void* trigger, std::uint32_t family,
+			std::uint32_t subtype) const;
+		// Consumes that one native-spawn admission. The replica may still wait for
+		// its entity-registry entry afterward, but another trigger call cannot make
+		// a second entity for the same host WorldSpawn.
+		bool BeginExpectedClientReplicaSpawn(void* trigger, std::uint32_t family,
+			std::uint32_t subtype);
 		void GameTick();
 		// Called from the already-installed D3D Present hook, after game simulation.
-		// A client applies the latest host sample here every rendered frame, so local
-		// AI may calculate but cannot leave a linked entity visually elsewhere.
+		// A client applies the latest host sample here every rendered frame. Linked
+		// entities are presentation replicas; only host state reaches the wire.
 		void OnRenderFrame();
 
 		// These methods run on the socket worker.  They only copy wire data and never
@@ -72,6 +104,7 @@ namespace coop
 		using WorldSnapshotPacket = protocol::WorldSnapshotPacket;
 		using WorldReadyPacket = protocol::WorldReadyPacket;
 		using WorldTriggerEventPacket = protocol::WorldTriggerEventPacket;
+		using WorldObjectEventPacket = protocol::WorldObjectEventPacket;
 		using WorldDamagePacket = protocol::WorldDamagePacket;
 		using WorldDespawnPacket = protocol::WorldDespawnPacket;
 
@@ -87,6 +120,16 @@ namespace coop
 			std::uint32_t family;
 			std::uint32_t subtype;
 			std::int32_t definition_id;
+			std::uint32_t transform_signature;
+			int last_event_code;
+			bool has_last_event;
+		};
+
+		enum class DebugTriggerFilter
+		{
+			SpawnDefinition,
+			RecordedEvent,
+			KnownInteractive
 		};
 
 		struct HostEntity
@@ -94,6 +137,7 @@ namespace coop
 			void* entity;
 			void* trigger;
 			TriggerKey key;
+			std::uint32_t trigger_signature;
 			std::uint32_t world_id;
 			float last_position[4];
 			float last_rotation[4];
@@ -107,6 +151,7 @@ namespace coop
 		{
 			void* entity;
 			TriggerKey key;
+			std::uint32_t trigger_signature;
 			std::uint32_t world_id;
 			bool logged_snapshot;
 			bool logged_render_apply;
@@ -141,6 +186,7 @@ namespace coop
 		bool HandleWorldSpawnPacket(const protocol::PacketView& view);
 		bool HandleWorldSnapshotPacket(const protocol::PacketView& view);
 		bool HandleWorldTriggerEventPacket(const protocol::PacketView& view);
+		bool HandleWorldObjectEventPacket(const protocol::PacketView& view);
 		bool HandleWorldDamagePacket(const protocol::PacketView& view);
 		bool ReadEntityTransform(void* entity, float position[4], float rotation[4]) const;
 		bool ReadEntityHealth(void* entity, float& health) const;
@@ -161,16 +207,32 @@ namespace coop
 			const WorldSnapshotPacket& snapshot, DWORD received_tick);
 		void AdvancePresentation(ClientEntity& entity, DWORD now);
 		void ApplyPresentation(ClientEntity& entity);
+		bool BuildObjectEventPacket(void* source, std::uint32_t source_vtable,
+			int event_code, std::uint32_t route,
+			WorldObjectEventPacket& out) const;
+		void* FindObjectEventTrigger(const WorldObjectEventPacket& packet,
+			const char*& match_kind) const;
+		void ReplayRemoteObjectEvent(const WorldObjectEventPacket& packet);
 		void QueueHostSpawn(HostEntity& entity);
 		void QueueHostSnapshot(HostEntity& entity, const float position[4], const float rotation[4]);
 		std::uint32_t NextOccurrence(std::vector<TriggerCounter>& counters, void* trigger);
 		HostEntity* FindHostEntity(void* entity);
 		ClientEntity* FindClientEntity(void* entity);
 		ClientEntity* FindClientEntityById(std::uint32_t world_id);
-		ClientEntity* FindUnlinkedClientEntity(const TriggerKey& key);
+		ClientEntity* FindUnlinkedClientEntity(const WorldSpawnPacket& packet,
+			const char*& match_kind);
 		TriggerTemplate* FindTriggerTemplate(const TriggerKey& key);
-		void AddClientEntity(void* entity, const TriggerKey& key, std::uint32_t world_id);
+		TriggerTemplate* FindSpawnTemplate(const WorldSpawnPacket& packet,
+			const char*& match_kind);
+		TriggerTemplate* FindNearestDebugTrigger(DebugTriggerFilter filter);
+		bool ReadDebugPlayerPosition(float position[4]) const;
+		void AddClientEntity(void* entity, const TriggerKey& key,
+			std::uint32_t trigger_signature, std::uint32_t world_id);
 		bool TrySpawnClientEntity(PendingSpawn& pending);
+		bool ClaimForcedClientSpawn(void* trigger, std::uint32_t family,
+			std::uint32_t subtype, TriggerKey& out_key,
+			std::uint32_t& out_world_id);
+		void ClearForcedClientSpawn();
 		// Host -> client: queues a despawn packet for a dead entity.
 		void QueueHostDespawn(std::uint32_t world_id);
 		// Removes a dead entity from tracking and notifies clients.
@@ -196,10 +258,11 @@ namespace coop
 		std::vector<WorldSpawnPacket> m_outgoing_spawns;
 		std::vector<WorldSnapshotPacket> m_outgoing_snapshots;
 		std::vector<WorldTriggerEventPacket> m_outgoing_trigger_events;
+		std::vector<WorldObjectEventPacket> m_outgoing_object_events;
 		std::vector<WorldSpawnPacket> m_incoming_spawns;
 		std::vector<WorldSnapshotPacket> m_incoming_snapshots;
 		std::vector<WorldTriggerEventPacket> m_incoming_trigger_events;
-
+		std::vector<WorldObjectEventPacket> m_incoming_object_events;
 		std::vector<TriggerCounter> m_host_trigger_counters;
 		std::vector<TriggerCounter> m_client_trigger_counters;
 		std::vector<TriggerTemplate> m_trigger_templates;
@@ -210,6 +273,8 @@ namespace coop
 		std::vector<WorldSnapshotPacket> m_pending_snapshots;
 		std::uint32_t m_next_world_id;
 		std::uint32_t m_snapshot_sequence;
+		std::uint32_t m_object_event_sequence;
+		std::uint32_t m_last_received_object_event_sequence;
 		DWORD m_last_snapshot_tick;
 		volatile LONG m_host_resync_requested;
 		volatile LONG m_client_ready_pending;
@@ -217,5 +282,8 @@ namespace coop
 		std::uint32_t m_client_ready_sequence;
 		bool m_forced_client_spawn_active;
 		WorldSpawnPacket m_forced_client_spawn;
+		void* m_forced_client_spawn_trigger;
+		DWORD m_forced_client_spawn_started_tick;
+		bool m_forced_client_spawn_native_invoked;
 	};
 }

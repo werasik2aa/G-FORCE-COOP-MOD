@@ -3,6 +3,7 @@
 #include "coop_netgame.h"
 #include "coop_runtime.h"
 #include "gforce_constants.h"
+#include "retail/retail_views.h"
 #include "world_sync.h"
 #include "ServerClient/MServer.h"
 #include "ServerClient/MServerONLINE.h"
@@ -44,7 +45,7 @@ namespace
 			return false;
 		directory[0] = L'\0';
 		wchar_t executable[MAX_PATH] = {};
-		const DWORD length = GetModuleFileNameW(NULL, executable,
+		const DWORD length = GetModuleFileNameW(nullptr, executable,
 			static_cast<DWORD>(_countof(executable)));
 		if (length == 0 || length >= _countof(executable))
 			return false;
@@ -88,10 +89,7 @@ namespace
 
 	bool VerifyNativeLoadPath()
 	{
-		using namespace coop::gforce;
-		if (memcmp(reinterpret_cast<const void*>(kBeginNativeSaveLoad),
-			kExpectedBeginNativeSaveLoad,
-			sizeof(kExpectedBeginNativeSaveLoad)) == 0)
+		if (coop::retail::NativeGameApi::NativeLoadEntryMatchesExpected())
 		{
 			return true;
 		}
@@ -102,21 +100,18 @@ namespace
 
 	bool ReadHostSelectedSlot(std::uint32_t& slot)
 	{
-		using namespace coop::gforce;
 		if (!VerifyNativeLoadPath())
 			return false;
-		__try
-		{
-			slot = *reinterpret_cast<const volatile std::uint32_t*>(
-				kLoadSaveManager + kLoadSaveSelectedSlotOffset);
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
+		const coop::retail::LoadSaveManagerRef manager = {
+			coop::gforce::kLoadSaveManager
+		};
+		if (!coop::retail::LoadSaveManagerView(manager).SelectedSlot(slot))
 		{
 			coop::CoopRuntime::Instance().Log(
 				"[save-sync] cannot read host selected slot\r\n");
 			return false;
 		}
-		if (slot >= kVisibleSaveSlotCount)
+		if (slot >= coop::gforce::kVisibleSaveSlotCount)
 		{
 			coop::CoopRuntime::Instance().Log(
 				"[save-sync] host selected slot is invalid: %u\r\n", slot);
@@ -128,15 +123,15 @@ namespace
 	bool ReadWholeSave(std::uint32_t slot, std::vector<BYTE>& data)
 	{
 		data.clear();
-		const wchar_t* file_name = NULL;
+		const wchar_t* file_name = nullptr;
 		if (!GetSaveFileName(slot, file_name))
 			return false;
 		wchar_t path[MAX_PATH] = {};
 		if (!BuildSavePath(path, file_name))
 			return false;
 		const HANDLE file = CreateFileW(path, GENERIC_READ,
-			FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
-			FILE_ATTRIBUTE_NORMAL, NULL);
+			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (file == INVALID_HANDLE_VALUE)
 		{
 			coop::CoopRuntime::Instance().Log(
@@ -144,7 +139,7 @@ namespace
 				GetLastError());
 			return false;
 		}
-		const DWORD size = GetFileSize(file, NULL);
+		const DWORD size = GetFileSize(file, nullptr);
 		if (size == INVALID_FILE_SIZE || size == 0 || size > kMaxSaveBytes)
 		{
 			CloseHandle(file);
@@ -154,7 +149,7 @@ namespace
 		}
 		data.resize(size);
 		DWORD read = 0;
-		const bool ok = ReadFile(file, data.data(), size, &read, NULL) != FALSE &&
+		const bool ok = ReadFile(file, data.data(), size, &read, nullptr) != FALSE &&
 			read == size;
 		CloseHandle(file);
 		if (!ok)
@@ -171,7 +166,7 @@ namespace
 	{
 		if (!data || size == 0 || size > kMaxSaveBytes)
 			return false;
-		const wchar_t* file_name = NULL;
+		const wchar_t* file_name = nullptr;
 		if (!GetSaveFileName(slot, file_name))
 			return false;
 		wchar_t temporary_file_name[16] = {};
@@ -184,8 +179,8 @@ namespace
 			!BuildSavePath(temporary, temporary_file_name))
 			return false;
 
-		const HANDLE file = CreateFileW(temporary, GENERIC_WRITE, 0, NULL,
-			CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		const HANDLE file = CreateFileW(temporary, GENERIC_WRITE, 0, nullptr,
+			CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (file == INVALID_HANDLE_VALUE)
 		{
 			coop::CoopRuntime::Instance().Log(
@@ -194,7 +189,7 @@ namespace
 			return false;
 		}
 		DWORD written = 0;
-		const bool wrote = WriteFile(file, data, size, &written, NULL) != FALSE &&
+		const bool wrote = WriteFile(file, data, size, &written, nullptr) != FALSE &&
 			written == size;
 		const bool flushed = wrote && FlushFileBuffers(file) != FALSE;
 		CloseHandle(file);
@@ -405,23 +400,19 @@ namespace coop
 			return false;
 		}
 
-		typedef bool(__thiscall* BeginNativeLoadFn)(void*, std::uint32_t);
-		BeginNativeLoadFn begin_native_load =
-			reinterpret_cast<BeginNativeLoadFn>(gforce::kBeginNativeSaveLoad);
-		void* load_save_manager = reinterpret_cast<void*>(gforce::kLoadSaveManager);
+		const retail::LoadSaveManagerRef load_save_manager = {
+			gforce::kLoadSaveManager
+		};
 		// All local entity pointers become invalid during the stock load.  Clear the
 		// client match table before the loader starts constructing the next world.
 		WorldSync::Instance().ResetForWorldLoad();
 		bool loaded = false;
-		__try
+		if (!retail::NativeGameApi::BeginNativeLoad(load_save_manager,
+			static_cast<std::uint32_t>(pending_slot), loaded))
 		{
-			loaded = begin_native_load(load_save_manager,
-				static_cast<std::uint32_t>(pending_slot));
-		}
-		__except (CoopRuntime::Instance().LogException(
-			GetExceptionInformation(), "client-native-load"))
-		{
-			loaded = false;
+			CoopRuntime::Instance().Log(
+				"[save-sync] client native Load Game call fault slot=%u\r\n",
+				static_cast<unsigned>(pending_slot));
 		}
 		if (loaded)
 		{

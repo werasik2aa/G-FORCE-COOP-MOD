@@ -18,6 +18,12 @@ namespace coop
 		constexpr uintptr_t kSpawnCall2 = 0x0043F49Du;
 		constexpr uintptr_t kSpawnGPig = 0x00545370u;
 		constexpr uintptr_t kSelectMode = 0x004B7050u;
+		// StateMachine_SelectState (approx-name) receives (controller, mode_id,
+		// force_reselect). Its five-byte prologue is three pushes plus mov esi,ecx,
+		// so the existing E9 trampoline can relocate it without a relative fixup.
+		constexpr uint8_t kExpectedStateMachineSelectState[] = {
+			0x51, 0x53, 0x56, 0x8B, 0xF1
+		};
 		constexpr uintptr_t kDefaultModeActiveStores = 0x005BEAD6u;
 
 		constexpr uintptr_t kGPigUpdateVtableSlot = 0x0070C8A4u;
@@ -26,6 +32,14 @@ namespace coop
 		// edge and its post-motor position can be observed.
 		constexpr uintptr_t kFlyUpdateVtableSlot = 0x007180F4u;
 		constexpr uintptr_t kOriginalControllerUpdate = 0x005BFBE0u;
+		// The global post-controller motor pass walks the live entity manager and
+		// commits movement/turn deltas to entity root transforms.  Its first five
+		// bytes are three complete non-relative instructions, so they are safe for
+		// the existing E9 trampoline.  P2 recovery runs only after this stock pass.
+		constexpr uintptr_t kLiveEntityMovementScheduler = 0x0043C9E0u;
+		constexpr uint8_t kExpectedLiveEntityMovementScheduler[] = {
+			0x83, 0xEC, 0x7C, 0x53, 0x55
+		};
 
 		constexpr uintptr_t kInputActionQuery = 0x00488A70u;      // is-down (level)
 		constexpr uintptr_t kInputActionUpQuery = 0x00488B70u;    // is-up (inverse level)
@@ -41,12 +55,61 @@ namespace coop
 		// unhooked, P2's aim branch was decided by the local physical mouse instead of
 		// the remote snapshot.
 		constexpr uintptr_t kInputAimHoldQuery = 0x00488B00u;     // aim hold + threshold
-		// Fly_Active polls this separate raw-action family (0x4008xxxx) to select and
-		// drive its scan state.  Its four stack arguments are device, action, flags,
+		// Fly_Active polls this separate raw-action family (0x4008xxxx) for several
+		// private Fly branches. Its four stack arguments are device, action, flags,
 		// and the engine's input-record flag.
 		constexpr uintptr_t kInputRawPressedQuery = 0x0048AE10u;
 		constexpr uintptr_t kInputRawReleasedQuery = 0x0048AF10u;
 		constexpr uintptr_t kInputRawHeldQuery = 0x0048AF90u;
+		// User-reported dual Mooch laser: Fly_Active calls raw pressed query
+		// 0x48AE10 at 0x005B60F2 for this action. Its exact return site then
+		// selects two native objects and changes their stock effect flag. The same
+		// raw action is also used by unrelated P1 weapon code, so replay must be
+		// restricted to this return address and never be a global input override.
+		constexpr uint32_t kFlyDualLaserRawActionId = 0x40080029u;
+		constexpr uintptr_t kFlyDualLaserRawPressedQueryReturn = 0x005B60F7u;
+		// The exact Fly_Active block then resolves two items from the Mooch
+		// Handler's inventory and writes their stock effect field. These are a
+		// narrow receiver-presentation contract, not a general inventory API.
+		constexpr uintptr_t kFindFlyDualLaserRouteItem = 0x0040CB70u;
+		constexpr uintptr_t kResolveFlyDualLaserRouteItem = 0x00593710u;
+		// The preceding Fly_Active route first obtains a controller-local
+		// XMotorTask_Aim and supplies its target point.  Merely toggling the two
+		// inventory item flags leaves that task with P1's stale target/context,
+		// which makes the visual effect originate in the wrong place.
+		constexpr uintptr_t kGetFlyDualLaserPresentationContext = 0x005B00E0u;
+		constexpr uintptr_t kGetFlyDualLaserAimTask = 0x00442300u;
+		constexpr uintptr_t kSetFlyDualLaserAimTarget = 0x004B9F30u;
+		// The native laser action is not a standalone fire routine.  It is a raw
+		// input branch inside this registered Fly_Active mode.  The co-op layer may
+		// call only the mode's update body, while its input hook supplies the one
+		// pressed edge; it never selects/enters this mode on a presentation peer.
+		constexpr uint32_t kFlyActiveModeId = 0x61000007u;
+		constexpr uintptr_t kFlyActiveVTable = 0x007180A4u;
+		constexpr uintptr_t kFlyActiveUpdate = 0x005B4C30u;
+		constexpr uint8_t kExpectedFlyActiveUpdate[] = {
+			0x81, 0xEC, 0xD8, 0x00, 0x00, 0x00, 0x83, 0x3D,
+			0x50, 0x24, 0x91, 0x00, 0x00
+		};
+		constexpr uint8_t kExpectedFindFlyDualLaserRouteItem[] = {
+			0x53, 0x56, 0x57, 0x8B, 0xF9
+		};
+		constexpr uint8_t kExpectedResolveFlyDualLaserRouteItem[] = {
+			0x53, 0x56, 0x8B, 0x71, 0x14
+		};
+		constexpr uint8_t kExpectedGetFlyDualLaserPresentationContext[] = {
+			0x8B, 0x41, 0x18, 0x85, 0xC0
+		};
+		constexpr uint8_t kExpectedGetFlyDualLaserAimTask[] = {
+			0x6A, 0xFF, 0x68, 0x8B, 0x44
+		};
+		constexpr uint8_t kExpectedSetFlyDualLaserAimTarget[] = {
+			0x8B, 0x44, 0x24, 0x04, 0xD9
+		};
+		constexpr uint32_t kFlyDualLaserFirstRouteSlot = 0x0E00002Fu;
+		constexpr uint32_t kFlyDualLaserSecondRouteSlot = 0x0E00007Cu;
+		constexpr uint32_t kFlyDualLaserDefaultItemBase = 0x50000002u;
+		constexpr uint32_t kFlyDualLaserAlternateItemBase = 0x50000017u;
 		// Return address after Fly_Active's own Mooch-action edge query. This is
 		// the native exit path; Darwin's separate entry query stays suppressed.
 		constexpr uintptr_t kFlyExitActionQueryReturn = 0x005B63B1u;
@@ -79,29 +142,54 @@ namespace coop
 		};
 		constexpr uintptr_t kXGamePadCtor = 0x0048B290u;
 
-		// Retail main menu, verified in IDA 9.1 against XHudMenuMain::BuildMainMenu
-		// (0x5EECC0).  0x5EED92 is the original AddChild call immediately after the
-		// stock «Авторы» button; it is a narrow call-site hook rather than a Steam ASI
-		// signature.  The new button reuses unused resource 0x43003B3E and its text is
-		// provided as a normal EXWString by the resolver hook below.
+		// Retail main menu, verified in IDA 9.1 against XHudMenuMain::BuildMainMenu.
+		// The narrow call-site below is immediately after the stock Credits row.  It
+		// is intentionally a profile-specific hook, not a generic EngineX UI API.
+		constexpr uintptr_t kMainMenuBuild = 0x005EECC0u;
 		constexpr uintptr_t kMenuCreditsAddChildCall = 0x005EED92u;
 		constexpr uintptr_t kMenuAddChild = 0x005C4850u;
-		// The stock Credits call enters AddChild after its EDI=ECX setup, at +5.
-		// Preserve this exact target when the narrow call-site hook forwards the stock row.
-		constexpr uintptr_t kMenuCreditsAddChildTarget = 0x005C4855u;
 		constexpr uintptr_t kMenuCreateButton = 0x005E8420u;
 		constexpr uintptr_t kMenuLabelResolver = 0x00490900u;
 		constexpr uintptr_t kGameAllocator = 0x00605919u;
-		constexpr uintptr_t kGameFree = 0x006059EEu;
+		constexpr uintptr_t kGameStringAssign = 0x006395BAu;
+		constexpr uintptr_t kGameStringAssignAnsi = 0x0063982Eu;
 		constexpr uintptr_t kGameStringRelease = 0x0064E925u;
+		constexpr uintptr_t kMenuCallbackInvoke = 0x005E8AA0u;
 		constexpr uint32_t kRetailMenuUintCallbackVtable = 0x0071B098u;
-		constexpr uint32_t kConnectLabelResourceId = 0x43003B3Eu;
+		constexpr uintptr_t kMenuCallbackInvokeVtableSlot = 0x0071B09Cu;
+		constexpr uintptr_t kXATextResolverVtableSlot = 0x006FA818u;
+		constexpr uintptr_t kTextLanguage = 0x009144F8u;
+		// This is a project-private resource key. It is intercepted before retail
+		// resource lookup, so it cannot alter the stock Level Select title at
+		// 0x43003B3E or any other retail label.
+		constexpr uint32_t kMenuConnectLabelResourceId = 0xC0DEC001u;
+		constexpr uint32_t kMenuConnectAction = 0xC0DEC002u;
+		constexpr uint8_t kExpectedMainMenuBuild[] = {
+			0x55, 0x56, 0x57, 0x8B, 0xF1
+		};
 		constexpr uint8_t kExpectedMenuCreditsAddChildCall[] = {
 			0xE8, 0xB9, 0x5A, 0xFD, 0xFF
 		};
+		constexpr uint8_t kExpectedMenuAddChild[] = {
+			0x56, 0x57, 0x8B, 0xF9, 0x8B, 0x47, 0x2C
+		};
+		constexpr uint8_t kExpectedMenuCallbackInvoke[] = {
+			0x8B, 0xC1, 0x8B, 0x48, 0x04, 0x8B, 0x50, 0x0C,
+			0x51, 0x8B, 0x48, 0x08, 0xFF, 0xD2, 0xC3
+		};
 		constexpr uint8_t kExpectedMenuLabelResolver[] = {
 			0x6A, 0xFF, 0x68, 0xB8, 0x5F, 0x6D, 0x00,
-			0x64, 0xA1, 0x0C, 0x03, 0x91, 0x00
+			0x64, 0xA1, 0x00, 0x00, 0x00, 0x00
+		};
+		constexpr uint8_t kExpectedGameStringAssign[] = {
+			0x56, 0x57, 0x8B, 0x7C, 0x24, 0x0C, 0x8B, 0xF1
+		};
+		constexpr uint8_t kExpectedGameStringAssignAnsi[] = {
+			0x53, 0x8B, 0x5C, 0x24, 0x08, 0x56, 0x8B, 0xF1,
+			0x83, 0x26, 0x00
+		};
+		constexpr uint8_t kExpectedGameStringRelease[] = {
+			0x56, 0x8B, 0xF1, 0x8B, 0x06, 0x85, 0xC0, 0x74
 		};
 
 		// XLoadSaveManagerPlatform is a process-global object.  The stock Load Game
@@ -134,6 +222,9 @@ namespace coop
 		// the game's own targeting code: +0x28 holds generic NPCs and +0x30 holds
 		// monster/appliance entities.  Each list node is { prev, next, entity }.
 		constexpr uintptr_t kEntityRegistry = 0x00912B50u;
+		// Guard only against a corrupted/cyclic intrusive list.  This is not a
+		// claimed maximum number of live entities.
+		constexpr size_t kEntityRegistryWalkSafetyLimit = 512u;
 		// Slot 4 of the same array (0x9128D8 + 4*4): Mooch, the fly.  It is NOT one of
 		// the guinea-pig slots 1..3, so P2 in slot 2 does not collide with it.  The fly
 		// switch at 0x5BBC80 refuses to run when this is null (0x5BBD00), and reads the
@@ -169,6 +260,8 @@ namespace coop
 		// [handler+0x4BC] ? -vcall[+0x30]() : -[handler+0x190C].  Every body-turn path
 		// reads it — 0x5BBB67 (aim turn) and 0x5B8DB7 (movement yaw = atan2(axis) +
 		// this) — and the handler is shared, so unhooked P2 turned towards P1's camera.
+		// `CameraHandler::GetCurrentYaw` takes the handler in ECX and returns a float
+		// in x87 ST(0); see `re_cache/rdv_camera_contract_dump.txt`.
 		constexpr uintptr_t kCameraYawGetter = 0x0052AD20u;
 		constexpr size_t kCameraRequestedStateOffset = 0x9A0u;
 		constexpr uintptr_t kGetCurrentWeaponId = 0x00544A30u;
@@ -237,6 +330,20 @@ namespace coop
 		// called when a trigger receives a gameplay event, before its specialised
 		// handlers create any dynamic children.
 		constexpr uintptr_t kTriggerEventDispatcher = 0x0042FAB0u;
+		// `sub_41E8B0` forwards contextual 0x41xxxxxx actions through this global
+		// seven-listener fan-out. It is separate from TriggerEventDispatcher, so it
+		// is diagnostic evidence for buttons/objects that never become a trigger.
+		constexpr uintptr_t kGlobalEventForwarder = 0x0046D760u;
+		// These temporary diagnostics sit on the neighbouring, separate object-event
+		// chain. Static analysis proves the cdecl relay and stdcall forwarder carry
+		// contextual object events. The read-only diagnostic resolves an MSVC RTTI
+		// class name only when that metadata validates; it never replays an event.
+		constexpr uintptr_t kObjectEventRelay = 0x0041E890u;
+		constexpr uintptr_t kObjectEventForwarder = 0x0046D6F0u;
+		// `sub_41E890` uses `mov ecx, 0x00912AA8` before calling the object
+		// forwarder. This is the literal retail receiver address (not a pointer to
+		// dereference); the exact EXE fingerprint makes the fixed address valid.
+		constexpr uintptr_t kObjectEventReceiverAddress = 0x00912AA8u;
 		constexpr uint8_t kExpectedTriggerFactory[] = {
 			0x6A, 0xFF, 0x68, 0x02, 0x39, 0x6D, 0x00,
 			0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x50
@@ -255,11 +362,44 @@ namespace coop
 		constexpr uint8_t kExpectedTriggerEventDispatcher[] = {
 			0x55, 0x56, 0x8B, 0xF1, 0x80, 0xBE, 0x44, 0x01, 0x00, 0x00, 0x00
 		};
+		// Runtime-verified `sub_46D760`: push ecx; push ebp;
+		// mov ebp,[esp+10h]; push esi; push edi.
+		// These eight bytes are complete, non-relative instructions and preserve the
+		// incoming global receiver in ECX for the trampoline.
+		constexpr uint8_t kExpectedGlobalEventForwarder[] = {
+			0x51, 0x55, 0x8B, 0x6C, 0x24, 0x10, 0x56, 0x57
+		};
+		// Runtime-read, complete non-relative instructions. The relay needs eight
+		// bytes because its first two mov instructions are four bytes each; the
+		// forwarder has a clean five-byte prologue.
+		constexpr uint8_t kExpectedObjectEventRelay[] = {
+			0x8B, 0x44, 0x24, 0x08, 0x8B, 0x4C, 0x24, 0x04
+		};
+		constexpr uint8_t kExpectedObjectEventForwarder[] = {
+			0x56, 0x8B, 0x74, 0x24, 0x08
+		};
 		// 0x5933E0 walks an inventory list, not the GPig handler itself.  The ammo HUD
 		// obtains this exact container through `[handler + 0x514]` at 0x5D60EF before
 		// resolving the selected weapon's WeaponAmmoItem record.
+		// The GPig motor system is inline in its handler.  The task-state table at
+		// handler+0x4EC is the same pointer reached through motor_system+0x2C.
+		// These names describe only the factory contract; they do not claim a full
+		// XMotorSystem class layout.
+		constexpr size_t kHandlerMotorSystemOffset = 0x4C0u;
+		constexpr size_t kHandlerMotorTaskStateTableOffset = 0x4ECu;
+		constexpr size_t kMotorSystemResourceCountOffset = 0x10u;
+		constexpr size_t kMotorSystemResourceTableOffset = 0x14u;
+		constexpr size_t kMotorSystemTaskStateTableOffset = 0x2Cu;
+		// Defensive bound retained from the old ABR task contract, not a claim that
+		// this is the retail table's allocated length.
+		constexpr uint32_t kMotorSystemTaskStateSafetyLimit = 64u;
 		constexpr size_t kHandlerInventoryOffset = 0x514u;
 		constexpr size_t kHandlerControllerOffset = 0x510u;
+		// In Fly_Active's confirmed dual-laser block, this handler byte selects
+		// 0x50000002/3 versus 0x50000017/18 for the two route items.
+		constexpr size_t kHandlerFlyDualLaserItemSetOffset = 0x698u;
+		constexpr size_t kFlyDualLaserRouteItemIdOffset = 0x604u;
+		constexpr size_t kFlyDualLaserRouteItemActiveOffset = 0x658u;
 
 		// Confirmed on monster subtype 0x1F0000F0: this float changed from 20.0
 		// to 10.0 for one ordinary hit, while no controller field showed a matching
@@ -271,8 +411,18 @@ namespace coop
 		constexpr size_t kControllerAccumulatedHitsOffset = 0xA8u;
 		constexpr size_t kControllerDeathFlagOffset = 0xACu;
 		constexpr size_t kControllerInvulnTimerOffset = 0xC0u;
-		constexpr size_t kModeIdOffset = 0x08u;
+		constexpr size_t kControllerModeCountOffset = 0x10u;
+		constexpr size_t kControllerModeTableOffset = 0x14u;
+		constexpr uint32_t kControllerModeSafetyLimit = 64u;
+// Every registered controller mode stores its owning controller at +0x04.
+constexpr size_t kModeControllerOffset = 0x04u;
+constexpr size_t kModeIdOffset = 0x08u;
 		constexpr size_t kModeConflictMaskOffset = 0x0Cu;
+		constexpr size_t kModeUpdateVtableOffset = 0x0Cu;
+		// Fly_Active::Enter sets this mode-local flag before the update body. A
+		// shadow ability pass temporarily mirrors only this byte and restores it
+		// immediately; it does not run Enter or alter the controller's current mode.
+		constexpr size_t kFlyActiveModeEnteredOffset = 0x10u;
 		constexpr size_t kGameInputDeviceOffset = 0x674u;
 		constexpr size_t kCameraTargetControllerOffset = 0x900u;
 		constexpr size_t kCameraTargetIdOffset = 0xB8u;
@@ -292,13 +442,23 @@ namespace coop
 		constexpr size_t kCameraAimAssistFloats = 2u;
 		constexpr size_t kCameraAimYawStateOffset = 0x988u;
 		constexpr size_t kCameraAimYawStateFloats = 6u;
+		// Fly_Active writes this larger request/apply window before it reaches the
+		// raw laser branch: +0x91C, +0x940..+0x94C, +0x970 and +0x9A0..+0x9B5.
+		// A shadow ability pass must restore the whole contiguous region so the
+		// shared P1 camera cannot visibly snap toward Mooch for one frame.
+		constexpr size_t kCameraFlyTransientOffset = 0x91Cu;
+		constexpr size_t kCameraFlyTransientBytes = 0x9Cu; // +0x91C..+0x9B7
 		// The bl gate of the yaw block at 0x5BBA98 picks what lands in
 		// [turn_task+0x10]: if 0x4B6F40(handler+0x498) is the follow state 0x44110010
 		// and that state's +0x3C is past [0x8B7824], the body receives its OWN current
 		// yaw (0x5BBB89) and stops turning; otherwise it receives the shared camera
 		// yaw from 0x52AD20 (0x5BBB67).  Because the handler is shared, P2's stock tick
 		// leaves its own turn magnitude in +0x3C and flips that gate for P1.
+		// CameraStateMachine::CurrentStateId: returns [current_state+8], or -1 when
+		// the inline state machine has no current state. ECX is the state machine.
 		constexpr uintptr_t kCameraStateMachineGetId = 0x004B6F40u;
+		// CameraStateMachine::FindStateById: ECX is the state machine; one stack
+		// argument is the state ID and EAX returns the matching object or null.
 		constexpr uintptr_t kCameraStateMachineGetObject = 0x004B70E0u;
 		constexpr size_t kCameraStateMachineOffset = 0x498u;
 		constexpr size_t kCameraStateTurnOffset = 0x3Cu;
@@ -329,37 +489,52 @@ namespace coop
 		constexpr uintptr_t kGPigDeathModeFallVtable = 0x00700FCCu;
 		constexpr uintptr_t kGPigDeathModeDeathVtable = 0x00701024u;
 		constexpr uintptr_t kGPigDeathModeRespawnVtable = 0x0070107Cu;
-		// Controller-owned native ABR presentation mode; it is mirrored only for the
-		// remote Darwin P2 and never treated as a separately spawned world object.
+		// Controller-owned native ABR vehicle/presentation mode. It selects and
+		// guards the separate native path; never treat it as an ordinary on-foot
+		// P2 transform or as a separately spawned world object.
 		constexpr uint32_t kAbrModeId = 0x6100006Eu;
-		// Native lazy factory for XMotorTask_RDV. 0x40C9F0 indexes the state
-		// table at [XMotorSystem+0x2C] (= handler+0x4EC), uses the engine-owned
-		// dynamic index at 0x91568C, allocates the confirmed 0x78-byte task, and
-		// runs its constructor at 0x4BA980. Do not replace this with a manual
-		// allocation or a direct state-table write.
+		// XMotorSystem::EnsureGPigRdvTask. Static dump: ECX is XMotorSystem,
+		// the bool argument is stack-owned and the function returns `ret 4`.
+		// It indexes [XMotorSystem+0x2C] (= handler+0x4EC) using the engine-owned
+		// index at 0x91568C, allocates the confirmed 0x78-byte task, and runs its
+		// constructor at 0x4BA980. Do not replace this with a manual allocation or
+		// a direct state-table write.
 		constexpr uintptr_t kEnsureGPigRdvTask = 0x0040C9F0u;
-		// Stock P1 post-spawn configurator at 0x43EE20. It receives the settled level
-		// spawn context and GPig handler, then enables the factory-created RDV task.
+		// ConfigureGPigRdvTaskForSpawnContext. Static dump: ECX is the settled spawn
+		// context and the GPig handler is the sole stack argument. It takes
+		// handler+0x4C0, calls kEnsureGPigRdvTask(true), then writes enabled=1 at
+		// task+0x30. The remaining context layout is deliberately opaque.
 		constexpr uintptr_t kConfigureGPigRdvTask = 0x0043EE20u;
 		constexpr uintptr_t kGPigRdvTaskStateIndex = 0x0091568Cu;
 		constexpr uintptr_t kGPigRdvTaskVtable = 0x006FC27Cu;
+		constexpr size_t kGPigRdvTaskEnabledOffset = 0x30u;
+		constexpr uint8_t kGPigRdvTaskEnabledValue = 1u;
 		// XMotorFunction_GPigRDV resource used by the native RDV task.
 		constexpr uintptr_t kGPigRdvMotorFunctionVtable = 0x007040DCu;
-
-		// These are transient modes observed around the native Mooch hand-off.
-		// The controller's actual Active and Scanning modes are 0x61000007 and
+		constexpr uint32_t kGPigRdvMotorResourceIndex = 11u;
+		// Only these two spawn-context fields are checked before the existing native
+		// RDV configurator call; the remaining context layout is intentionally opaque.
+		constexpr size_t kGPigSpawnContextFlagsOffset = 0x10u;
+		constexpr size_t kGPigSpawnContextEntityOffset = 0xE8u;
+		constexpr uint32_t kGPigSpawnContextRdvFlag = 0x20000000u;
+		// This transient mode is observed around the native Mooch hand-off. The
+		// controller's actual Active and Scanning modes are 0x61000007 and
 		// 0x61000087; ownership is therefore tracked by the native +0x53 state flag,
 		// not by treating either transient mode as the complete lifecycle.
-		constexpr uint32_t kFlyRespawnModeId = 0x61000034u;
 		constexpr uint32_t kFlyOrbitModeId = 0x61000033u;
-
+		// XControllerMode_Fly_Deactivated is registered by 0x5B3F80 with id
+		// 0x61000075. It is a native local transition into the Respawn path, not a
+		// peer-death signal: only the owning process may publish the zero-owner exit.
+		constexpr uint32_t kFlyDeactivatedModeId = 0x61000075u;
 		constexpr uint32_t kFirstKeyboardActionId = 0x10000000u;
 		constexpr uint32_t kKeyboardActionCount = 0x43u;
 		constexpr uint32_t kFireActionId = 0x10000007u;
-		// Return address immediately after Fly_Scan's own logical Fire level query at
-		// 0x5B6B0C.  Restricting the remote override to this call site prevents a
-		// remote Mooch fire from also pressing the receiver's Darwin weapon trigger.
-		constexpr uintptr_t kFlyScanFireActionQueryReturn = 0x005B6B19u;
+
+		// FrameLoop::UpdateForegroundPauseState at 0x005F4850 compares the result of
+		// GetForegroundWindow against [0x0091AAC8], stores that equality here, then
+		// clears it when IsIconic(expected_window) is true. F7's IAT hooks make both
+		// predicates report active for this process, while Present keeps this byte set.
+		constexpr uintptr_t kFramePauseState = 0x0091AACCu;
 
 		// Actions that must never be driven by the remote snapshot, pinned by INDEX so a
 		// rebind cannot reopen them.  The live table dumped from the shipped build
@@ -432,8 +607,8 @@ namespace coop
 		// 0x5BCF30: sub esp,20h + fldz is exactly five bytes and has no relative
 		// operand.  The fldz is balanced by the fstp at 0x5BCF3D, so the trampoline may
 		// hold it; the skip path never executes either.
-		constexpr uint8_t kExpectedGPigCameraUpdate[5] =
-		{ 0x83, 0xEC, 0x20, 0xD9, 0xEE };
+constexpr uint8_t kExpectedGPigCameraUpdate[5] =
+{ 0x83, 0xEC, 0x20, 0xD9, 0xEE };
 		// 0x52AD20: mov eax,ecx + cmp byte ptr [eax+1AB4h],0 is nine bytes.  The
 		// relocated cmp sets the flags that the original je at 0x52AD29 consumes, and
 		// flags survive the trampoline's jmp back.

@@ -1,16 +1,45 @@
-# G-Force local co-op — текущее состояние
+# G-Force local co-op — agent entry
 
-Это единственная актуальная точка входа для продолжения работы. Не изучать старые
-эксперименты и не сканировать `extracted/` или полный дизассемблер без конкретной
-необходимости: для текущей задачи достаточно этого файла и
-`tools/coop_v2/README.md`. Код разделён на классы `CoopApplication`,
-`CoopRuntime`, `Player2Module`, `WindowHook`, `WinmmProxy`, отдельный
-`MemoryPatch`, таблицу `gforce_constants.h` и короткий ABI-файл
-`coop_dll.cpp`.
+Read only these current documents before changing code:
 
-## Цель
+1. `tools/coop_v2/IMPLEMENTATION.md` — compact module map, ownership and mode
+   boundaries.
+2. `re_cache/RE_CATALOG.md` — every retail address/ABI and its confidence:
+   `approved`, `guess`, `not-tested`, or `approx-name`.
+3. `tools/coop_v2/README.md` — detailed build and two-process test recipes.
 
-Локальный второй игрок в PC-версии G-Force: P2 создаётся по `F6` после вступительной
+The material below **Historical research archive** is preserved evidence, not
+an implementation contract. It must not override either canonical document or
+the current source. Do not scan `extracted/` or the full disassembly unless a
+specific current question requires it.
+
+## Current rules
+
+- Scope is a two-process P1/P2 co-op experiment for one verified x86 retail
+  `GForce.exe`, not an EngineX SDK or a split-screen project.
+- `sizeof(CoopInput) == 336`; both peers must use the same fresh DLL. It carries
+  four Fly axes and an ABI-reserved, currently unused `fly_debug_fire_sequence`,
+  but deliberately has no ABR motor heading.
+- Keep ordinary P2, shared Mooch/Fly and ABR/RDV vehicle motor as separate
+  control domains. In ABR, only the native vehicle tick may run; generic P2
+  input, camera, weapon and root-transform corrections are forbidden.
+- Keep stock P2 collision, ledge and fall physics. The only outer DeathMode
+  escape is the checked native dispatcher after a peer `Default` snapshot newer
+  than DeathMode entry; do not force `Default` to escape Ledge. Both P2 recovery routes remain
+  `not-tested` until a two-process level test produces their log evidence.
+- P3 is selector discovery only. It has no approved factory/lifetime/input/
+  camera/network implementation and must not be enabled from table index alone.
+- New feature code uses `retail/` typed views, `NativeGameApi` and
+  `TryRead`/`TryWrite`; raw `BYTE* + offset` and VA-to-function casts belong
+  only to that boundary or to a checked hook/trampoline implementation.
+- Build `Release|Win32` from `tools/coop_v2` with
+  `$env:GFORCE_DEPLOY_ROOT='E:\G-Force'; cmd.exe /d /c build.bat`.
+
+## Historical research archive (noncanonical)
+
+### Original target
+
+Локальный второй игрок в PC-версии G-Force: P2 создаётся по `F5` после вступительной
 катсцены, управляется отдельным устройством и не забирает камеру у P1.
 
 Для будущих тестов host/client добавлен временный оконный режим. Секция `[window]` в
@@ -33,14 +62,23 @@ WinMM-прокси запускает инициализацию в отдель
 сталкерских `SteamGameManager`, `GetBeHost`, UI или типов `xr_*`. Собственный
 `CSteamManager` обслуживается отдельным worker thread.
 
-- `F6` создаёт локального P2.
+- `F1` локально выбирает `Fly_Scanning` у живой Мухи и ставит один native
+  Fire-query; это тестовый route без owner/peer требования, не прямой projectile
+  spawn.
+- `F2` повторяет native spawn ближайшего зарегистрированного spawn-trigger; `F3`
+  повторяет только реально наблюдённый event; `F4` знает лишь подтверждённый
+  ComputerBox event.
+- `F5` создаёт локального P2; `F6` сначала обеспечивает P2, затем запрашивает ABR
+  для P1.
 - В главном меню listener не открывается. Первый штатный тик P1 после загрузки
   мира автоматически открывает standalone GNS-сервер на `44139` и Steam P2P
   listen socket на виртуальном порту `44140` с rich presence.
 - Steam relay/NAT traversal запускается после загрузки мира, а не в меню.
 - `F8` переводит текущий процесс в LAN-client и подключает к `127.0.0.1:44139`.
-- `F7` не имеет co-op действия. Steam Join закрывает local listener и выбирает
-  client-режим до загрузки полученного save.
+- `F7` включает экспериментальный bypass focus/minimize pause, пытается поставить
+  focus/minimize hooks для активного окна и всё ещё использует guessed frame flag.
+  Steam Join всё ещё закрывает local listener и выбирает client-режим до загрузки
+  полученного save.
 - После handshake оба процесса ставят автоматический спавн P2 в очередь игрового
   потока. Для factory используется сохранённый штатный spawn context собственного P1.
   Очередь ждёт `Default`-режим P1, одну секунду после соединения и окончание обычного
@@ -96,7 +134,7 @@ WinMM-прокси запускает инициализацию в отдель
   на следующем кадре `bl`-гейт `0x5BB1D0` запрещал поворот телу P1. Теперь
   `0x5BCF30` пропускается целиком, пока активен remote input; перехвачен
   `0x52AD20` и во время тика P2 возвращает yaw камеры **отправителя** из пакета
-  (`CoopInput` вырос до 264 байт), что закрывает сразу всех читателей yaw, включая
+  (в этой исторической сборке `CoopInput` имел 332 байта), что закрывает сразу всех читателей yaw, включая
   `0x5B8DB7` (yaw движения); из тика P2 убран лишний `0x5B03A0`, а
   `RestorePlayer1CameraTarget()` вызывается только в кадр смены режима.
   **Проверено пользователем в игре: поворот тела работает и у P1, и у P2.**
@@ -121,10 +159,14 @@ WinMM-прокси запускает инициализацию в отдель
   `0x488CE0(pad, dev, 0x1000000E, 1)` в `0x5BBCAC`, вызывает
   `[vtable+0x20](0x61000065)` в `0x5BBD94`). Ребинд такое исключение не ломает,
   потому что клавиша в нём не участвует. Исключение стоит на стороне ответа, не
-  захвата, поэтому `CoopInput` **не менялся** (те же 264 байта); закрыты и сырые пути —
+  захвата. В той исторической сборке `CoopInput` не менялся (тогда его wire size был
+  332 байта); позднее временная ABR heading-telemetry расширила ABI до 340 байт.
+  Она удалена: ABR — отдельный транспортный мотор. Это описание относится к
+  старому состоянию; актуальный ABI теперь 336 байт. Закрыты и сырые пути —
   `VK_TAB`/`Q` не попадают в подменяемые DirectInput-буферы `+0x04`/`+0x204` и
-  `GetAsyncKeyState` отдаёт по ним `0` (это важно, пока пространство `0x4008xxxx`,
-  `0x48AE10`, не перехвачено и читает буфер напрямую). Для `TAB` это вообще
+  `GetAsyncKeyState` отдаёт по ним `0`. В той сборке пространство `0x4008xxxx`
+  ещё не было перехвачено; сейчас hook есть, но `TAB` всё равно не имеет packet route.
+  Для `TAB` это вообще
   единственный механизм: в живой таблице `DIK 0x0F` не забинден ни на одно действие,
   то есть ночное видение — не логическое действие, а прямое чтение
   DirectInput-буфера.
@@ -149,9 +191,10 @@ WinMM-прокси запускает инициализацию в отдель
 
 После подключения Steam выяснилось, что `steamclient.dll` импортирует более широкий
 WinMM API, чем сама игра. Актуальный `winmm.dll` проксирует также
-`waveOutGetDevCapsW`, `waveOutMessage`, mixer и wave-in функции. `proxy_smoke.exe`
-вызывает настоящий `SteamAPI_Init` с AppID `480`; успешный результат —
-`SteamAPI_Init=true`.
+`waveOutGetDevCapsW`, `waveOutMessage`, mixer и wave-in функции. Старый
+`proxy_smoke.exe` вызывал настоящий `SteamAPI_Init` с AppID `480`; это
+исторический smoke-test. В текущем исходном дереве `proxy_smoke.cpp` и его
+проект отсутствуют, поэтому его нельзя считать частью текущей сборки.
 
 Первая чужая версия сетевого управления была удалена как неверная. Она отправляла
 host state через `SteamOClient`, которого у host-процесса нет, не ставила клиенту
@@ -173,6 +216,9 @@ host state через `SteamOClient`, которого у host-процесса 
 
 Игру для теста запускает пользователь. Перед сборкой или установкой агенту разрешено
 самостоятельно завершить только точный процесс `GForce.exe`, если он остался висеть.
+`build.bat` не трогает установленную игру без явного `GFORCE_DEPLOY_ROOT`; при
+установке он проверяет, что `GForce.exe` закрыт, копирует только `coop_dll.dll` и
+`winmm.dll`, а пользовательский `coop.ini` не перезаписывает.
 
 ## Актуальные файлы
 
@@ -197,7 +243,7 @@ host state через `SteamOClient`, которого у host-процесса 
 
 - Штатный P1 создаётся нормально.
 - Автоматический P2 во время катсцены ломает сюжетное состояние; так больше не делать.
-- После катсцены `F6` безопасно создаёт настоящий GPig с ID `0x79130002`.
+- После катсцены `F5` безопасно создаёт настоящий GPig с ID `0x79130002`.
 - P2 появляется рядом с P1 и после вертикального подъёма `0.5` больше не проваливается.
 - P2 входит в полноценный Default mode и получает state logical actions из удалённого
   P1 после разрешения его пользовательских биндов.
@@ -471,8 +517,8 @@ Logical actions и их опрос (все `__thiscall`, `ecx` = XGamePad, ар�
 - `0x488DC0` — порог + float
 - `0x488E50` — длительность удержания + float
 - `0x48B010` — ось; оси `0`/`1` — mouse-look
-- `0x48AE10`, `0x48AF10`, `0x48AF90` — второе пространство ID `0x4008xxxx`, сейчас
-  ничем не перехвачено
+- `0x48AE10`, `0x48AF10`, `0x48AF90` — второе пространство ID `0x4008xxxx`;
+  сейчас перехвачено. Packet-backed ответ ограничен шестью подтверждёнными Fly-ID.
 - `0x488B00` — удержание прицела + float. По форме похоже на `0x488DC0`, но это
   **другая функция** и **другой порядок аргументов**: `(device, action, flags,
   threshold)`, flags идёт перед float. Пролог `56 8B 74 24 0C`, `[esp+0Ch]` после
@@ -689,22 +735,26 @@ cd /d E:\G-Force\g_force\tools\coop_v2
 build.bat
 ```
 
-Перед установкой обязательно проверить, что `GForce.exe` не запущен. Затем копировать
-`build\coop_dll.dll`, `build\winmm.dll`, `coop.ini` и пять сетевых runtime DLL
-(`GameNetworkingSockets.dll`, `steam_api.dll`, `libprotobuf.dll`,
-`libcrypto-3.dll`, `abseil_dll.dll`) в `E:\G-Force\`.
+Перед установкой обязательно проверить, что `GForce.exe` не запущен. Для обычной
+установки достаточно явно выбрать root игры, тогда `build.bat` скопирует только
+свежие `build\coop_dll.dll` и `build\winmm.dll`, оставив `coop.ini` нетронутым:
+
+```bat
+set GFORCE_DEPLOY_ROOT=E:\G-Force
+build.bat
+```
+
+Пять сетевых runtime DLL (`GameNetworkingSockets.dll`, `steam_api.dll`,
+`libprotobuf.dll`, `libcrypto-3.dll`, `abseil_dll.dll`) должны уже лежать рядом с
+`GForce.exe`; `build.bat` staging-копирует их в `build\` из
+`GFORCE_RUNTIME_ROOT` (или из `GFORCE_DEPLOY_ROOT`, если первый не задан).
 
 Текущие параметры:
 
 ```ini
 [coop]
 enabled=1
-activate_player2=1
-player2_device=1
 spawn_key=117
-spawn_offset_x=0.5
-spawn_offset_y=0.5
-spawn_offset_z=0.0
 
 [window]
 experimental_windowed=1
@@ -766,7 +816,7 @@ height=720
    контроллером тикающего игрока, а aim-vs-follow решают два `0x488DC0` по
    **процесс-глобальному** XGamePad `[0x9905CC]`, а не по переданному pad. Текущий
    патч: `0x5BCF30` пропускается целиком во время remote input, `0x52AD20`
-   перехвачен и отдаёт yaw камеры отправителя из пакета (`CoopInput` → 264 байта),
+   перехвачен и отдаёт yaw камеры отправителя из пакета (в той сборке `CoopInput` → 332 байта),
    `[state + 0x3C]` принудительно обнуляется на тик P2, лишний `0x5B03A0` из тика P2
    убран, а `RestorePlayer1CameraTarget()` вызывается только в кадр смены режима.
    **Проверено пользователем в игре: поворот тела работает у обоих игроков.**
@@ -795,10 +845,10 @@ height=720
    управление при этом цело; это локальный вход в `XControllerMode_GPig_Mooch`, не
    зеркалирование.
 9. Проверить гипотезу по хлысту P2, который ведёт себя как зажатый LMB с момента входа:
-   преамбула melee `0x5BC844..0x5BC8E1` читает отдельное пространство действий
-   `0x4008xxxx` через неперехваченные `0x48AE10`/`0x48AF10`/`0x48AF90`. Тот же
-   `0x48AE10` вызывается и в Default-тике из `0x5B92A0` с ID `0x4008000A`.
-   Не подтверждено.
+    преамбула melee `0x5BC844..0x5BC8E1` читает отдельное пространство действий
+    `0x4008xxxx` через уже перехваченные `0x48AE10`/`0x48AF10`/`0x48AF90`. Тот же
+    `0x48AE10` вызывается и в Default-тике из `0x5B92A0` с ID `0x4008000A`, но этот
+    ID ещё не входит в remote map. Его semantics и P2 melee всё ещё не подтверждены.
 10. После движения и aim отдельно проектировать authority для damage, kills, NPC,
     интеракций и скриптовых событий.
 

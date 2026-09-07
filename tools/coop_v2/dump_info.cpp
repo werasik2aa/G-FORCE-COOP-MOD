@@ -8,9 +8,9 @@
 
 const BYTE* FindDumpMemory(void* view, ULONG64 address, ULONG size)
 {
-	PMINIDUMP_MEMORY64_LIST memory64 = NULL;
+	PMINIDUMP_MEMORY64_LIST memory64 = nullptr;
 	ULONG stream_size = 0;
-	if (MiniDumpReadDumpStream(view, Memory64ListStream, NULL,
+	if (MiniDumpReadDumpStream(view, Memory64ListStream, nullptr,
 		reinterpret_cast<void**>(&memory64), &stream_size) && memory64)
 	{
 		ULONG64 rva = memory64->BaseRva;
@@ -27,8 +27,8 @@ const BYTE* FindDumpMemory(void* view, ULONG64 address, ULONG size)
 		}
 	}
 
-	PMINIDUMP_MEMORY_LIST memory = NULL;
-	if (MiniDumpReadDumpStream(view, MemoryListStream, NULL,
+	PMINIDUMP_MEMORY_LIST memory = nullptr;
+	if (MiniDumpReadDumpStream(view, MemoryListStream, nullptr,
 		reinterpret_cast<void**>(&memory), &stream_size) && memory)
 	{
 		for (ULONG i = 0; i < memory->NumberOfMemoryRanges; ++i)
@@ -42,7 +42,7 @@ const BYTE* FindDumpMemory(void* view, ULONG64 address, ULONG size)
 			}
 		}
 	}
-	return NULL;
+	return nullptr;
 }
 
 int wmain(int argc, wchar_t** argv)
@@ -53,11 +53,11 @@ int wmain(int argc, wchar_t** argv)
 		return 2;
 	}
 
-	HANDLE file = CreateFileW(argv[1], GENERIC_READ, FILE_SHARE_READ, NULL,
-		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	HANDLE file = CreateFileW(argv[1], GENERIC_READ, FILE_SHARE_READ, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (file == INVALID_HANDLE_VALUE)
 		return 3;
-	HANDLE mapping = CreateFileMappingW(file, NULL, PAGE_READONLY, 0, 0, NULL);
+	HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
 	if (!mapping)
 	{
 		CloseHandle(file);
@@ -71,9 +71,9 @@ int wmain(int argc, wchar_t** argv)
 		return 5;
 	}
 
-	PMINIDUMP_EXCEPTION_STREAM exception = NULL;
+	PMINIDUMP_EXCEPTION_STREAM exception = nullptr;
 	ULONG stream_size = 0;
-	if (MiniDumpReadDumpStream(view, ExceptionStream, NULL,
+	if (MiniDumpReadDumpStream(view, ExceptionStream, nullptr,
 		reinterpret_cast<void**>(&exception), &stream_size) && exception)
 	{
 		wprintf(L"exception_code=0x%08X exception_address=0x%016llX thread=%u\n",
@@ -104,8 +104,8 @@ int wmain(int argc, wchar_t** argv)
 		}
 	}
 
-	PMINIDUMP_MODULE_LIST modules = NULL;
-	if (MiniDumpReadDumpStream(view, ModuleListStream, NULL,
+	PMINIDUMP_MODULE_LIST modules = nullptr;
+	if (MiniDumpReadDumpStream(view, ModuleListStream, nullptr,
 		reinterpret_cast<void**>(&modules), &stream_size) && modules && exception)
 	{
 		const ULONG64 address = exception->ExceptionRecord.ExceptionAddress;

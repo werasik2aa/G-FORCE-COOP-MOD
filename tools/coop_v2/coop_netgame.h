@@ -7,6 +7,8 @@
 #include <cstdint>
 
 #include "ServerClient/MTypes.h"
+#include "protocol/fly_packets.h"
+#include "retail/retail_types.h"
 
 class WorldSync;
 namespace coop
@@ -25,6 +27,9 @@ namespace coop
 		void OnPeerConnected();
 		void OnPeerDisconnected();
 		void OnRemotePacket(const void* data, std::uint32_t size);
+		// Socket-thread ingress validates and queues this reliable event. Native
+		// Fly code is reached later on the exact game-thread tick.
+		void OnRemoteFlyAbilityPacket(const void* data, std::uint32_t size);
 		void NetworkTick();
 		void GameTick();
 
@@ -54,9 +59,6 @@ namespace coop
 		void PublishLocalPlayerTransform(const void* player);
 		void PublishLocalPlayerMode(std::uint32_t mode);
 
-		// Vehicle
-		bool IsRemoteAbrMode() const;
-
 		// Mooch ownership is latched only after the EXE has actually selected its
 		// one-frame switch mode.  The active-entity globals are transient during
 		// that hand-off and must not decide who publishes the shared fly.
@@ -64,14 +66,36 @@ namespace coop
 
 		// 0x61000034/0x61000033 are short Respawn/Orbit signals. Read both sides
 		// of the fly's tick so the hand-off latch cannot miss the transition.
+		// Fly_Deactivated is a local native transition, not proof that a peer's
+		// shared Mooch died: only a local owner may publish the zero-owner exit.
 		void ObserveLocalFlyMode(std::uint32_t mode_before, std::uint32_t mode_after);
 		bool IsLocalFlyControlled() const;
 
-		// The receiving process uses this only to feed the packet snapshot through
-		// the one stock shared Mooch controller tick.
+		// The peer's Mooch ownership is still used for presentation-transform
+		// selection, but it must not switch the receiver's controller or camera.
 		bool IsRemoteFlyControlled() const;
-		bool GetRemoteFlyFireAction() const;
+		// Game-thread-only replay for a peer-owned Mooch dual-laser event. The
+		// primary path runs the registered Fly_Active update with a synthetic raw
+		// button edge, but never selects/enters the mode or assigns the camera/HUD.
+		// A direct route-item pulse remains only as an explicitly logged fallback
+		// for a profile/runtime mismatch.
+		void BeginRemoteFlyDualLaserPresentationTick();
+		bool ApplyRemoteFlyDualLaserPresentation(void* fly);
+		// Network ingress records a real, ordered remote-owner -> zero-owner edge
+		// under m_input_lock.  The exact Mooch game-thread tick consumes it once,
+		// after both sides are non-owners, before asking the retail dispatcher for
+		// the normal Fly_Deactivated transition.
+		bool ConsumeRemoteFlyZeroOwnerTransition(std::uint32_t& input_sequence);
 		bool SetFlyControlActiveState(void* fly, bool active) const;
+		// Game-thread-only F1 probe. It creates one local two-emitter pulse from
+		// Mooch's current transform and the local aim direction, without requiring
+		// a second game process. The request is fed through the same raw-button
+		// branch as a real Fly shot; it never selects a controller mode, changes
+		// camera/HUD state, or sends a network packet.
+		bool RequestDebugFlyDualLaser();
+		// Clears the previous one-tick F1 emitter pulse from the foreground
+		// game-thread dispatcher.
+		void TickDebugFlyDualLaser();
 
 		// Fly_Active::Enter normally publishes Mooch as both active entities, but
 		// P1's still-ticking Default controller later overwrites those globals.  Keep
@@ -80,19 +104,30 @@ namespace coop
 		void MaintainLocalFlyActiveEntity(void* fly);
 		void PublishLocalFlyTransform(const void* fly);
 
-		// Publishes the local camera yaw read from 0x52AD20 right after P1's own
-		// controller tick, which is the frame point where P1's 0x5BCF30 has just
-		// finished driving the shared camera.
+		// Publishes the yaw read from 0x52AD20 after whichever local native
+		// controller currently owns the shared camera: P1 normally, Mooch after its
+		// own Fly tick. The caller must not publish P1's stale yaw during local Fly.
 		void PublishLocalCameraYaw(float yaw, bool valid);
-		bool ApplyRemotePlayerTransform(void* player2, float modifi = 1.0f);
+		// Darwin's normal on-foot controller owns this correction. Vehicle/RDV uses
+		// a separate native motor path and must never be fed through this helper.
+		bool ApplyRemotePlayerTransform(void* player2);
 
-		// Fly position not the noclip, fly is entity.
+		// The shared Mooch is an entity, not a noclip camera. Apply its complete
+		// networked transform after the native fly controller tick.
 		bool ApplyRemoteFlyTransform(void* fly);
 
 		// Game-thread-only replay of the exact native trigger spawn route.  WorldSync
 		// uses it only after a host event cannot be paired to a client-native entity.
 		bool SpawnWorldFromTrigger(void* trigger);
+		// Runs the original trigger dispatcher through the same bookkeeping and
+		// network replication path used by a real map event.
+		bool DispatchWorldTriggerEvent(void* trigger, int event_code);
 		bool ReplayTriggerEvent(std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id, std::uint32_t occurrence, int event_code);
+		// Game-thread-only replay of a matched native route. `route` retains relay,
+		// direct-forwarder, or host entity-dispatcher activation; replay is scoped so
+		// any nested local callback cannot echo a packet to the sender.
+		bool ReplayObjectEvent(void* source, int event_code,
+			std::uint32_t route);
 
 		// Applies a remote player's damage to the local twin of a world entity by
 		// driving the stock trigger event dispatcher.
@@ -102,6 +137,11 @@ namespace coop
 		// Copies the last received packet ray under the existing input lock. It is
 		// diagnostic-only and never applies, normalizes, or transmits any value.
 		bool GetRemoteAimRaySnapshot(float origin[3], float direction[3], std::uint32_t& transform_sequence) const;
+		// Narrow read-only ownership/lifecycle view for Player2Module. Feature code
+		// must not copy the whole private input packet merely to decide whether a
+		// locally divergent P2 may leave a native death state.
+		bool GetRemotePlayerModeSnapshot(std::uint32_t& transform_sequence,
+			std::uint32_t& player_mode) const;
 		bool __fastcall HandleInputActionQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags, std::uintptr_t caller_return_address);
 		bool __fastcall HandleInputActionUpQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags);
 		bool __fastcall HandleInputThresholdQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, float threshold, std::uint32_t flags);
@@ -111,9 +151,9 @@ namespace coop
 		
 		// 0x488B00 takes flags BEFORE the float, unlike 0x488DC0.
 		bool __fastcall HandleInputAimHoldQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags, float threshold);
-		bool __fastcall HandleInputRawPressedQuery(void* input_manager, void*, void* device, std::uint32_t action, std::uint32_t flags, bool record);
-		bool __fastcall HandleInputRawReleasedQuery(void* input_manager, void*, void* device, std::uint32_t action, std::uint32_t flags, bool record);
-		bool __fastcall HandleInputRawHeldQuery(void* input_manager, void*, void* device, std::uint32_t action, std::uint32_t flags, bool record);
+		bool __fastcall HandleInputRawPressedQuery(void* input_manager, void*, void* device, std::uint32_t action, std::uint32_t flags, bool record, std::uintptr_t caller_return_address);
+		bool __fastcall HandleInputRawReleasedQuery(void* input_manager, void*, void* device, std::uint32_t action, std::uint32_t flags, bool record, std::uintptr_t caller_return_address);
+		bool __fastcall HandleInputRawHeldQuery(void* input_manager, void*, void* device, std::uint32_t action, std::uint32_t flags, bool record, std::uintptr_t caller_return_address);
 		float __fastcall HandleInputAxisQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t axis, std::uint32_t flags);
 		
 		// 0x52AD20, __thiscall(camera handler), float in st(0).
@@ -121,8 +161,6 @@ namespace coop
 		
 		// 0x5BCF30, __thiscall(mode), no stack arguments.
 		void __fastcall HandleGPigCameraUpdate(void* mode, void*);
-
-		CoopInput& GetActiveRemInp() { return m_active_remote_input; }
 	private:
 		typedef SHORT(WINAPI* GetAsyncKeyStateFn)(int);
 		typedef bool(__thiscall* InputActionQueryFn)(void*, std::uint32_t, std::uint32_t, std::uint32_t);
@@ -130,6 +168,7 @@ namespace coop
 		typedef bool(__thiscall* InputAimHoldQueryFn)(void*, std::uint32_t, std::uint32_t, std::uint32_t, float);
 		typedef bool(__thiscall* InputRawQueryFn)(void*, void*, std::uint32_t, std::uint32_t, bool);
 		typedef float(__thiscall* InputAxisQueryFn)(void*, std::uint32_t, std::uint32_t, std::uint32_t);
+		typedef bool(__thiscall* StateMachineSelectStateFn)(void*, std::uint32_t, bool);
 		typedef float(__thiscall* CameraYawFn)(void*);
 		typedef void(__thiscall* GPigCameraUpdateFn)(void*);
 		typedef void(__thiscall* DefaultModeUpdateFn)(void*, void*, void*);
@@ -138,21 +177,53 @@ namespace coop
 		typedef void(__thiscall* TriggerSpawnFromDefinitionFn)(void*);
 		typedef void* (__cdecl* TriggerFactoryFn)(std::uint32_t, std::uint32_t, void*);
 		typedef int(__thiscall* TriggerEventFn)(void*, int);
+		typedef int(__thiscall* GlobalEventForwarderFn)(void*, void*, int);
+		typedef int(__cdecl* ObjectEventRelayFn)(void*, int);
+		// `sub_46D6F0` takes the global event receiver in ECX, then source/event on
+		// the stack. The former stdcall declaration accidentally relied on ECX
+		// surviving the hook; preserve the actual __thiscall ABI instead.
+		typedef int(__thiscall* ObjectEventForwarderFn)(void*, void*, int);
 		typedef void(__thiscall* HealthComponentSetFn)(void*, float, std::uint32_t, bool);
 		typedef void(__thiscall* HealthComponentAddFn)(void*, float, std::uint32_t);
 		typedef void(__thiscall* HealthComponentSubtractFn)(void*, float, std::uint32_t);
-		typedef void* (__thiscall* XGamePadCtorFn)(void*);
-
-		typedef std::uint32_t(__thiscall* GetCurrentWeaponIdFn)(void*);
-		typedef std::uint32_t(__cdecl* WeaponTypeToItemIdFn)(std::uint32_t);
-		typedef void* (__thiscall* ResolveWeaponRecordFn)(void*, std::uint32_t);
-		typedef void* (__thiscall* ResolveAmmoEntryFn)(void*, std::uint32_t);
-
+		typedef int(__thiscall* LiveEntityMovementSchedulerFn)(void*);
 		enum Role
 		{
 			RoleNone,
 			RoleHost,
 			RoleClient
+		};
+		enum
+		{
+			kFlyAbilityQueueCapacity = 8
+		};
+		struct FlyAbilityQueueEntry final
+		{
+			protocol::FlyAbilityPacket packet;
+			DWORD received_tick;
+		};
+		enum
+		{
+			kInputEdgeTraceSlotCount = 16
+		};
+		struct InputEdgeTraceSlot final
+		{
+			std::uint32_t action;
+			std::uintptr_t caller_return_address;
+			DWORD tick;
+			bool raw;
+		};
+		enum
+		{
+			kObjectDiagnosticTraceSlotCount = 16
+		};
+		struct ObjectDiagnosticTraceSlot final
+		{
+			std::uint32_t route;
+			std::uint32_t event_code;
+			std::uintptr_t caller_return_address;
+			std::uintptr_t object_vtable;
+			DWORD tick;
 		};
 
 		CoopNetGame();
@@ -161,16 +232,24 @@ namespace coop
 		CoopNetGame& operator=(const CoopNetGame&) = delete;
 
 		void CaptureLocalInput(CoopInput& input) const;
-		void CaptureLocalLookAxis(std::uint32_t axis, float value);
+		void CaptureLocalAnalogAxis(std::uint32_t axis, float value);
 		void CaptureLocalAction(std::uint32_t action, bool is_down);
 		void CaptureLocalPress(std::uint32_t action);
 		void CaptureLocalRelease(std::uint32_t action);
+		bool ClaimLocalInputEdgeTrace(std::uint32_t action,
+			std::uintptr_t caller_return_address, bool raw);
+		bool ClaimObjectDiagnosticTrace(std::uint32_t route,
+			std::uint32_t event_code,
+			std::uintptr_t caller_return_address,
+			std::uintptr_t object_vtable);
 		void CaptureLocalFlyRaw(std::uint32_t action, bool is_down, bool pressed_edge, bool released_edge);
 		void CaptureLocalAimRay(const void* input_manager);
 		void* GetRemoteGamePad();
-		bool ApplyActiveRemoteAimRay(void* input_manager, float saved_ray[6]) const;
-		void RestoreAimRay(void* input_manager, const float saved_ray[6]) const;
+		bool ApplyActiveRemoteAimRay(void* input_manager, retail::AimRay& saved_ray) const;
+		void RestoreAimRay(void* input_manager, const retail::AimRay& saved_ray) const;
 		void HandleDefaultModeUpdate(void* mode, void* input_manager, void* mode_context);
+		bool HandleStateMachineSelectState(void* controller, std::uint32_t mode_id,
+			bool force_reselect);
 		void HandleFireHandler(void* mode, void* input_manager, void* mode_context);
 		void HandleWeaponAmmoConsume(void* weapon_record);
 		
@@ -185,10 +264,43 @@ namespace coop
 		void HandleTriggerSpawnFromDefinition(void* trigger);
 		void* HandleTriggerFactory(std::uint32_t family, std::uint32_t subtype, void* output);
 		int HandleTriggerEvent(void* trigger, int event_code);
+		int HandleGlobalEventForwarder(void* receiver, void* source, int event_code);
+		int HandleObjectEventRelay(void* source, int event_code,
+			std::uintptr_t caller_return_address);
+		int HandleObjectEventForwarder(void* receiver, void* object, int event_code,
+			std::uintptr_t caller_return_address);
 		bool GetActiveRemoteAction(std::uint32_t action) const;
 		bool GetActiveRemoteHold(std::uint32_t action, float threshold) const;
+		// During a scoped native tick this must answer from m_active_remote_input,
+		// never from a packet the network worker received half-way through the tick.
+		bool IsRemoteFlyControlledForInputQuery() const;
+		// Only the shared Mooch can be presentation-only. A local owner must retain
+		// its real death/respawn route even if an old peer packet still says Fly.
+		bool IsRemotePresentationMoochController(void* controller) const;
 		bool GetRemoteFlyRawHeld(std::uint32_t action) const;
 		bool ConsumeRemoteFlyRawEdge(std::uint32_t action, bool pressed);
+		bool ReadFlyControlActiveState(void* fly, bool& active) const;
+		bool RunFlyNativeDualLaserPass(void* fly, const float target[3],
+			bool remote_owner);
+		bool ApplyDirectFlyDualLaserPulse(void* fly, const float target[3],
+			bool remote_owner);
+		bool RememberFlyDualLaserPulse(void* fly, bool remote_owner);
+		bool IsFlyNativeAbilityPassActiveOnThisThread() const;
+		bool IsFlyNativeAbilityPassActiveForController(void* controller) const;
+		void QueueLocalFlyDualLaserEvent(const void* input_manager);
+		bool ConsumeReadyRemoteFlyDualLaserEvent(
+			std::uint32_t remote_fly_transform_sequence,
+			protocol::FlyAbilityPacket& event);
+		void ClearRemoteFlyDualLaserPulse();
+		void ClearDebugFlyDualLaserPulse();
+		void SendQueuedFlyAbilityPackets();
+		void ClearFlyAbilityQueues();
+		void ClearIncomingFlyAbilityEvents();
+		static void ClearFlyInputLocked(CoopInput& input);
+		// Caller holds m_input_lock. Bump the ordinary snapshot sequence together
+		// with a local Fly exit, so an already-sent live Fly packet cannot win over
+		// the zero-owner state before P1's next controller tick.
+		void ClearLocalFlyOwnershipLocked();
 		bool IsMoochAction(std::uint32_t action) const;
 
 		// The same logical Mooch action that enters the fly returns from it.  Once a
@@ -206,6 +318,8 @@ namespace coop
 		void RestoreKeyboardState();
 		void BuildRemoteScanCodeState();
 		bool IsRemoteInputActiveOnThisThread() const;
+		bool InstallStateMachineSelectStateHook();
+		void RemoveStateMachineSelectStateHook();
 		bool InstallActionQueryHook();
 		void RemoveActionQueryHook();
 		bool InstallActionUpQueryHook();
@@ -244,6 +358,11 @@ namespace coop
 		void RemoveHealthComponentAddHook();
 		bool InstallHealthComponentSubtractHook();
 		void RemoveHealthComponentSubtractHook();
+		bool InstallLiveEntityMovementSchedulerHook();
+		void RemoveLiveEntityMovementSchedulerHook();
+		int HandleLiveEntityMovementScheduler(void* scheduler);
+		void ReconcileRemoteP2AfterMotor();
+		bool IsVehicleMotorActiveForRemoteP2(const CoopInput& remote) const;
 
 		bool InstallTriggerSpawnHook();
 		void RemoveTriggerSpawnHook();
@@ -251,6 +370,12 @@ namespace coop
 		void RemoveTriggerFactoryHook();
 		bool InstallTriggerEventHook();
 		void RemoveTriggerEventHook();
+		bool InstallGlobalEventForwarderHook();
+		void RemoveGlobalEventForwarderHook();
+		bool InstallObjectEventRelayHook();
+		void RemoveObjectEventRelayHook();
+		bool InstallObjectEventForwarderHook();
+		void RemoveObjectEventForwarderHook();
 		bool InstallLoadGameHook();
 		void RemoveLoadGameHook();
 
@@ -260,41 +385,87 @@ namespace coop
 		// original entry (callable via the trampoline) is returned in *trampoline_out.
 		bool InstallJmpHookRaw(std::uintptr_t address, const std::uint8_t* expected, std::size_t relocate_len, void* hook, BYTE* saved_bytes, BYTE** trampoline_out, const char* label);
 		void RemoveJmpHookRaw(std::uintptr_t address, const BYTE* saved_bytes, std::size_t relocate_len, BYTE** trampoline_ptr);
-		float GetRemoteLookAxis(std::uint32_t axis) const;
+		float GetRemoteAnalogAxis(std::uint32_t axis) const;
 		bool IsGameForeground() const;
 		static void __fastcall HookDefaultModeUpdate(void* mode, void*, void* input_manager, void* mode_context);
+		static bool __fastcall HookStateMachineSelectState(void* controller, void*,
+			std::uint32_t mode_id, bool force_reselect);
 		static void __fastcall HookFireHandler(void* mode, void*, void* input_manager, void* mode_context);
 		static void __fastcall HookWeaponAmmoConsume(void* weapon_record, void*);
 		static void __fastcall HookHealthComponentSet(void* component, void*, float requested_value, std::uint32_t slot, bool notify);
 		static void __fastcall HookHealthComponentAdd(void* component, void*, float delta, std::uint32_t slot);
 		static void __fastcall HookHealthComponentSubtract(void* component, void*, float amount, std::uint32_t slot);
+		static int __fastcall HookLiveEntityMovementScheduler(void* scheduler, void*);
 		static void __fastcall HookTriggerSpawnFromDefinition(void* trigger, void*);
 		static bool __fastcall HookHostLoadGame(void* manager, void*, std::uint32_t slot);
 
 		static void* __cdecl HookTriggerFactory(std::uint32_t family, std::uint32_t subtype, void* output);
 		static int __fastcall HookTriggerEvent(void* trigger, void*, int event_code);
+		static int __fastcall HookGlobalEventForwarder(void* receiver, void*,
+			void* source, int event_code);
+		static int __cdecl HookObjectEventRelay(void* source, int event_code);
+		static int __fastcall HookObjectEventForwarder(void* receiver, void*,
+			void* object, int event_code);
 
 		volatile LONG m_role;
 		volatile LONG m_remote_connected;
 		mutable SRWLOCK m_input_lock;
+		mutable SRWLOCK m_fly_ability_lock;
 		CoopInput m_remote_input;
 		CoopInput m_active_remote_input;
 		CoopInput m_local_input;
-		BYTE* m_keyboard_state_buffer;
-		BYTE* m_keyboard_state_secondary_buffer;
-		BYTE m_saved_keyboard_state[256];
-		BYTE m_saved_keyboard_state_secondary[256];
-		BYTE m_active_remote_scan_codes[256];
+		retail::KeyboardStateBuffers m_keyboard_state_buffers;
+		retail::KeyboardStateSnapshot m_saved_keyboard_state;
+		retail::KeyboardStateSnapshot m_saved_keyboard_state_secondary;
+		retail::KeyboardStateSnapshot m_active_remote_scan_codes;
 		DWORD m_last_send_tick;
 		DWORD m_last_remote_transform_apply_tick;
-
+		DWORD m_last_remote_p2_recovery_tick;
+		DWORD m_last_remote_p2_recovery_trace_tick;
+		// A severe post-motor divergence can leave only the receiver in Ledge.
+		// This schedules the verified logical Inactive edge; it never fakes a key.
+		DWORD m_last_remote_p2_ledge_detach_tick;
+		// Throttles malformed snapshot diagnostics on the network worker. A rejected
+		// snapshot never replaces the last finite P2/Fly state.
+		DWORD m_last_invalid_input_trace_tick;
+		// Game-thread-only throttle for the narrow receiver-side Fly_Deactivated
+		// guard. A visible log is evidence that a local death transition was blocked.
+		DWORD m_last_remote_fly_deactivation_suppression_tick;
 		DWORD m_remote_input_thread_id;
 
 		std::uint32_t m_local_transform_sequence;
 		std::uint32_t m_local_fly_transform_sequence;
+		// Input packets use Steam's unreliable lane. This is the latest accepted
+		// sender snapshot sequence; stale packets must not undo newer P2/Mooch
+		// transforms, rotations, or a later zero-owner Fly exit.
+		std::uint32_t m_last_accepted_remote_input_sequence;
+		// An accepted raw fly_controlled 1 -> 0 edge.  This is deliberately the
+		// whole-input sequence rather than a Fly transform sequence: a valid owner
+		// exit clears fly_transform_sequence to zero.  It is consumed only by the
+		// exact Mooch controller on the game thread.
+		std::uint32_t m_pending_remote_fly_zero_owner_input_sequence;
+		FlyAbilityQueueEntry m_outgoing_fly_abilities[kFlyAbilityQueueCapacity];
+		FlyAbilityQueueEntry m_incoming_fly_abilities[kFlyAbilityQueueCapacity];
+		std::uint32_t m_outgoing_fly_ability_head;
+		std::uint32_t m_outgoing_fly_ability_count;
+		std::uint32_t m_incoming_fly_ability_head;
+		std::uint32_t m_incoming_fly_ability_count;
+		std::uint32_t m_local_fly_ability_sequence;
+		std::uint32_t m_last_remote_fly_ability_sequence;
+		retail::FlyDualLaserRouteItemRef m_remote_fly_laser_route_items[2];
+		std::uint32_t m_remote_fly_laser_item_ids[2];
+		bool m_remote_fly_laser_pulse_active;
+		volatile LONG m_fly_native_pass_active;
+		volatile LONG m_fly_native_pass_remote;
+		volatile LONG m_fly_native_synthetic_press_mask;
+		DWORD m_fly_native_pass_thread_id;
+		void* m_fly_native_pass_controller;
+		retail::FlyDualLaserRouteItemRef m_debug_fly_laser_route_items[2];
+		std::uint32_t m_debug_fly_laser_item_ids[2];
+		bool m_debug_fly_laser_pulse_active;
 		bool m_local_fly_active_seen;
 		bool m_local_mooch_exit_key_down;
-		bool m_remote_fly_forced_exit;
+		bool m_local_fly_deactivation_seen;
 
 		bool m_logged_fly_active_entity_repair;
 		std::uint32_t m_local_weapon_sequence;
@@ -302,9 +473,11 @@ namespace coop
 		volatile LONG m_peer_connected_tick;
 		volatile LONG m_logged_spawn;
 		volatile LONG m_remote_input_active;
+		volatile LONG m_pending_remote_p2_ledge_detach;
 		bool m_keyboard_state_swapped;
 		bool m_logged_keyboard_state_swap;
 		bool m_input_hooked;
+		bool m_state_machine_select_state_hooked;
 		bool m_action_query_hooked;
 		bool m_action_up_query_hooked;
 		bool m_threshold_query_hooked;
@@ -315,13 +488,15 @@ namespace coop
 		bool m_aim_hold_query_hooked;
 		bool m_camera_yaw_hooked;
 		bool m_gpig_camera_update_hooked;
-
 		bool m_default_mode_update_hooked;
 		bool m_logged_remote_gamepad;
 		bool m_remote_gamepad_unavailable;
 		void* m_remote_gamepad;
 		ULONG_PTR* m_async_key_state_iat_slot;
 		GetAsyncKeyStateFn m_original_get_async_key_state;
+		BYTE m_original_state_machine_select_state_bytes[5];
+		BYTE* m_state_machine_select_state_trampoline;
+		StateMachineSelectStateFn m_original_state_machine_select_state;
 		BYTE m_original_input_action_query_bytes[5];
 		BYTE* m_input_action_trampoline;
 		InputActionQueryFn m_original_input_action_query;
@@ -392,6 +567,10 @@ namespace coop
 		BYTE* m_health_component_subtract_trampoline;
 		HealthComponentSubtractFn m_original_health_component_subtract;
 		bool m_health_component_subtract_hooked;
+		BYTE m_original_live_entity_movement_scheduler_bytes[5];
+		BYTE* m_live_entity_movement_scheduler_trampoline;
+		LiveEntityMovementSchedulerFn m_original_live_entity_movement_scheduler;
+		bool m_live_entity_movement_scheduler_hooked;
 		BYTE m_original_trigger_spawn_bytes[14];
 
 		BYTE* m_trigger_spawn_trampoline;
@@ -405,9 +584,20 @@ namespace coop
 		BYTE* m_trigger_event_trampoline;
 		TriggerEventFn m_original_trigger_event;
 		bool m_trigger_event_hooked;
+		BYTE m_original_global_event_forwarder_bytes[8];
+		BYTE* m_global_event_forwarder_trampoline;
+		GlobalEventForwarderFn m_original_global_event_forwarder;
+		bool m_global_event_forwarder_hooked;
+		BYTE m_original_object_event_relay_bytes[8];
+		BYTE* m_object_event_relay_trampoline;
+		ObjectEventRelayFn m_original_object_event_relay;
+		bool m_object_event_relay_hooked;
+		BYTE m_original_object_event_forwarder_bytes[5];
+		BYTE* m_object_event_forwarder_trampoline;
+		ObjectEventForwarderFn m_original_object_event_forwarder;
+		bool m_object_event_forwarder_hooked;
 		bool m_load_game_hooked;
 		bool m_logged_remote_transform;
-		float m_abr_heading_offset;
 		BYTE m_original_load_game_call_bytes[5];
 
 		std::uint32_t m_prev_local_action_down[3];
@@ -435,6 +625,9 @@ namespace coop
 		bool m_remote_action_held[kCoopActionCount];
 		std::uint32_t m_local_press_recorded[3];
 		std::uint32_t m_local_release_recorded[3];
+		InputEdgeTraceSlot m_input_edge_trace_slots[kInputEdgeTraceSlotCount];
+		ObjectDiagnosticTraceSlot m_object_diagnostic_trace_slots[
+			kObjectDiagnosticTraceSlotCount];
 		std::uint8_t m_prev_remote_fly_raw_press_seq[kCoopFlyRawActionCount];
 		std::uint8_t m_prev_remote_fly_raw_release_seq[kCoopFlyRawActionCount];
 		bool m_logged_remote_p2_ammo_restore;

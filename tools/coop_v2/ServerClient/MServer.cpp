@@ -181,12 +181,17 @@ void CSteamOfflineSocketServer::OnRemotePacket(
 			return;
 		break;
 
+	case coop::protocol::PacketKind::FlyAbility:
+		coop::CoopNetGame::Instance().OnRemoteFlyAbilityPacket(data, size);
+		return;
+
 	case coop::protocol::PacketKind::WorldSpawn:
 	case coop::protocol::PacketKind::WorldSnapshot:
 	case coop::protocol::PacketKind::WorldReady:
 	case coop::protocol::PacketKind::WorldTriggerEvent:
 	case coop::protocol::PacketKind::WorldDamage:
 	case coop::protocol::PacketKind::WorldDespawn:
+	case coop::protocol::PacketKind::WorldObjectEvent:
 
 		if (coop::WorldSync::Instance().OnRemotePacket(data, size))
 			return;

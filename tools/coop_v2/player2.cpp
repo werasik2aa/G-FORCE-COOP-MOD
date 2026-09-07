@@ -2,12 +2,12 @@
 
 #include "coop_netgame.h"
 #include "coop_runtime.h"
+#include "debug_actions.h"
 #include "gforce_constants.h"
 #include "retail/retail_types.h"
 #include "retail/retail_views.h"
 #include "save_sync.h"
 #include "world_sync.h"
-#include "ServerClient/MTypes.h"
 #include "ServerClient/SteamManager.h"
 
 #include <string.h>
@@ -18,185 +18,35 @@ namespace coop
 
 	namespace
 	{
-		class RemoteInputScope final
+		// Both the remote Darwin and the remote-owned shared Fly must consume one
+		// coherent packet snapshot while their native controller is ticking.  The
+		// scope also restores DirectInput before any local controller can run.
+		class RemoteSnapshotInputScope final
 		{
 		public:
-			explicit RemoteInputScope(CoopNetGame& netgame) : netgame_(netgame)
+			explicit RemoteSnapshotInputScope(CoopNetGame& netgame) : netgame_(netgame)
 			{
 				netgame_.BeginRemoteInput();
 			}
 
-			~RemoteInputScope()
+			~RemoteSnapshotInputScope()
 			{
 				netgame_.EndRemoteInput();
 			}
 
-			CoopInput& GetInput() { return netgame_.GetActiveRemInp(); }
-
 		private:
-			RemoteInputScope(const RemoteInputScope&);
-			RemoteInputScope& operator=(const RemoteInputScope&);
+			RemoteSnapshotInputScope(const RemoteSnapshotInputScope&);
+			RemoteSnapshotInputScope& operator=(const RemoteSnapshotInputScope&);
 
 			CoopNetGame& netgame_;
 		};
 
-		void LogNativeObjectReferences(const char* log_tag, const char* tag,
-			void* object, uint32_t byte_count, uint32_t limit)
-		{
-			if (!log_tag || !object || byte_count < sizeof(uint32_t))
-				return;
-
-			uint32_t reported = 0;
-			for (uint32_t offset = 0x04u;
-				offset + sizeof(uint32_t) <= byte_count && reported < limit;
-				offset += sizeof(uint32_t))
-			{
-				void* candidate = NULL;
-				void* candidate_vtable = NULL;
-				__try
-				{
-					candidate = *reinterpret_cast<void**>(
-						static_cast<BYTE*>(object) + offset);
-					const uintptr_t address = reinterpret_cast<uintptr_t>(candidate);
-					if (address >= 0x01000000u && address < 0x06000000u)
-					{
-						candidate_vtable = *reinterpret_cast<void**>(candidate);
-						const uintptr_t vtable_address =
-							reinterpret_cast<uintptr_t>(candidate_vtable);
-						if (vtable_address < 0x00400000u || vtable_address >= 0x00910000u)
-							candidate_vtable = NULL;
-					}
-				}
-				__except (EXCEPTION_EXECUTE_HANDLER)
-				{
-					candidate_vtable = NULL;
-				}
-				if (!candidate_vtable)
-					continue;
-				CoopRuntime::Instance().Log(
-					"[%s] tag=%s offset=%03X ptr=%p vtbl=%p\r\n",
-					log_tag, tag ? tag : "unknown", offset, candidate, candidate_vtable);
-				++reported;
-			}
-		}
-
-		struct RdvMotorTraceState
-		{
-			void* entity;
-			void* handler;
-			void* motor;
-			void* task;
-			float root_rotation[4];
-			float local_position[4];
-			float local_heading;
-			float local_turn;
-			std::uint32_t task_state;
-			std::uint8_t task_enabled;
-			std::uint8_t task_external;
-		};
-
-		bool CaptureRdvMotorTraceState(void* entity, RdvMotorTraceState& state)
-		{
-			ZeroMemory(&state, sizeof(state));
-			if (!entity)
-				return false;
-			__try
-			{
-				state.entity = entity;
-				BYTE* const entity_bytes = static_cast<BYTE*>(entity);
-				state.handler = *reinterpret_cast<void**>(
-					entity_bytes + kEntityHandlerOffset);
-				if (!state.handler)
-					return false;
-				memcpy(state.root_rotation,
-					entity_bytes + kEntityRotationOffset, sizeof(state.root_rotation));
-
-				BYTE* const handler_bytes = static_cast<BYTE*>(state.handler);
-				BYTE* const motor_system = handler_bytes + 0x4C0u;
-				const std::uint32_t resource_count = *reinterpret_cast<std::uint32_t*>(
-					motor_system + 0x10u);
-				void** const resources = *reinterpret_cast<void***>(motor_system + 0x14u);
-				if (resource_count <= 11u || !resources || !resources[11])
-					return false;
-				state.motor = resources[11];
-				if (*reinterpret_cast<void**>(state.motor) !=
-					reinterpret_cast<void*>(kGPigRdvMotorFunctionVtable))
-				{
-					return false;
-				}
-				BYTE* const motor_bytes = static_cast<BYTE*>(state.motor);
-				memcpy(state.local_position, motor_bytes + 0x88u,
-					sizeof(state.local_position));
-				state.local_heading = *reinterpret_cast<float*>(motor_bytes + 0xB0u);
-				state.local_turn = *reinterpret_cast<float*>(motor_bytes + 0xB4u);
-
-				void** const state_table = *reinterpret_cast<void***>(handler_bytes + 0x4ECu);
-				const std::uint32_t task_index =
-					*reinterpret_cast<std::uint32_t*>(kGPigRdvTaskStateIndex);
-				if (!state_table || task_index >= 64u)
-					return false;
-				state.task = state_table[task_index];
-				if (!state.task || *reinterpret_cast<void**>(state.task) !=
-					reinterpret_cast<void*>(kGPigRdvTaskVtable))
-				{
-					return false;
-				}
-				const BYTE* const task_bytes = static_cast<const BYTE*>(state.task);
-				state.task_enabled = *(task_bytes + 0x30u);
-				state.task_external = *(task_bytes + 0x58u);
-				state.task_state = *reinterpret_cast<const std::uint32_t*>(
-					task_bytes + 0x5Cu);
-				return true;
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				return false;
-			}
-		}
-
-		void TraceRdvMotorPair(void* player1, void* player2)
-		{
-			static DWORD last_trace_tick = 0;
-			static std::uint32_t trace_samples = 0;
-			const DWORD now = GetTickCount();
-			if (last_trace_tick != 0 &&
-				static_cast<DWORD>(now - last_trace_tick) < 200)
-			{
-				return;
-			}
-
-			RdvMotorTraceState p1 = {};
-			RdvMotorTraceState p2 = {};
-			if (!CaptureRdvMotorTraceState(player1, p1) ||
-				!CaptureRdvMotorTraceState(player2, p2))
-			{
-				return;
-			}
-			last_trace_tick = now;
-			++trace_samples;
-			CoopRuntime::Instance().Log(
-				"[abr-rdv-state] sample=%u P1 root=(%.3f,%.3f,%.3f,%.3f) pos=(%.3f,%.3f,%.3f,%.3f) heading=%.3f turn=%.3f task=%p state=%u enabled=%u external=%u | P2 root=(%.3f,%.3f,%.3f,%.3f) pos=(%.3f,%.3f,%.3f,%.3f) heading=%.3f turn=%.3f task=%p state=%u enabled=%u external=%u\r\n",
-				trace_samples,
-				p1.root_rotation[0], p1.root_rotation[1], p1.root_rotation[2],
-				p1.root_rotation[3], p1.local_position[0], p1.local_position[1],
-				p1.local_position[2], p1.local_position[3], p1.local_heading,
-				p1.local_turn, p1.task, p1.task_state,
-				static_cast<unsigned>(p1.task_enabled),
-				static_cast<unsigned>(p1.task_external), p2.root_rotation[0],
-				p2.root_rotation[1], p2.root_rotation[2], p2.root_rotation[3],
-				p2.local_position[0], p2.local_position[1], p2.local_position[2],
-				p2.local_position[3], p2.local_heading, p2.local_turn, p2.task,
-				p2.task_state, static_cast<unsigned>(p2.task_enabled),
-				static_cast<unsigned>(p2.task_external));
-		}
-
 		class PrimaryGamePadScope final
-
 		{
 
 		public:
 			explicit PrimaryGamePadScope(CoopNetGame& netgame, bool activate) :
-				netgame_(netgame), original_(NULL), active_(false)
+				netgame_(netgame), original_(nullptr), active_(false)
 			{
 				if (activate)
 					active_ = netgame_.BeginRemoteGamePadScope(original_);
@@ -208,13 +58,7 @@ namespace coop
 					netgame_.EndRemoteGamePadScope(original_);
 			}
 
-			bool IsActive() const
-			{
-				return active_;
-			}
-
 		private:
-
 			PrimaryGamePadScope(const PrimaryGamePadScope&);
 			PrimaryGamePadScope& operator=(const PrimaryGamePadScope&);
 
@@ -222,6 +66,16 @@ namespace coop
 			void* original_;
 			bool active_;
 		};
+
+		bool IsNewerLiveSnapshotSequence(std::uint32_t candidate,
+			std::uint32_t baseline)
+		{
+			// `transform_sequence` is nonzero for every published P1 transform
+			// and uses the same signed-difference wrap rule as packet acceptance.
+			return candidate != 0 && (baseline == 0 ||
+				static_cast<std::int32_t>(candidate - baseline) > 0);
+		}
+
 	}
 
 	Player2Module& Player2Module::Instance()
@@ -235,17 +89,18 @@ namespace coop
 		m_spawn_snapshot_ready(0),
 		m_spawn_in_progress(0),
 		m_player2_default_mode_initialized(false),
+		m_player2_default_mode_setup_failure_logged(false),
 		m_logged_blocked_active_publish(false),
+		m_debug_player2_enabled(false),
+		m_remote_p2_death_mode_observed(false),
+		m_remote_p2_death_mode_entry_sequence(0),
 
 		m_last_player1_mode(0),
-		m_abr_native_task_player2(NULL),
-		m_abr_native_task_configured_player2(NULL),
+		m_abr_native_task_configured_player2(),
 
-		m_remote_abr_mode_active(false),
 		m_last_weapon_type(0xFFFFFFFFu),
-		m_spawn_context(NULL),
+		m_spawn_context(),
 		m_default_mode_active_stores_patched(false),
-		m_fly_controlled_last(false),
 		m_original_update(
 			reinterpret_cast<ControllerUpdateFn>(kOriginalControllerUpdate))
 
@@ -259,34 +114,20 @@ namespace coop
 
 	}
 
-	void* Player2Module::GetGPigEntity(int slot)
-	{
-		if (slot < static_cast<int>(retail::PlayerSlot::LocalP1) ||
-			slot > static_cast<int>(retail::PlayerSlot::AuxiliaryP3))
-		{
-			return NULL;
-		}
-
-		retail::PlayerRepository players;
-		retail::EntityRef entity = {};
-		return players.Get(static_cast<retail::PlayerSlot>(slot), entity) ?
-			retail::ToPointer(entity.value) : NULL;
-	}
-
 	void* Player2Module::GetFlyEntity()
 	{
-		retail::PlayerRepository players;
+		retail::EntitySlotRepository players;
 		retail::EntityRef fly = {};
-		return players.Get(retail::PlayerSlot::Mooch, fly) ?
-			retail::ToPointer(fly.value) : NULL;
+		return players.Get(retail::EntitySlot::Mooch, fly) ?
+			retail::ToPointer(fly.value) : nullptr;
 	}
 
 	void Player2Module::PublishDefaultModeActiveEntity(void* entity)
 	{
 		const retail::EntityRef published = { retail::ToAddress(entity) };
-		retail::PlayerRepository players;
+		retail::EntitySlotRepository players;
 		retail::EntityRef player2 = {};
-		if (players.Get(retail::PlayerSlot::RemoteP2, player2) && published == player2)
+		if (players.Get(retail::EntitySlot::RemoteP2, player2) && published == player2)
 		{
 			if (!m_logged_blocked_active_publish)
 			{
@@ -328,17 +169,17 @@ namespace coop
 	void* Player2Module::GetController(void* entity)
 	{
 		if (!entity)
-			return NULL;
+			return nullptr;
 
 		const retail::EntityRef entity_ref = { retail::ToAddress(entity) };
 		retail::HandlerRef handler = {};
 		retail::ControllerRef controller = {};
 		return retail::EntityView(entity_ref).Handler(handler) &&
 			retail::HandlerView(handler).Controller(controller) ?
-			retail::ToPointer(controller.value) : NULL;
+			retail::ToPointer(controller.value) : nullptr;
 	}
 
-	uint32_t Player2Module::GetModeId(void* controller)
+	std::uint32_t Player2Module::GetModeId(void* controller)
 	{
 		if (!controller)
 			return 0;
@@ -351,301 +192,72 @@ namespace coop
 			mode_id : 0;
 	}
 
-
-
-	int Player2Module::FindGPigSlot(void* controller)
-	{
-		if (!controller)
-			return 0;
-
-		const retail::ControllerRef controller_ref = {
-			retail::ToAddress(controller)
-		};
-		retail::HandlerRef owner = {};
-		if (!retail::ControllerView(controller_ref).Owner(owner))
-			return 0;
-
-		retail::PlayerRepository players;
-		for (int slot = static_cast<int>(retail::PlayerSlot::LocalP1);
-			slot <= static_cast<int>(retail::PlayerSlot::AuxiliaryP3); ++slot)
-		{
-			retail::EntityRef entity = {};
-			retail::HandlerRef handler = {};
-			if (players.Get(static_cast<retail::PlayerSlot>(slot), entity) &&
-				retail::EntityView(entity).Handler(handler) && handler == owner)
-			{
-				return slot;
-			}
-		}
-		return 0;
-	}
-
 	bool Player2Module::IsGPigDeathMode(void* controller) const
 	{
 		if (!controller)
 			return false;
-		__try
-		{
-			BYTE* const mode = *reinterpret_cast<BYTE**>(
-				static_cast<BYTE*>(controller) + kControllerModeOffset);
-			if (!mode)
-				return false;
-			const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(mode);
-			return vtable == kGPigDeathModeVtable ||
-				vtable == kGPigDeathModeInactiveVtable ||
-				vtable == kGPigDeathModeActiveVtable ||
-				vtable == kGPigDeathModeFallVtable ||
-				vtable == kGPigDeathModeDeathVtable ||
-				vtable == kGPigDeathModeRespawnVtable;
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
+		const retail::ControllerRef controller_ref = {
+			retail::ToAddress(controller)
+		};
+		retail::ModeRef mode = {};
+		retail::Address vtable = 0;
+		if (!retail::ControllerView(controller_ref).Mode(mode) ||
+			!retail::ModeView(mode).VTable(vtable))
 		{
 			return false;
 		}
+		return vtable == kGPigDeathModeVtable ||
+			vtable == kGPigDeathModeInactiveVtable ||
+			vtable == kGPigDeathModeActiveVtable ||
+			vtable == kGPigDeathModeFallVtable ||
+			vtable == kGPigDeathModeDeathVtable ||
+			vtable == kGPigDeathModeRespawnVtable;
 	}
 
-	void Player2Module::SelectMode(void* controller, uint32_t mode_id)
-
+	bool Player2Module::TryRecoverRemoteP2Death(void* controller)
 	{
-		if (!controller)
-			return;
-		SelectModeFn select_mode = reinterpret_cast<SelectModeFn>(kSelectMode);
-		__try
+		CoopNetGame& netgame = CoopNetGame::Instance();
+		std::uint32_t remote_transform_sequence = 0;
+		std::uint32_t remote_player_mode = 0;
+		// P2 is a presentation of the peer, not an independently respawning
+		// single-player actor. Do not revive it from a stale packet or while the
+		// owner itself is outside ordinary Darwin Default mode.
+		if (!netgame.GetRemotePlayerModeSnapshot(remote_transform_sequence,
+			remote_player_mode) || remote_transform_sequence == 0)
 		{
-			select_mode(controller, mode_id, false);
-
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			CoopRuntime::Instance().Log("[error] mode switch fault controller=%p mode=0x%08X\r\n",
-				controller, mode_id);
-		}
-	}
-
-	bool Player2Module::RefreshCameraForController(void* controller)
-	{
-		if (!controller)
-			return false;
-
-		__try
-		{
-			// The controller tick reads its aim context from this process-global
-			// camera handler.  Refresh it for the controller about to consume input;
-			// P1 is refreshed again after P2's network tick.
-			RefreshGPigCameraFn refresh_camera =
-				reinterpret_cast<RefreshGPigCameraFn>(kRefreshGPigCamera);
-			refresh_camera(controller);
-			return true;
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			CoopRuntime::Instance().Log(
-				"[error] failed to refresh GPig camera context controller=%p\r\n",
-				controller);
 			return false;
 		}
-	}
-
-	uint32_t Player2Module::RestorePlayer1CameraTarget()
-	{
-		void* player1 = GetGPigEntity(1);
-		void* player1_controller = GetController(player1);
-		if (!player1_controller)
-			return 0xFFFFFFFFu;
-
-		__try
+		if (m_remote_p2_death_mode_entry_sequence == 0)
 		{
-			// Besides choosing P1, the refresh rebuilds the follow anchor at
-			// camera_handler+0x940..0x94C; changing only a target ID is insufficient.
-			if (!RefreshCameraForController(player1_controller))
-				return 0xFFFFFFFFu;
-
-			GetCameraHandlerFn get_camera_handler =
-				reinterpret_cast<GetCameraHandlerFn>(kGetCameraHandler);
-			void* camera_handler = get_camera_handler(
-				reinterpret_cast<void*>(kCameraManager));
-			if (!camera_handler)
-				return 0xFFFFFFFFu;
-
-			return *reinterpret_cast<uint32_t*>(
-				reinterpret_cast<BYTE*>(camera_handler) +
-				kCameraTargetControllerOffset + kCameraTargetIdOffset);
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			CoopRuntime::Instance().Log("[error] failed to restore the camera target to P1\r\n");
-			return 0xFFFFFFFFu;
-		}
-	}
-
-	void* Player2Module::CameraHandler()
-	{
-		__try
-		{
-			GetCameraHandlerFn get_camera_handler =
-				reinterpret_cast<GetCameraHandlerFn>(kGetCameraHandler);
-			return get_camera_handler(reinterpret_cast<void*>(kCameraManager));
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			return NULL;
-		}
-	}
-
-	float* Player2Module::CameraFollowTurn()
-	{
-		// The yaw block at 0x5BBA98 reads exactly this float: 0x4B6F40 on the
-		// sub-state machine at handler+0x498 must report the follow state
-		// 0x44110010, and then 0x4B70E0 hands back the state object whose +0x3C is
-		// compared against [0x8B7824].  Past that threshold the body is given its
-		// own yaw instead of the camera yaw and stops turning.
-		BYTE* handler = reinterpret_cast<BYTE*>(CameraHandler());
-		if (!handler)
-			return NULL;
-
-		__try
-		{
-			void* machine = handler + kCameraStateMachineOffset;
-			CameraStateGetIdFn get_id =
-				reinterpret_cast<CameraStateGetIdFn>(kCameraStateMachineGetId);
-			if (get_id(machine) != kCameraFollowStateId)
-				return NULL;
-			CameraStateGetObjectFn get_object =
-				reinterpret_cast<CameraStateGetObjectFn>(
-					kCameraStateMachineGetObject);
-			BYTE* state = reinterpret_cast<BYTE*>(
-				get_object(machine, kCameraFollowStateId));
-			if (!state)
-				return NULL;
-			return reinterpret_cast<float*>(state + kCameraStateTurnOffset);
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			return NULL;
-		}
-	}
-
-	bool Player2Module::ReadLocalCameraYaw(float& yaw)
-	{
-		// 0x52AD20 is hooked by CoopNetGame, but the hook only substitutes a remote
-		// value while remote input is active on the calling thread.  This runs right
-		// after P1's own tick, so it returns the genuine local camera yaw.
-		void* handler = CameraHandler();
-		if (!handler)
+			// Do not escape a local DeathMode from the packet that happened to be
+			// cached when it was entered. Require one later owner snapshot.
+			m_remote_p2_death_mode_entry_sequence = remote_transform_sequence;
 			return false;
-
-		float value = 0.0f;
-		__try
-		{
-			CameraYawFn camera_yaw = reinterpret_cast<CameraYawFn>(kCameraYawGetter);
-			value = camera_yaw(handler);
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
+		if (!IsNewerLiveSnapshotSequence(remote_transform_sequence,
+			m_remote_p2_death_mode_entry_sequence) ||
+			remote_player_mode != kDefaultModeId)
 		{
 			return false;
 		}
 
-		if (!(value > -1000.0f && value < 1000.0f))
+		const retail::ControllerRef controller_ref = {
+			retail::ToAddress(controller)
+		};
+		if (!retail::ControllerView(controller_ref).SelectMode(kDefaultModeId) ||
+			GetModeId(controller) != kDefaultModeId)
+		{
 			return false;
-		yaw = value;
+		}
+
+		// The new per-controller Default object needs the same conflict-mask setup
+		// as a freshly spawned P2 before its next remote tick.
+		m_player2_default_mode_initialized = false;
+		m_player2_default_mode_setup_failure_logged = false;
+		CoopRuntime::Instance().Log(
+			"[p2-death-recovery] exited native DeathMode via newer peer Default snapshot seq=%u entry_seq=%u\r\n",
+			remote_transform_sequence, m_remote_p2_death_mode_entry_sequence);
 		return true;
-	}
-
-	bool Player2Module::SaveSharedCameraAimState(SharedCameraAimState& saved)
-	{
-		// 0x5BB1D0 is the aim/weapon state machine of XControllerMode_GPig_Default.
-		// It fetches the camera handler from the global camera manager with no player
-		// argument, and that handler is a single process-wide object, so everything it
-		// writes there belongs to whichever entity happens to be ticking.  P1 ticks
-		// first, so without this save/restore P2's tick is what P1's camera and P1's
-		// own aim-mode turn consume on the next frame РІР‚вЂќ the same class of defect the
-		// inactive mode 0x5B7D60 had with handler+0x91C/+0x920.
-		saved.has_assist = false;
-		saved.has_yaw_state = false;
-		saved.has_follow_turn = false;
-
-		BYTE* handler = reinterpret_cast<BYTE*>(CameraHandler());
-		if (!handler)
-			return false;
-
-		__try
-		{
-			const float* assist = reinterpret_cast<const float*>(
-				handler + kCameraAimAssistOffset);
-			for (size_t i = 0; i < kCameraAimAssistFloats; ++i)
-				saved.assist[i] = assist[i];
-			saved.has_assist = true;
-
-			const float* yaw_state = reinterpret_cast<const float*>(
-				handler + kCameraAimYawStateOffset);
-			for (size_t i = 0; i < kCameraAimYawStateFloats; ++i)
-				saved.yaw_state[i] = yaw_state[i];
-			saved.has_yaw_state = true;
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-		}
-
-		const float* follow_turn = CameraFollowTurn();
-		if (follow_turn)
-		{
-			__try
-			{
-				saved.follow_turn = *follow_turn;
-				saved.has_follow_turn = true;
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-			}
-		}
-
-		return saved.has_assist || saved.has_yaw_state || saved.has_follow_turn;
-	}
-
-	void Player2Module::RestoreSharedCameraAimState(
-		const SharedCameraAimState& saved)
-	{
-		BYTE* handler = reinterpret_cast<BYTE*>(CameraHandler());
-		if (!handler)
-			return;
-
-		__try
-		{
-			if (saved.has_assist)
-			{
-				float* assist = reinterpret_cast<float*>(
-					handler + kCameraAimAssistOffset);
-				for (size_t i = 0; i < kCameraAimAssistFloats; ++i)
-					assist[i] = saved.assist[i];
-			}
-			if (saved.has_yaw_state)
-			{
-				float* yaw_state = reinterpret_cast<float*>(
-					handler + kCameraAimYawStateOffset);
-				for (size_t i = 0; i < kCameraAimYawStateFloats; ++i)
-					yaw_state[i] = saved.yaw_state[i];
-			}
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			CoopRuntime::Instance().Log(
-				"[error] failed to restore the shared camera aim yaw state\r\n");
-		}
-
-		if (!saved.has_follow_turn)
-			return;
-		float* follow_turn = CameraFollowTurn();
-		if (!follow_turn)
-			return;
-		__try
-		{
-			*follow_turn = saved.follow_turn;
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			CoopRuntime::Instance().Log(
-				"[error] failed to restore the shared camera follow turn\r\n");
-		}
 	}
 
 	bool Player2Module::SyncPlayer2WeaponSelection(void* player2)
@@ -654,11 +266,11 @@ namespace coop
 		if (!player2)
 			return false;
 
-		retail::PlayerRepository players;
+		retail::EntitySlotRepository players;
 		retail::EntityRef player1 = {};
 		retail::HandlerRef player1_handler = {};
-		uint32_t player1_weapon_type = 0xFFFFFFFFu;
-		if (!players.Get(retail::PlayerSlot::LocalP1, player1) ||
+		std::uint32_t player1_weapon_type = 0xFFFFFFFFu;
+		if (!players.Get(retail::EntitySlot::LocalP1, player1) ||
 			!retail::EntityView(player1).Handler(player1_handler) ||
 			!retail::HandlerView(player1_handler).SelectedWeaponType(
 				player1_weapon_type))
@@ -669,14 +281,14 @@ namespace coop
 	}
 
 	bool Player2Module::ApplyPlayer2WeaponSelection(void* player2,
-		uint32_t weapon_type, const char* source)
+		std::uint32_t weapon_type, const char* source)
 	{
 		if (!player2 || weapon_type == 0xFFFFFFFFu)
 			return false;
 
 		const retail::EntityRef player2_ref = { retail::ToAddress(player2) };
 		retail::HandlerRef player2_handler = {};
-		uint32_t player2_weapon_type = 0xFFFFFFFFu;
+		std::uint32_t player2_weapon_type = 0xFFFFFFFFu;
 		if (!retail::EntityView(player2_ref).Handler(player2_handler) ||
 			!retail::HandlerView(player2_handler).SelectedWeaponType(player2_weapon_type))
 		{
@@ -690,41 +302,42 @@ namespace coop
 			return false;
 
 		m_last_weapon_type = weapon_type;
-		__try
+		std::uint32_t item_id = 0xFFFFFFFFu;
+		if (!retail::NativeGameApi::WeaponTypeToItemId(weapon_type, item_id))
 		{
-			WeaponTypeToItemIdFn weapon_type_to_item_id =
-				reinterpret_cast<WeaponTypeToItemIdFn>(kWeaponTypeToItemId);
-			const uint32_t item_id = weapon_type_to_item_id(weapon_type);
-			if (item_id == kDefaultMeleeItemId && weapon_type != 0x40050001u)
-				return false;
-
-			SetSelectedWeaponTypeFn set_selected_weapon_type =
-				reinterpret_cast<SetSelectedWeaponTypeFn>(kSetSelectedWeaponType);
-			set_selected_weapon_type(retail::ToPointer(player2_handler.value), weapon_type);
-
-			GetCurrentWeaponIdFn get_current_weapon_id =
-				reinterpret_cast<GetCurrentWeaponIdFn>(kGetCurrentWeaponId);
-			const uint32_t player2_current =
-				get_current_weapon_id(retail::ToPointer(player2_handler.value));
-			CoopRuntime::Instance().Log("[weapon-selection] source=%s type=0x%08X item=0x%08X P2.old_type=0x%08X P2.current_before=0x%08X action=%s\r\n",
-				source ? source : "unknown", weapon_type, item_id,
-				player2_weapon_type, player2_current,
-				item_id == kDefaultMeleeItemId ? "holster" : "select");
-			return true;
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			CoopRuntime::Instance().Log("[error] exception while applying P2 weapon selection\r\n");
+			CoopRuntime::Instance().Log(
+				"[weapon-selection] native type-to-item call failed\r\n");
 			return false;
 		}
+		if (item_id == kDefaultMeleeItemId && weapon_type != 0x40050001u)
+			return false;
+		if (!retail::NativeGameApi::SetSelectedWeaponType(player2_handler,
+			weapon_type))
+		{
+			CoopRuntime::Instance().Log(
+				"[weapon-selection] native P2 selection call failed\r\n");
+			return false;
+		}
+		std::uint32_t player2_current = 0xFFFFFFFFu;
+		if (!retail::NativeGameApi::CurrentWeaponId(player2_handler,
+			player2_current))
+		{
+			CoopRuntime::Instance().Log(
+				"[weapon-selection] native P2 current-item call failed\r\n");
+			return false;
+		}
+		CoopRuntime::Instance().Log("[weapon-selection] source=%s type=0x%08X item=0x%08X P2.old_type=0x%08X P2.current_before=0x%08X action=%s\r\n",
+			source ? source : "unknown", weapon_type, item_id,
+			player2_weapon_type, player2_current,
+			item_id == kDefaultMeleeItemId ? "holster" : "select");
+		return true;
 	}
 
 	bool Player2Module::EnsureNetworkPlayer2()
 	{
-
-		void* player2 = GetGPigEntity(2);
-		void* controller = GetController(player2);
-		if (player2 && controller)
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding player2 = {};
+		if (players.GetBinding(retail::EntitySlot::RemoteP2, player2))
 		{
 			InterlockedExchange(&m_player2_ready, 1);
 			return true;
@@ -732,42 +345,47 @@ namespace coop
 		if (InterlockedCompareExchange(&m_spawn_snapshot_ready, 0, 0) == 0 ||
 			!m_spawn_context)
 			return false;
-		void* player1 = GetGPigEntity(1);
-		void* player1_controller = GetController(player1);
-		if (!player1 || !player1_controller)
+		retail::EntitySlotBinding player1 = {};
+		if (!players.GetBinding(retail::EntitySlot::LocalP1, player1))
 			return false;
 
 		// Network creation runs from GameTick only after P1's own stock update.  The
 		// original Default-only gate strands a peer that connects after the ABR
 		// cutscene, although the proven native factory path is safe with P1 already in
 		// RDV. Allow precisely those two lifecycle modes, not arbitrary transitions.
-		const uint32_t player1_mode = GetModeId(player1_controller);
+		const std::uint32_t player1_mode = GetModeId(
+			retail::ToPointer(player1.controller.value));
 		if (player1_mode != kDefaultModeId && player1_mode != kAbrModeId)
 			return false;
-		SpawnPlayer2FromSnapshot("network");
-
-		return InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
+		return SpawnPlayer2FromSnapshot("network", false) &&
+			InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
 	}
 
-	void Player2Module::SpawnPlayer2FromSnapshot(const char* trigger)
+	bool Player2Module::SpawnPlayer2FromSnapshot(const char* trigger,
+		bool allow_when_coop_disabled)
 	{
 		if (!trigger)
 			trigger = "unknown";
 		if (InterlockedCompareExchange(&m_spawn_in_progress, 1, 0) != 0)
-			return;
-		if (!CoopRuntime::Instance().Config().enabled)
+			return false;
+		if (!allow_when_coop_disabled && !CoopRuntime::Instance().Config().enabled)
 		{
 			CoopRuntime::Instance().Log("[spawn-%s] co-op is disabled in coop.ini\r\n",
 				trigger);
 			InterlockedExchange(&m_spawn_in_progress, 0);
-			return;
+			return false;
 		}
-		if (GetGPigEntity(2))
+		retail::EntitySlotRepository players;
+		const retail::EntityRef existing_player2_ref = players.GetSelectable(
+			retail::EntitySlot::RemoteP2);
+		void* const existing_player2 =
+			retail::ToPointer(existing_player2_ref.value);
+		if (existing_player2)
 		{
 			CoopRuntime::Instance().Log("[spawn-%s] player 2 already exists\r\n",
 				trigger);
 			InterlockedExchange(&m_spawn_in_progress, 0);
-			return;
+			return GetController(existing_player2) != nullptr;
 		}
 		if (InterlockedCompareExchange(&m_spawn_snapshot_ready, 0, 0) == 0 ||
 			!m_spawn_context)
@@ -775,65 +393,57 @@ namespace coop
 			CoopRuntime::Instance().Log(
 				"[spawn-%s] no stock player spawn snapshot yet\r\n", trigger);
 			InterlockedExchange(&m_spawn_in_progress, 0);
-			return;
+			return false;
 		}
 
-		void* player1 = GetGPigEntity(1);
+		const retail::EntityRef player1_ref = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		void* player1 = retail::ToPointer(player1_ref.value);
 		Vec4 player2_position = m_spawn_position;
 		Vec4 player2_rotation = m_spawn_rotation;
 		bool used_live_transform = false;
-		__try
+		if (player1)
 		{
-			if (player1)
+			retail::Transform player1_transform = {};
+			if (retail::EntityView(player1_ref).ReadTransform(player1_transform))
 			{
-				player2_position = *reinterpret_cast<Vec4*>(
-					reinterpret_cast<BYTE*>(player1) + kEntityPositionOffset);
-				player2_rotation = *reinterpret_cast<Vec4*>(
-					reinterpret_cast<BYTE*>(player1) + kEntityRotationOffset);
+				memcpy(&player2_position, &player1_transform.position,
+					sizeof(player2_position));
+				memcpy(&player2_rotation, &player1_transform.rotation,
+					sizeof(player2_rotation));
 				// Keep the pigs out of each other during cutscenes and shared spawns.
 				player2_position.x += 0.5f;
 				used_live_transform = true;
 			}
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			used_live_transform = false;
-		}
 
-		SpawnGPigFn spawn = reinterpret_cast<SpawnGPigFn>(kSpawnGPig);
-		void* player2 = NULL;
+		retail::EntityRef player2_ref = {};
 		CoopRuntime::Instance().Log("[spawn-%s] creating P2 id=0x%08X context=%p transform=%s position=(%.3f, %.3f, %.3f)\r\n",
-			trigger, kGPig2Id, m_spawn_context,
+			trigger, kGPig2Id, retail::ToPointer(m_spawn_context.value),
 			used_live_transform ? "live-P1" : "stock-snapshot",
 			player2_position.x, player2_position.y, player2_position.z);
-		__try
+		if (!retail::NativeGameApi::SpawnGPig(&player2_position,
+			&player2_rotation, kGPig2Id, m_spawn_context, player2_ref))
 		{
-			player2 = spawn(&player2_position, &player2_rotation,
-				kGPig2Id, m_spawn_context);
-		}
-		__except (CoopRuntime::Instance().LogException(GetExceptionInformation(), "player2-factory-from-key"))
-		{
-			player2 = NULL;
+			CoopRuntime::Instance().Log(
+				"[spawn-%s] native P2 factory fault\r\n", trigger);
 		}
 
-		void* player2_handler = NULL;
+		retail::HandlerRef player2_handler_ref = {};
+		if (player2_ref)
+		{
+			retail::EntityView(player2_ref).Handler(player2_handler_ref);
+		}
+		void* const player2 = retail::ToPointer(player2_ref.value);
+		void* const player2_handler = retail::ToPointer(player2_handler_ref.value);
 		void* player2_controller = GetController(player2);
-		__try
-		{
-			if (player2)
-				player2_handler = *reinterpret_cast<void**>(
-					reinterpret_cast<BYTE*>(player2) + kEntityHandlerOffset);
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-		}
 		if (player2 && player2_controller)
 		{
 			m_last_weapon_type = 0xFFFFFFFFu;
 
 			m_player2_default_mode_initialized = false;
-			m_abr_native_task_player2 = NULL;
-			m_abr_native_task_configured_player2 = NULL;
+			m_player2_default_mode_setup_failure_logged = false;
+			m_abr_native_task_configured_player2 = {};
 
 			m_logged_blocked_active_publish = false;
 
@@ -845,7 +455,7 @@ namespace coop
 			m_player2_ready);
 
 		InterlockedExchange(&m_spawn_in_progress, 0);
-
+		return player2 && player2_controller;
 	}
 
 	bool Player2Module::TryEnsurePlayer2RdvTask(const char* source)
@@ -862,74 +472,70 @@ namespace coop
 			return false;
 		}
 
-		void* const player1 = GetGPigEntity(1);
-		void* const player2 = GetGPigEntity(2);
-		if (!player1 || !player2 || GetModeId(GetController(player1)) != kAbrModeId)
+		retail::EntitySlotRepository players;
+		const retail::EntityRef player1 = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		const retail::EntityRef player2 = players.GetSelectable(
+			retail::EntitySlot::RemoteP2);
+		if (!player1 || !player2 ||
+			GetModeId(GetController(retail::ToPointer(player1.value))) != kAbrModeId)
 			return false;
 
-		if (m_abr_native_task_player2 == player2)
+		// The factory may succeed before the native spawn-context configurator is
+		// ready.  Only its postcondition (`task+0x30 == 1`) is a valid cache hit;
+		// otherwise the next controller tick must retry the stock configurator.
+		if (m_abr_native_task_configured_player2 == player2)
 			return true;
 
-		void* player2_handler = NULL;
-		void* motor_system = NULL;
-		void* state_table = NULL;
-		void** resources = NULL;
-		void* existing_task = NULL;
-		void* created_task = NULL;
-		uint32_t resource_count = 0;
-		uint32_t state_index = 0;
-		bool contract_valid = true;
-		__try
+		retail::HandlerRef player2_handler = {};
+		retail::MotorSystemRef motor_system = {};
+		retail::Address state_table = 0;
+		retail::Address resource_table = 0;
+		retail::MotorResourceRef rdv_resource = {};
+		retail::MotorTaskRef existing_task = {};
+		std::uint32_t resource_count = 0;
+		std::uint32_t state_index = 0;
+		retail::Address resource_vtable = 0;
+		retail::Address task_vtable = 0;
+		bool contract_valid = retail::EntityView(player2).Handler(player2_handler) &&
+			retail::HandlerView(player2_handler).MotorSystem(motor_system);
+		if (contract_valid)
 		{
-			player2_handler = *reinterpret_cast<void**>(
-				static_cast<BYTE*>(player2) + kEntityHandlerOffset);
-			if (!player2_handler)
+			retail::MotorSystemView motor_system_view(motor_system);
+			contract_valid = motor_system_view.TaskStateTable(state_table) &&
+				motor_system_view.ResourceCount(resource_count) &&
+				motor_system_view.ResourceTable(resource_table) &&
+				retail::ReadGPigRdvTaskStateIndex(state_index) &&
+				state_index < kMotorSystemTaskStateSafetyLimit &&
+				resource_count > kGPigRdvMotorResourceIndex &&
+				motor_system_view.ResourceAt(kGPigRdvMotorResourceIndex,
+					rdv_resource) &&
+				retail::MotorResourceView(rdv_resource).VTable(resource_vtable) &&
+				resource_vtable == kGPigRdvMotorFunctionVtable &&
+				motor_system_view.TaskAt(state_index, existing_task);
+			if (contract_valid && existing_task)
 			{
-				contract_valid = false;
+				contract_valid = retail::MotorTaskView(existing_task).VTable(task_vtable) &&
+					task_vtable == kGPigRdvTaskVtable;
 			}
-			else
-			{
-				BYTE* const handler_bytes = static_cast<BYTE*>(player2_handler);
-				motor_system = handler_bytes + 0x4C0u;
-				state_table = *reinterpret_cast<void**>(handler_bytes + 0x4ECu);
-				resource_count = *reinterpret_cast<uint32_t*>(
-					static_cast<BYTE*>(motor_system) + 0x10u);
-				resources = *reinterpret_cast<void***>(
-					static_cast<BYTE*>(motor_system) + 0x14u);
-				state_index = *reinterpret_cast<uint32_t*>(kGPigRdvTaskStateIndex);
-				if (!state_table || state_index >= 64u || resource_count <= 11u || !resources ||
-					!resources[11] || *reinterpret_cast<void**>(resources[11]) !=
-					reinterpret_cast<void*>(0x007040DCu))
-				{
-					contract_valid = false;
-				}
-				else
-				{
-					existing_task = reinterpret_cast<void**>(state_table)[state_index];
-					if (existing_task && *reinterpret_cast<void**>(existing_task) !=
-						reinterpret_cast<void*>(kGPigRdvTaskVtable))
-						contract_valid = false;
-				}
-			}
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			contract_valid = false;
 		}
 		if (!contract_valid)
 		{
 			CoopRuntime::Instance().Log(
 				"[abr-task] source=%s rejected: task factory contract unavailable P2=%p handler=%p state=%p index=%u resources=%p count=%u existing=%p\r\n",
-				source, player2, player2_handler, state_table, state_index, resources,
-				resource_count, existing_task);
+				source, retail::ToPointer(player2.value),
+				retail::ToPointer(player2_handler.value),
+				retail::ToPointer(state_table), state_index,
+				retail::ToPointer(resource_table), resource_count,
+				retail::ToPointer(existing_task.value));
 			return false;
 		}
 		if (existing_task)
 		{
-			m_abr_native_task_player2 = player2;
 			CoopRuntime::Instance().Log(
 				"[abr-task] source=%s P2=%p already has native XMotorTask_RDV=%p; no factory call made\r\n",
-				source, player2, existing_task);
+				source, retail::ToPointer(player2.value),
+				retail::ToPointer(existing_task.value));
 			return ConfigurePlayer2RdvTask(source, player2, player2_handler,
 				existing_task);
 		}
@@ -940,142 +546,119 @@ namespace coop
 		// stock object is sufficient for the next controller-mode experiment.
 		CoopRuntime::Instance().Log(
 			"[abr-task] source=%s native factory begin P2=%p handler=%p motor=%p state=%p index=%u\r\n",
-			source, player2, player2_handler, motor_system, state_table, state_index);
-		__try
-		{
-			EnsureGPigRdvTaskFn ensure_task =
-				reinterpret_cast<EnsureGPigRdvTaskFn>(kEnsureGPigRdvTask);
-			created_task = ensure_task(motor_system, true);
-		}
-		__except (CoopRuntime::Instance().LogException(
-			GetExceptionInformation(), "abr-native-rdv-task-factory"))
+			source, retail::ToPointer(player2.value),
+			retail::ToPointer(player2_handler.value),
+			retail::ToPointer(motor_system.value),
+			retail::ToPointer(state_table), state_index);
+		retail::MotorTaskRef created_task = {};
+		if (!retail::NativeGameApi::EnsureGPigRdvTask(motor_system, true,
+			created_task))
 		{
 			CoopRuntime::Instance().Log(
 				"[abr-task] source=%s native factory fault\r\n", source);
 			return false;
 		}
 
-		void* task_vtable = NULL;
-		bool creation_valid = false;
-		__try
-		{
-			void* const table_task = reinterpret_cast<void**>(state_table)[state_index];
-			if (created_task == table_task && created_task)
-			{
-				task_vtable = *reinterpret_cast<void**>(created_task);
-				creation_valid = task_vtable == reinterpret_cast<void*>(kGPigRdvTaskVtable);
-			}
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			creation_valid = false;
-		}
+		retail::MotorTaskRef table_task = {};
+		task_vtable = 0;
+		const bool creation_valid = created_task &&
+			retail::MotorSystemView(motor_system).TaskAt(state_index, table_task) &&
+			created_task == table_task &&
+			retail::MotorTaskView(created_task).VTable(task_vtable) &&
+			task_vtable == kGPigRdvTaskVtable;
 		if (!creation_valid)
 		{
 			CoopRuntime::Instance().Log(
 				"[abr-task] source=%s native factory postcondition failed P2=%p task=%p vtbl=%p\r\n",
-				source, player2, created_task, task_vtable);
+				source, retail::ToPointer(player2.value),
+				retail::ToPointer(created_task.value),
+				retail::ToPointer(task_vtable));
 			return false;
 		}
 
-		m_abr_native_task_player2 = player2;
 		CoopRuntime::Instance().Log(
 			"[abr-task] source=%s native factory complete P2=%p XMotorTask_RDV=%p vtbl=%p\r\n",
-			source, player2, created_task, task_vtable);
+			source, retail::ToPointer(player2.value),
+			retail::ToPointer(created_task.value),
+			retail::ToPointer(task_vtable));
 
 		return ConfigurePlayer2RdvTask(source, player2, player2_handler,
 			created_task);
 	}
 
-	bool Player2Module::ConfigurePlayer2RdvTask(const char* source, void* player2,
-		void* player2_handler, void* task)
+	bool Player2Module::ConfigurePlayer2RdvTask(const char* source,
+		retail::EntityRef player2, retail::HandlerRef player2_handler,
+		retail::MotorTaskRef task)
 	{
 		if (!source)
 			source = "unknown";
 		if (m_abr_native_task_configured_player2 == player2)
 			return true;
 
-		void* const context = m_spawn_context;
-		void* const player1 = GetGPigEntity(1);
-		void* context_entity = NULL;
-		void* active_a = NULL;
-		void* active_b = NULL;
-		uint32_t context_flags = 0;
-		bool contract_valid = context != NULL && player1 != NULL && player2 != NULL &&
-			player2_handler != NULL && task != NULL;
-		__try
-		{
-			if (contract_valid)
-			{
-				BYTE* const context_bytes = static_cast<BYTE*>(context);
-				context_flags = *reinterpret_cast<uint32_t*>(context_bytes + 0x10u);
-				context_entity = *reinterpret_cast<void**>(context_bytes + 0xE8u);
-				active_a = *reinterpret_cast<void**>(kActiveEntityA);
-				active_b = *reinterpret_cast<void**>(kActiveEntityB);
-				contract_valid = context_entity == player1 && active_a == player1 &&
-					active_b == player1 && (context_flags & 0x20000000u) != 0 &&
-					*reinterpret_cast<void**>(task) ==
-					reinterpret_cast<void*>(kGPigRdvTaskVtable);
-			}
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			contract_valid = false;
-		}
+		const retail::SpawnContextRef context = m_spawn_context;
+		retail::EntitySlotRepository players;
+		const retail::EntityRef player1 = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		retail::EntityRef context_entity = {};
+		retail::EntityRef active_a = {};
+		retail::EntityRef active_b = {};
+		std::uint32_t context_flags = 0;
+		retail::Address task_vtable = 0;
+		const bool contract_valid = context && player1 && player2 &&
+			player2_handler && task &&
+			retail::SpawnContextView(context).Flags(context_flags) &&
+			retail::SpawnContextView(context).ActiveEntity(context_entity) &&
+			retail::ActiveEntityStore().Read(active_a, active_b) &&
+			context_entity == player1 && active_a == player1 && active_b == player1 &&
+			(context_flags & kGPigSpawnContextRdvFlag) != 0 &&
+			retail::MotorTaskView(task).VTable(task_vtable) &&
+			task_vtable == kGPigRdvTaskVtable;
 		if (!contract_valid)
 		{
 			CoopRuntime::Instance().Log(
 				"[abr-task-config] source=%s rejected P1=%p P2=%p handler=%p task=%p context=%p flags=0x%08X context_entity=%p active=(%p,%p)\r\n",
-				source, player1, player2, player2_handler, task, context, context_flags,
-				context_entity, active_a, active_b);
+				source, retail::ToPointer(player1.value),
+				retail::ToPointer(player2.value),
+				retail::ToPointer(player2_handler.value),
+				retail::ToPointer(task.value), retail::ToPointer(context.value),
+				context_flags, retail::ToPointer(context_entity.value),
+				retail::ToPointer(active_a.value), retail::ToPointer(active_b.value));
 			return false;
 		}
 
 		CoopRuntime::Instance().Log(
 			"[abr-task-config] source=%s native begin P2=%p task=%p context=%p flags=0x%08X\r\n",
-			source, player2, task, context, context_flags);
-		__try
-		{
-			ConfigureGPigRdvTaskFn configure_task =
-				reinterpret_cast<ConfigureGPigRdvTaskFn>(kConfigureGPigRdvTask);
-			configure_task(context, player2_handler);
-		}
-		__except (CoopRuntime::Instance().LogException(
-			GetExceptionInformation(), "abr-native-rdv-task-configurator"))
+			source, retail::ToPointer(player2.value),
+			retail::ToPointer(task.value), retail::ToPointer(context.value),
+			context_flags);
+		if (!retail::NativeGameApi::ConfigureGPigRdvTask(context,
+			player2_handler))
 		{
 			CoopRuntime::Instance().Log(
 				"[abr-task-config] source=%s native configurator fault\r\n", source);
 			return false;
 		}
 
-		bool configured = false;
 		uint8_t enabled = 0;
-		__try
-		{
-			configured = *reinterpret_cast<void**>(task) ==
-				reinterpret_cast<void*>(kGPigRdvTaskVtable);
-			if (configured)
-			{
-				enabled = *(static_cast<uint8_t*>(task) + 0x30u);
-				configured = enabled == 1u;
-			}
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			configured = false;
-		}
+		task_vtable = 0;
+		const bool configured = retail::MotorTaskView(task).VTable(task_vtable) &&
+			task_vtable == kGPigRdvTaskVtable &&
+			retail::MotorTaskView(task).RdvEnabled(enabled) &&
+			enabled == kGPigRdvTaskEnabledValue;
 		if (!configured)
 		{
 			CoopRuntime::Instance().Log(
 				"[abr-task-config] source=%s postcondition failed P2=%p task=%p enabled=%u\r\n",
-				source, player2, task, static_cast<unsigned>(enabled));
+				source, retail::ToPointer(player2.value),
+				retail::ToPointer(task.value), static_cast<unsigned>(enabled));
 			return false;
 		}
 
 		m_abr_native_task_configured_player2 = player2;
 		CoopRuntime::Instance().Log(
 			"[abr-task-config] source=%s native configured P2=%p task=%p enabled=%u\r\n",
-			source, player2, task, static_cast<unsigned>(enabled));
+			source, retail::ToPointer(player2.value),
+			retail::ToPointer(task.value), static_cast<unsigned>(enabled));
 		return true;
 	}
 
@@ -1106,28 +689,35 @@ namespace coop
 		// driving.  Its mode goes back to Default immediately after the native Mooch
 		// hand-off, so use the confirmed network owner state rather than a mode or
 		// process-global pointer that lasts only for that transition frame.
-		if (!CoopNetGame::Instance().IsLocalFlyControlled() &&
+		CoopNetGame& netgame = CoopNetGame::Instance();
+		if (!netgame.IsLocalFlyControlled() &&
 			GetModeId(player1_controller) == kDefaultModeId)
-			RefreshCameraForController(player1_controller);
-		CoopNetGame::Instance().BeginLocalInputCapture();
+			m_camera.RefreshForController(player1_controller);
+		netgame.BeginLocalInputCapture();
 		if (!RunStockControllerUpdate(player1_controller, "local-player1"))
 			return;
-		CoopNetGame::Instance().PublishLocalPlayerMode(
+		netgame.PublishLocalPlayerMode(
 			GetModeId(player1_controller));
-		CoopNetGame::Instance().PublishLocalPlayerTransform(GetGPigEntity(1));
-		// P1's 0x5BCF30 and 0x5BB1D0 have just finished driving the single shared
-		// camera, so this is the only frame point where 0x52AD20 reports P1's own yaw.
-		// The remote machine cannot read its P2's camera because P2 owns none there РІР‚вЂќ
-		// it consumes this value.
-		float local_camera_yaw = 0.0f;
-		const bool local_camera_yaw_valid = ReadLocalCameraYaw(local_camera_yaw);
-		CoopNetGame::Instance().PublishLocalCameraYaw(
-			local_camera_yaw, local_camera_yaw_valid);
+		retail::EntitySlotRepository players;
+		const retail::EntityRef player1 = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		netgame.PublishLocalPlayerTransform(retail::ToPointer(player1.value));
+		// During local Mooch control P1's Default update runs before Mooch's own
+		// controller, so its shared-camera value is stale.  Leave the last yaw in
+		// place; UpdateFlyController publishes the current Mooch yaw after its
+		// native tick, and that is what the next network send must carry.
+		if (!netgame.IsLocalFlyControlled())
+		{
+			float local_camera_yaw = 0.0f;
+			netgame.PublishLocalCameraYaw(local_camera_yaw,
+				m_camera.ReadLocalYaw(local_camera_yaw));
+		}
 
 		// Network spawning must happen after P1's normal update.  The factory then
 		// receives the same settled transform/physics context as the proven-safe
 		// earlier native-factory path. GameTick itself returns immediately once P2 exists.
-		CoopNetGame::Instance().GameTick();
+		netgame.GameTick();
+		DebugActions::Instance().Tick();
 
 		HandlePlayer1ModeTransition(player1_controller);
 
@@ -1135,7 +725,7 @@ namespace coop
 
 	void Player2Module::HandlePlayer1ModeTransition(void* player1_controller)
 	{
-		const uint32_t mode_now = GetModeId(player1_controller);
+		const std::uint32_t mode_now = GetModeId(player1_controller);
 		if (mode_now == m_last_player1_mode)
 			return;
 
@@ -1157,58 +747,75 @@ namespace coop
 		InterlockedExchange(&m_player2_ready, 0);
 		InterlockedExchange(&m_spawn_snapshot_ready, 0);
 		InterlockedExchange(&m_spawn_in_progress, 0);
-		m_logged_player2 = false;
 		m_player2_default_mode_initialized = false;
+		m_player2_default_mode_setup_failure_logged = false;
+		m_debug_player2_enabled = false;
+		m_remote_p2_death_mode_observed = false;
+		m_remote_p2_death_mode_entry_sequence = 0;
 		m_last_player1_mode = 0;
-		m_fly_controlled_last = false;
-		m_spawn_key_was_down = false;
-		m_npc_spawn_key_was_down = false;
 		m_last_weapon_type = 0xFFFFFFFFu;
-		m_spawn_context = NULL;
-		m_abr_native_task_player2 = NULL;
-		m_abr_native_task_configured_player2 = NULL;
+		m_spawn_context = {};
+		m_abr_native_task_configured_player2 = {};
+		DebugActions::Instance().ResetForWorldLoad();
 		CoopRuntime::Instance().Log("[reset] P2 state cleared for world load\r\n");
 	}
 
-	void Player2Module::ConfigurePlayer2DefaultMode(void* controller)
+	bool Player2Module::ConfigurePlayer2DefaultMode(void* controller)
 	{
 		if (!controller || GetModeId(controller) != kDefaultModeId)
-			return;
+			return false;
 
-		__try
+		const retail::ControllerRef controller_ref = {
+			retail::ToAddress(controller)
+		};
+		retail::ModeRef mode = {};
+		std::uint32_t original_mask = 0;
+		if (!retail::ControllerView(controller_ref).Mode(mode) ||
+			!retail::ModeView(mode).ConflictMask(original_mask))
 		{
-			BYTE* const mode = *reinterpret_cast<BYTE**>(
-				static_cast<BYTE*>(controller) + kControllerModeOffset);
-			if (!mode)
-				return;
-
-			uint32_t* const conflict_mask = reinterpret_cast<uint32_t*>(
-				mode + kModeConflictMaskOffset);
-			const uint32_t original_mask = *conflict_mask;
-			if (original_mask != kDefaultModeConflictMask)
+			if (!m_player2_default_mode_setup_failure_logged)
 			{
 				CoopRuntime::Instance().Log(
-					"[arbiter] P2 Default conflict mask unexpected: 0x%08X; left unchanged\r\n",
-					original_mask);
-				return;
+					"[arbiter] unable to read P2 Default conflict mask; will retry\r\n");
+				m_player2_default_mode_setup_failure_logged = true;
 			}
-
-			// The modes are per-controller objects: the observed P2 Default instance
-			// differs from P1's Mooch instance.  0x5BFF80 compares the bit newly
-			// required by P1's Mooch -> Default hand-off (bit 0x1) against every
-			// other controller.  P2 has no local camera/active-entity ownership, so
-			// leaving that bit set falsely makes it a competing single-player owner.
-			// Retain the rest of P2's native Default mask and its full stock tick.
-			*conflict_mask = original_mask & ~kP2DefaultExclusiveMask;
-			CoopRuntime::Instance().Log(
-				"[arbiter] P2 Default mode=%p conflict mask 0x%08X -> 0x%08X\r\n",
-				mode, original_mask, *conflict_mask);
+			return false;
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
+		if (original_mask != kDefaultModeConflictMask)
 		{
-			CoopRuntime::Instance().Log(
-				"[arbiter] unable to configure P2 Default conflict mask\r\n");
+			if (!m_player2_default_mode_setup_failure_logged)
+			{
+				CoopRuntime::Instance().Log(
+					"[arbiter] P2 Default conflict mask unexpected: 0x%08X; will retry\r\n",
+					original_mask);
+				m_player2_default_mode_setup_failure_logged = true;
+			}
+			return false;
 		}
+
+		// The modes are per-controller objects: the observed P2 Default instance
+		// differs from P1's Mooch instance.  0x5BFF80 compares the bit newly
+		// required by P1's Mooch -> Default hand-off (bit 0x1) against every
+		// other controller.  P2 has no local camera/active-entity ownership, so
+		// leaving that bit set falsely makes it a competing single-player owner.
+		// Retain the rest of P2's native Default mask and its full stock tick.
+		const std::uint32_t revised_mask = original_mask &
+			~kP2DefaultExclusiveMask;
+		if (!retail::ModeView(mode).SetConflictMask(revised_mask))
+		{
+			if (!m_player2_default_mode_setup_failure_logged)
+			{
+				CoopRuntime::Instance().Log(
+					"[arbiter] unable to write P2 Default conflict mask; will retry\r\n");
+				m_player2_default_mode_setup_failure_logged = true;
+			}
+			return false;
+		}
+		m_player2_default_mode_setup_failure_logged = false;
+		CoopRuntime::Instance().Log(
+			"[arbiter] P2 Default mode=%p conflict mask 0x%08X -> 0x%08X\r\n",
+			retail::ToPointer(mode.value), original_mask, revised_mask);
+		return true;
 	}
 
 	bool Player2Module::RunStockControllerUpdate(void* controller,
@@ -1232,62 +839,56 @@ namespace coop
 
 	void Player2Module::UpdateController(void* controller)
 	{
-		const int slot = FindGPigSlot(controller);
-		if (slot == static_cast<int>(retail::PlayerSlot::LocalP1))
+		retail::EntitySlotRepository players;
+		const retail::ControllerRef controller_ref = {
+			retail::ToAddress(controller)
+		};
+		const retail::EntitySlot slot =
+			players.FindSelectableGPigSlotForController(controller_ref);
+		if (slot == retail::EntitySlot::LocalP1)
 		{
 			TickPlayer1(controller);
 			return;
 		}
 
-		if (slot == static_cast<int>(retail::PlayerSlot::RemoteP2) &&
-			IsGPigDeathMode(controller))
+		const bool is_remote_p2 = slot == retail::EntitySlot::RemoteP2;
+		// F5 can create a local diagnostic P2 in the same retail slot. It has no
+		// authoritative peer snapshot, so never leave that opt-in local experiment
+		// permanently held in a remote-only DeathMode guard. The guard applies only
+		// to the replicated P2 while a peer actually owns its presentation.
+		const bool is_networked_remote_p2 = is_remote_p2 &&
+			CoopNetGame::Instance().HasRemotePeer();
+		if (is_networked_remote_p2 && IsGPigDeathMode(controller))
 		{
-			static bool logged_remote_death = false;
-			if (!logged_remote_death)
+			if (TryRecoverRemoteP2Death(controller))
 			{
-				CoopRuntime::Instance().Log(
-					"[death-guard] P2 death mode update suppressed; no native respawn\r\n");
-				logged_remote_death = true;
+				m_remote_p2_death_mode_observed = false;
+				m_remote_p2_death_mode_entry_sequence = 0;
 			}
-			return;
+			else
+			{
+				if (!m_remote_p2_death_mode_observed)
+				{
+					CoopRuntime::Instance().Log(
+						"[p2-death-guard] holding native DeathMode until peer sends a newer Default snapshot entry_seq=%u\r\n",
+						m_remote_p2_death_mode_entry_sequence);
+					m_remote_p2_death_mode_observed = true;
+				}
+				return;
+			}
+		}
+		else if (is_remote_p2)
+		{
+			m_remote_p2_death_mode_observed = false;
+			m_remote_p2_death_mode_entry_sequence = 0;
 		}
 
-		void* const fly = GetFlyEntity();
-		if (controller && controller == GetController(fly))
-		{
-			CoopNetGame& netgame = CoopNetGame::Instance();
-			const bool local_fly_controlled = netgame.IsLocalFlyControlled();
-			const bool remote_fly_controlled = !local_fly_controlled && netgame.IsRemoteFlyControlled();
-			// GPig_Mooch::Enter normally sets fly-state +0x53. The remote side
-			// never runs that local hand-off, so mirror only this lifecycle flag.
-			// Fly_Idle then selects Fly_Active itself, and the existing raw-action
-			// hooks drive the native Active -> Scanning -> fire path.
-			if (remote_fly_controlled)
-				netgame.SetFlyControlActiveState(fly, true);
-			else if (m_fly_controlled_last && !local_fly_controlled)
-				netgame.SetFlyControlActiveState(fly, false);
-			if (remote_fly_controlled != m_fly_controlled_last)
-			{
-				CoopRuntime::Instance().Log(
-					"[fly-sync] remote native control state=%u\r\n",
-					remote_fly_controlled ? 1u : 0u);
-			}
-			m_fly_controlled_last = remote_fly_controlled;
-			const uint32_t mode_before = GetModeId(controller);
-			if (RunStockControllerUpdate(controller, "fly"))
-			{
-				netgame.ObserveLocalFlyMode(mode_before, GetModeId(controller));
-				netgame.MaintainLocalFlyActiveEntity(fly);
-				netgame.PublishLocalFlyTransform(fly);
-				if (!netgame.IsLocalFlyControlled())
-					netgame.ApplyRemoteFlyTransform(fly);
-			}
+		if (UpdateFlyController(controller))
 			return;
-		}
 
 		const bool is_ready_player2 =
-			slot == static_cast<int>(retail::PlayerSlot::RemoteP2) &&
-			CoopRuntime::Instance().Config().enabled &&
+			slot == retail::EntitySlot::RemoteP2 &&
+			(CoopRuntime::Instance().Config().enabled || m_debug_player2_enabled) &&
 			InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
 		if (!is_ready_player2)
 		{
@@ -1295,77 +896,146 @@ namespace coop
 			return;
 		}
 
+		UpdateRemotePlayer2Controller(controller);
+	}
+
+	bool Player2Module::UpdateFlyController(void* controller)
+	{
+		void* const fly = GetFlyEntity();
+		if (!controller || controller != GetController(fly))
+			return false;
+
+		CoopNetGame& netgame = CoopNetGame::Instance();
+		const bool local_fly_controlled = netgame.IsLocalFlyControlled();
+		const bool remote_fly_presentation = !local_fly_controlled &&
+			netgame.IsRemoteFlyControlled();
+		// A peer-owned Mooch is presentation-only on this process. Do not mirror its
+		// +0x53 state flag or run its remote controller/input scope: that would
+		// switch this machine's camera/player into Mooch. Clear an older DLL's
+		// mirrored state before the stock idle tick, then apply only the transform.
+		if (remote_fly_presentation)
+			netgame.SetFlyControlActiveState(fly, false);
+
+		std::uint32_t remote_zero_owner_input_sequence = 0;
+		if (netgame.ConsumeRemoteFlyZeroOwnerTransition(
+			remote_zero_owner_input_sequence))
+		{
+			const std::uint32_t transition_mode_before = GetModeId(controller);
+			const retail::ControllerRef controller_ref = {
+				retail::ToAddress(controller)
+			};
+			const bool transition_accepted =
+				retail::ControllerView(controller_ref).SelectMode(
+					kFlyDeactivatedModeId);
+			const std::uint32_t transition_mode_after = GetModeId(controller);
+			// The network worker never calls retail state code.  This single request
+			// happens on the exact Mooch game-thread tick after a sequenced peer
+			// zero-owner state.  A racing newer peer claim is still protected by the
+			// StateMachine_SelectState guard, so "requested" is intentionally not a
+			// claim that Deactivated::Enter necessarily ran.
+			CoopRuntime::Instance().Log(
+				"[fly-lifecycle] consumed ordered remote zero-owner input_seq=%u; requested stock Fly_Deactivated controller=%p mode=0x%08X->0x%08X accepted=%u\r\n",
+				remote_zero_owner_input_sequence, controller,
+				transition_mode_before, transition_mode_after,
+				transition_accepted ? 1u : 0u);
+		}
+
+		const std::uint32_t mode_before = GetModeId(controller);
+		// A receiver-side laser pulse lasts one Mooch controller tick, matching the
+		// stock pressed-edge field write. Clear any previous pulse before stock can
+		// run; this also handles a peer-to-local ownership hand-off without touching
+		// this process's camera, HUD or controller selection.
+		netgame.BeginRemoteFlyDualLaserPresentationTick();
+		const bool stock_update_completed = RunStockControllerUpdate(controller, "fly");
+
+		if (!stock_update_completed)
+			return true;
+		netgame.ObserveLocalFlyMode(mode_before, GetModeId(controller));
+		// Mooch reads/writes the same process-global camera handler after P1's
+		// Default controller has already run.  Capture its yaw here, not in
+		// TickPlayer1, otherwise P1 overwrites the owner yaw just before the packet
+		// is sent and the peer steers the remote fly toward P1's old camera.
+		if (netgame.IsLocalFlyControlled())
+		{
+			float local_camera_yaw = 0.0f;
+			netgame.PublishLocalCameraYaw(local_camera_yaw,
+				m_camera.ReadLocalYaw(local_camera_yaw));
+		}
+		netgame.MaintainLocalFlyActiveEntity(fly);
+		netgame.PublishLocalFlyTransform(fly);
+		if (!netgame.IsLocalFlyControlled())
+		{
+			netgame.ApplyRemoteFlyTransform(fly);
+			if (remote_fly_presentation)
+				netgame.ApplyRemoteFlyDualLaserPresentation(fly);
+		}
+		return true;
+	}
+
+	void Player2Module::UpdateRemotePlayer2Controller(void* controller)
+	{
 		CoopNetGame& netgame = CoopNetGame::Instance();
 
-		void* const player1 = GetGPigEntity(
-			static_cast<int>(retail::PlayerSlot::LocalP1));
-		void* const player2 = GetGPigEntity(
-			static_cast<int>(retail::PlayerSlot::RemoteP2));
-		RemoteInputScope remote_input(netgame);
+		retail::EntitySlotRepository players;
+		const retail::EntityRef player1_ref = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		const retail::EntityRef player2_ref = players.GetSelectable(
+			retail::EntitySlot::RemoteP2);
+		void* const player1 = retail::ToPointer(player1_ref.value);
+		void* const player2 = retail::ToPointer(player2_ref.value);
 
 		const bool local_player_is_abr =
 			GetModeId(GetController(player1)) == kAbrModeId;
-		if (local_player_is_abr)
+		const bool remote_player_is_abr = GetModeId(controller) == kAbrModeId;
+		if (local_player_is_abr || remote_player_is_abr)
 		{
-			auto WrapPi = [](float angle)
-			{
-				constexpr float kPi = 3.14159265358979323846f;
-				constexpr float kTwoPi = 2.0f * kPi;
-				while (angle > kPi)
-					angle -= kTwoPi;
-				while (angle < -kPi)
-					angle += kTwoPi;
-				return angle;
-			};
-			// Vehicle-only levels have one shared HUD. Keeping P2's generic controller
-			// tick out of this state prevents it from resetting that shared reticle,
-			// while transform replication and the native P2 presentation task continue.
-			m_remote_abr_mode_active = netgame.IsRemoteAbrMode();
-			if (netgame.HasRemotePeer())
+			// ABR is a vehicle-motor domain. Do not even enter the generic P2 input,
+			// camera, weapon or root-transform path while either controller is in it:
+			// those paths belong to ordinary Darwin locomotion, not the RDV vehicle.
+			// The native task setup needs the local P1 ABR spawn-context contract; an
+			// isolated remote-P2 ABR transition is still kept out of generic P2 code.
+			if (local_player_is_abr && netgame.HasRemotePeer())
 				TryEnsurePlayer2RdvTask("network-ABR");
-			if (RunStockControllerUpdate(controller, "remote-player2-ABR"))
-			{
-				TraceRdvMotorPair(player1, player2);
-				// Native RDV owns orientation; reconcile only the position.
-				netgame.ApplyRemotePlayerTransform(player2, 0.0f);
-			}
+			RunStockControllerUpdate(controller, local_player_is_abr ?
+				"remote-player2-ABR-shared" : "remote-player2-ABR-only");
 
 			return;
 		}
+
+		RemoteSnapshotInputScope remote_input(netgame);
 
 		const bool preserve_fly_camera = netgame.IsLocalFlyControlled();
 		PrimaryGamePadScope remote_gamepad(netgame, preserve_fly_camera);
 
 		if (GetModeId(controller) == kInactiveModeId)
 		{
-			SharedCameraAimState saved_camera_state = {};
-			const bool restore_camera = SaveSharedCameraAimState(saved_camera_state);
-			SelectMode(controller, kDefaultModeId);
+			SharedCameraCoordinator::AimState saved_camera_state = {};
+			const bool restore_camera = m_camera.SaveAimState(saved_camera_state);
+			const retail::ControllerRef controller_ref = {
+				retail::ToAddress(controller)
+			};
+			retail::ControllerView(controller_ref).SelectMode(kDefaultModeId);
 			if (restore_camera)
-				RestoreSharedCameraAimState(saved_camera_state);
+				m_camera.RestoreAimState(saved_camera_state);
 		}
 		if (!m_player2_default_mode_initialized && GetModeId(controller) == kDefaultModeId)
 		{
-			ConfigurePlayer2DefaultMode(controller);
-			m_player2_default_mode_initialized = true;
+			m_player2_default_mode_initialized =
+				ConfigurePlayer2DefaultMode(controller);
 		}
 
-		if (GetModeId(controller) == kAbrModeId)
-			SelectMode(controller, kAbrModeId);
-
-		m_remote_abr_mode_active = netgame.IsRemoteAbrMode();
-		uint32_t remote_weapon_type = 0xFFFFFFFFu;
+		std::uint32_t remote_weapon_type = 0xFFFFFFFFu;
 		if (netgame.GetActiveRemoteWeaponType(remote_weapon_type))
 			ApplyPlayer2WeaponSelection(player2, remote_weapon_type, "remote P1");
 		netgame.ArmRemoteP2AmmoOwner(player2);
 
-		SharedCameraAimState saved_fly_camera_state = {};
+		SharedCameraCoordinator::AimState saved_fly_camera_state = {};
 		const bool restore_fly_camera = preserve_fly_camera &&
-			SaveSharedCameraAimState(saved_fly_camera_state);
+			m_camera.SaveAimState(saved_fly_camera_state);
 		const bool stock_update_completed =
 			RunStockControllerUpdate(controller, "remote-player2");
 		if (restore_fly_camera)
-			RestoreSharedCameraAimState(saved_fly_camera_state);
+			m_camera.RestoreAimState(saved_fly_camera_state);
 		if (!stock_update_completed)
 			return;
 
@@ -1374,26 +1044,28 @@ namespace coop
 		netgame.ApplyRemotePlayerTransform(player2);
 	}
 
-	void* __cdecl Player2Module::HookSpawnGPig(const Vec4* position, const Vec4* rotation, uint32_t gpig_id, void* context)
+	void* __cdecl Player2Module::HookSpawnGPig(const Vec4* position, const Vec4* rotation, std::uint32_t gpig_id, void* context)
 	{
 		return Instance().SpawnGPig(position, rotation, gpig_id, context);
 	}
 
 	void* Player2Module::SpawnGPig(
-		const Vec4* position, const Vec4* rotation, uint32_t gpig_id, void* context)
+		const Vec4* position, const Vec4* rotation, std::uint32_t gpig_id, void* context)
 	{
-		SpawnGPigFn spawn = reinterpret_cast<SpawnGPigFn>(kSpawnGPig);
 		CoopRuntime::Instance().Log("[spawn-enter] id=0x%08X position=%p rotation=%p context=%p\r\n",
 			gpig_id, position, rotation, context);
-		void* player1 = NULL;
-		__try
+		retail::EntityRef player1_ref = {};
+		const retail::SpawnContextRef spawn_context = {
+			retail::ToAddress(context)
+		};
+		if (!retail::NativeGameApi::SpawnGPig(position, rotation, gpig_id,
+			spawn_context, player1_ref))
 		{
-			player1 = spawn(position, rotation, gpig_id, context);
+			CoopRuntime::Instance().Log(
+				"[spawn-stock-fault] id=0x%08X\r\n", gpig_id);
+			return nullptr;
 		}
-		__except (CoopRuntime::Instance().LogException(GetExceptionInformation(), "stock-player1-factory"))
-		{
-			return NULL;
-		}
+		void* const player1 = retail::ToPointer(player1_ref.value);
 		CoopRuntime::Instance().Log("[spawn-stock-ok] id=0x%08X entity=%p\r\n", gpig_id, player1);
 
 		if (gpig_id != kGPig1Id || !player1)
@@ -1406,7 +1078,7 @@ namespace coop
 				return player1;
 			m_spawn_position = *position;
 			m_spawn_rotation = *rotation;
-			m_spawn_context = context;
+			m_spawn_context = { retail::ToAddress(context) };
 			InterlockedExchange(&m_spawn_snapshot_ready, 1);
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
@@ -1419,7 +1091,7 @@ namespace coop
 		return player1;
 	}
 
-	bool Player2Module::PatchSpawnCall(uintptr_t address, const BYTE expected[5], BYTE original[5])
+	bool Player2Module::PatchSpawnCall(std::uintptr_t address, const BYTE expected[5], BYTE original[5])
 	{
 		BYTE* call = reinterpret_cast<BYTE*>(address);
 		if (memcmp(call, expected, 5) != 0)
@@ -1432,7 +1104,7 @@ namespace coop
 		BYTE replacement[5] = { 0xE8, 0, 0, 0, 0 };
 		const intptr_t displacement =
 			reinterpret_cast<BYTE*>(&HookSpawnGPig) - (call + 5);
-		const int32_t relative = static_cast<int32_t>(displacement);
+		const std::int32_t relative = static_cast<std::int32_t>(displacement);
 		memcpy(replacement + 1, &relative, sizeof(relative));
 		return MemoryPatch::Write(call, replacement, sizeof(replacement));
 	}
@@ -1455,7 +1127,7 @@ namespace coop
 		replacement[0] = 0xE8;
 		const intptr_t displacement =
 			reinterpret_cast<BYTE*>(&HookDefaultModeActiveStores) - (stores + 5);
-		const int32_t relative = static_cast<int32_t>(displacement);
+		const std::int32_t relative = static_cast<std::int32_t>(displacement);
 		memcpy(replacement + 1, &relative, sizeof(relative));
 		if (!MemoryPatch::Write(stores, replacement, sizeof(replacement)))
 			return false;

@@ -20,6 +20,37 @@ not an official replacement for the original game.
 The project is work in progress. Behaviour can change and some parts of the
 original single-player game are still being researched.
 
+## Implementation status
+
+The current implementation is an injected x86 DLL for one verified retail
+build of `GForce.exe`; it is not the game's source code or a portable engine.
+The active co-op path is a networked local/IP or Steam-P2P experiment: each
+process owns its local P1 and presents the peer as P2. Split-screen is not the
+current target.
+
+The current wire layout is defined by
+`tools/coop_v2/ServerClient/MTypes.h`; `CoopInput` is currently 336 bytes and
+includes Mooch's complete position/rotation transform, all four native Fly
+analog axes, and the ordered F1 debug-fire sequence. Both peers must use the
+same DLL revision. The Visual Studio solution currently contains `coop_dll`
+and `winmm_proxy`. Older references to `proxy_smoke` and the old
+split-screen/player-pool hypothesis are historical and are not build targets
+or current implementation requirements.
+
+For implementation work, read `tools/coop_v2/IMPLEMENTATION.md` first. It is
+the compact map of modules, ownership boundaries and test status. Read
+`re_cache/RE_CATALOG.md` second for every retail address, inferred name and
+ABI: it marks each claim as `approved`, `guess` or `not-tested`, and labels
+project-invented labels as `approx-name`. The longer `AGENTS.md`,
+`tools/coop_v2/README.md` and `REFACTORING_*.md` files preserve routing,
+test recipes or historical design evidence; they do not override those two
+canonical documents.
+
+Raw game-memory offsets are unavoidable at the retail ABI boundary, but new
+feature code must access them through the typed views and `TryRead`/`TryWrite`
+helpers in `tools/coop_v2/retail/`. Scattered `BYTE* + offset` expressions are
+refactoring debt, not the intended coding style.
+
 ## Networking dependencies
 
 The transport layer uses Valve's
@@ -32,8 +63,8 @@ in the local build environment before compiling.
 
 - `tools/coop_v2/` — C++ source, Visual Studio solution and build scripts.
 - `tools/coop_v2/ServerClient/` — networking and Steam P2P implementation.
-- `docs/` — small reference documents: the game file manifest, class-region
-  atlas and WinMM export list.
+- `docs/` — archive-format notes and the original co-op research plan. The
+  original split-screen plan is retained as historical research.
 - `AGENTS.md` — technical research notes and reverse-engineering context for
   contributors and AI agents.
 

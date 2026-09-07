@@ -1,6 +1,8 @@
 #include "window_hook.h"
 
 #include "coop_runtime.h"
+#include "gforce_constants.h"
+#include "retail/retail_memory.h"
 #include "save_sync.h"
 #include "world_sync.h"
 
@@ -13,22 +15,112 @@ namespace coop
 	}
 
 	WindowHook::WindowHook() :
-		m_original_direct3d_create9(NULL),
-		m_original_d3d_create_device(NULL),
-		m_original_d3d_reset(NULL),
-		m_original_d3d_present(NULL),
-		m_original_get_foreground_window(NULL),
-		m_original_is_iconic(NULL),
-		m_direct3d_create9_iat(NULL),
-		m_d3d_create_device_slot(NULL),
-		m_d3d_reset_slot(NULL),
-		m_d3d_present_slot(NULL),
-		m_get_foreground_window_iat(NULL),
-		m_is_iconic_iat(NULL),
-		m_original_window_procedure(NULL),
-		m_window_procedure_window(NULL),
-		m_game_window(NULL)
+		m_original_direct3d_create9(nullptr),
+		m_original_d3d_create_device(nullptr),
+		m_original_d3d_reset(nullptr),
+		m_original_d3d_present(nullptr),
+		m_original_get_foreground_window(nullptr),
+		m_original_is_iconic(nullptr),
+		m_direct3d_create9_iat(nullptr),
+		m_d3d_create_device_slot(nullptr),
+		m_d3d_reset_slot(nullptr),
+		m_d3d_present_slot(nullptr),
+		m_get_foreground_window_iat(nullptr),
+		m_is_iconic_iat(nullptr),
+		m_original_window_procedure(nullptr),
+		m_window_procedure_window(nullptr),
+		m_game_window(nullptr),
+		m_debug_pause_bypass(0)
 	{}
+
+	bool WindowHook::ShouldBypassFocusPause() const
+	{
+		// A co-op process must continue simulating while its other local window is
+		// focused.  This is not a diagnostic toggle: focus/minimise must never make
+		// one peer stop advancing while the other peer keeps receiving packets.
+		return true;
+	}
+
+	bool WindowHook::EnableDebugPauseBypass()
+	{
+		const bool already_enabled = InterlockedExchange(&m_debug_pause_bypass, 1) != 0;
+		CaptureForegroundGameWindow();
+		const bool focus_hooks_installed = InstallFocusPauseHooks();
+		InstallWindowProcedureHook();
+		ForceGameActiveState();
+		CoopRuntime::Instance().Log(
+			"[debug-F7] permanent co-op focus-pause bypass %s; focus hooks=%s window=%p\r\n",
+			already_enabled ? "rechecked" : "verified",
+			focus_hooks_installed ? "installed" :
+			"not installed (state flag only)", m_game_window);
+		return true;
+	}
+
+	void WindowHook::CaptureForegroundGameWindow()
+	{
+		const HWND foreground = ::GetForegroundWindow();
+		if (!foreground)
+			return;
+		DWORD process_id = 0;
+		GetWindowThreadProcessId(foreground, &process_id);
+		if (process_id == GetCurrentProcessId())
+			m_game_window = foreground;
+	}
+
+	bool WindowHook::InstallFocusPauseHooks()
+	{
+		if (m_get_foreground_window_iat && m_is_iconic_iat)
+			return true;
+		if (m_get_foreground_window_iat || m_is_iconic_iat)
+		{
+			CoopRuntime::Instance().Log(
+				"[window-warning] focus pause hooks are in an incomplete state\r\n");
+			return false;
+		}
+
+		void** const foreground_iat = MemoryPatch::FindImportAddress(
+			"user32.dll", "GetForegroundWindow");
+		void** const iconic_iat = MemoryPatch::FindImportAddress(
+			"user32.dll", "IsIconic");
+		if (!foreground_iat || !iconic_iat)
+		{
+			CoopRuntime::Instance().Log(
+				"[window-warning] focus pause imports not found\r\n");
+			return false;
+		}
+
+		m_get_foreground_window_iat = foreground_iat;
+		m_is_iconic_iat = iconic_iat;
+		m_original_get_foreground_window =
+			reinterpret_cast<GetForegroundWindowFn>(*foreground_iat);
+		m_original_is_iconic = reinterpret_cast<IsIconicFn>(*iconic_iat);
+		void* const foreground_replacement =
+			reinterpret_cast<void*>(&HookGetForegroundWindow);
+		void* const iconic_replacement = reinterpret_cast<void*>(&HookIsIconic);
+		if (MemoryPatch::Write(foreground_iat, &foreground_replacement,
+			sizeof(foreground_replacement)) &&
+			MemoryPatch::Write(iconic_iat, &iconic_replacement,
+				sizeof(iconic_replacement)))
+		{
+			CoopRuntime::Instance().Log(
+				"[window] foreground-window imports intercepted\r\n");
+			return true;
+		}
+
+		void* const foreground_original =
+			reinterpret_cast<void*>(m_original_get_foreground_window);
+		void* const iconic_original = reinterpret_cast<void*>(m_original_is_iconic);
+		MemoryPatch::Write(foreground_iat, &foreground_original,
+			sizeof(foreground_original));
+		MemoryPatch::Write(iconic_iat, &iconic_original, sizeof(iconic_original));
+		m_get_foreground_window_iat = nullptr;
+		m_is_iconic_iat = nullptr;
+		m_original_get_foreground_window = nullptr;
+		m_original_is_iconic = nullptr;
+		CoopRuntime::Instance().Log(
+			"[window-warning] unable to patch focus pause imports\r\n");
+		return false;
+	}
 
 	void WindowHook::ApplyExperimentalWindowStyle(HWND window)
 	{
@@ -68,12 +160,16 @@ namespace coop
 	void WindowHook::ConfigureWindowedPresentation(HWND focus_window, DWORD* behavior_flags,
 		D3DPRESENT_PARAMETERS* parameters)
 	{
-		if (!CoopRuntime::Instance().Config().test_windowed || !parameters)
-			return;
-
 		if (focus_window)
 			m_game_window = focus_window;
+		else if (parameters && parameters->hDeviceWindow)
+			m_game_window = parameters->hDeviceWindow;
 		InstallWindowProcedureHook();
+		// The presentation rewrite is still opt-in.  Window discovery, WndProc
+		// activation repair and the D3D Present hook above are required in both
+		// fullscreen and test-windowed co-op.
+		if (!CoopRuntime::Instance().Config().test_windowed || !parameters)
+			return;
 		if (!parameters->hDeviceWindow)
 			parameters->hDeviceWindow = m_game_window;
 		parameters->BackBufferWidth = static_cast<UINT>(CoopRuntime::Instance().Config().window_width);
@@ -105,14 +201,12 @@ namespace coop
 
 	void WindowHook::ForceGameActiveState()
 	{
-		if (!CoopRuntime::Instance().Config().keep_active_in_background ||
-			!m_game_window)
-		{
+		if (!ShouldBypassFocusPause())
 			return;
-		}
 		// 0x5F4850 computes this byte from foreground/minimized state.  It is the
 		// flag the frame loop uses to pause its simulation and renderer.
-		*reinterpret_cast<volatile BYTE*>(0x0091AACCu) = 1;
+		const BYTE active = 1;
+		retail::TryWrite(gforce::kFramePauseState, active);
 	}
 
 	HRESULT WINAPI WindowHook::HookD3DReset(IDirect3DDevice9* device,
@@ -124,7 +218,7 @@ namespace coop
 	HRESULT WindowHook::Reset(IDirect3DDevice9* device,
 		D3DPRESENT_PARAMETERS* parameters)
 	{
-		ConfigureWindowedPresentation(m_game_window, NULL, parameters);
+		ConfigureWindowedPresentation(m_game_window, nullptr, parameters);
 		const HRESULT result = m_original_d3d_reset ?
 			m_original_d3d_reset(device, parameters) : D3DERR_INVALIDCALL;
 		if (SUCCEEDED(result))
@@ -198,7 +292,8 @@ namespace coop
 				m_d3d_present_slot = present_slot;
 		}
 		ApplyExperimentalWindowStyle(m_game_window);
-		CoopRuntime::Instance().Log("[window] D3D9 windowed device ready client=%dx%d hwnd=%p\r\n",
+		CoopRuntime::Instance().Log("[window] D3D9 device ready windowed=%d client=%dx%d hwnd=%p\r\n",
+			CoopRuntime::Instance().Config().test_windowed ? 1 : 0,
 			CoopRuntime::Instance().Config().window_width, CoopRuntime::Instance().Config().window_height, m_game_window);
 		return result;
 	}
@@ -221,9 +316,9 @@ namespace coop
 	IDirect3D9* WindowHook::CreateDirect3D9(UINT sdk_version)
 	{
 		IDirect3D9* direct3d = m_original_direct3d_create9 ?
-			m_original_direct3d_create9(sdk_version) : NULL;
+			m_original_direct3d_create9(sdk_version) : nullptr;
 		if (!direct3d)
-			return NULL;
+			return nullptr;
 
 		void** vtable = *reinterpret_cast<void***>(direct3d);
 		void** create_device_slot = &vtable[16];
@@ -241,18 +336,18 @@ namespace coop
 
 	HWND WindowHook::GetForegroundWindow()
 	{
-		if (CoopRuntime::Instance().Config().keep_active_in_background &&
+		if (ShouldBypassFocusPause() &&
 			m_game_window)
 		{
 			return m_game_window;
 		}
 		return m_original_get_foreground_window ?
-			m_original_get_foreground_window() : NULL;
+			m_original_get_foreground_window() : nullptr;
 	}
 
 	BOOL WindowHook::IsIconic(HWND window)
 	{
-		if (CoopRuntime::Instance().Config().keep_active_in_background &&
+		if (ShouldBypassFocusPause() &&
 			window && window == m_game_window)
 		{
 			return FALSE;
@@ -284,8 +379,6 @@ namespace coop
 
 	bool WindowHook::Install()
 	{
-		if (!CoopRuntime::Instance().Config().test_windowed)
-			return true;
 		m_direct3d_create9_iat = MemoryPatch::FindImportAddress("d3d9.dll", "Direct3DCreate9");
 		if (!m_direct3d_create9_iat)
 		{
@@ -302,52 +395,20 @@ namespace coop
 			return false;
 		}
 
-		if (CoopRuntime::Instance().Config().keep_active_in_background)
-		{
-			m_get_foreground_window_iat =
-				MemoryPatch::FindImportAddress("user32.dll", "GetForegroundWindow");
-			m_is_iconic_iat = MemoryPatch::FindImportAddress("user32.dll", "IsIconic");
-			if (!m_get_foreground_window_iat || !m_is_iconic_iat)
-			{
-				CoopRuntime::Instance().Log("[window-warning] focus pause imports not found\r\n");
-				m_get_foreground_window_iat = NULL;
-				m_is_iconic_iat = NULL;
-			}
-			else
-			{
-				m_original_get_foreground_window =
-					reinterpret_cast<GetForegroundWindowFn>(*m_get_foreground_window_iat);
-				m_original_is_iconic = reinterpret_cast<IsIconicFn>(*m_is_iconic_iat);
-				void* foreground_replacement =
-					reinterpret_cast<void*>(&HookGetForegroundWindow);
-				void* iconic_replacement = reinterpret_cast<void*>(&HookIsIconic);
-				if (!MemoryPatch::Write(m_get_foreground_window_iat,
-					&foreground_replacement, sizeof(foreground_replacement)) ||
-					!MemoryPatch::Write(m_is_iconic_iat, &iconic_replacement,
-						sizeof(iconic_replacement)))
-				{
-					void* foreground_original =
-						reinterpret_cast<void*>(m_original_get_foreground_window);
-					MemoryPatch::Write(m_get_foreground_window_iat, &foreground_original,
-						sizeof(foreground_original));
-					m_get_foreground_window_iat = NULL;
-					m_is_iconic_iat = NULL;
-					m_original_get_foreground_window = NULL;
-					m_original_is_iconic = NULL;
-					CoopRuntime::Instance().Log("[window-warning] unable to patch focus pause imports\r\n");
-				}
-				else
-				{
-					CoopRuntime::Instance().Log("[window] foreground-window imports intercepted\r\n");
-				}
-			}
-		}
-		CoopRuntime::Instance().Log("[window] experimental 1280x720 window hook installed\r\n");
+		CaptureForegroundGameWindow();
+		const bool focus_hooks_installed = InstallFocusPauseHooks();
+		InstallWindowProcedureHook();
+		ForceGameActiveState();
+		CoopRuntime::Instance().Log(
+			"[window] co-op focus-pause hook installed windowed=%d focus-hooks=%s\r\n",
+			CoopRuntime::Instance().Config().test_windowed ? 1 : 0,
+			focus_hooks_installed ? "installed" : "state flag only");
 		return true;
 	}
 
 	void WindowHook::Remove()
 	{
+		InterlockedExchange(&m_debug_pause_bypass, 0);
 		if (m_window_procedure_window && m_original_window_procedure)
 		{
 			SetWindowLongPtrA(m_window_procedure_window, GWLP_WNDPROC,

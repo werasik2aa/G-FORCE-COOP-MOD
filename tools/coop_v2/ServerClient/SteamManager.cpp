@@ -22,8 +22,8 @@ CSteamOfflineSocketClient* SteamOClient = nullptr;
 CSteamManager::CSteamManager() :
 	m_started(0),
 	m_steam_initialized(false),
-	m_stop_event(NULL),
-	m_worker_thread(NULL),
+	m_stop_event(nullptr),
+	m_worker_thread(nullptr),
 	m_game_world_ready(0),
 	m_automatic_host_attempted(0),
 	m_ip_prompt_requested(0),
@@ -60,7 +60,7 @@ bool CSteamManager::Initialize()
 	}
 	SteamOClient = SteamLClient;
 
-	m_stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+	m_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 	if (!m_stop_event)
 	{
 		Msg("[network-error] failed to create network stop event");
@@ -68,7 +68,7 @@ bool CSteamManager::Initialize()
 		return false;
 	}
 	m_worker_thread = CreateThread(
-		NULL, 0, WorkerThread, this, 0, NULL);
+		nullptr, 0, WorkerThread, this, 0, nullptr);
 	if (!m_worker_thread)
 	{
 		Msg("[network-error] failed to create network worker");
@@ -93,12 +93,12 @@ void CSteamManager::Destroy()
 	{
 		WaitForSingleObject(m_worker_thread, 5000);
 		CloseHandle(m_worker_thread);
-		m_worker_thread = NULL;
+		m_worker_thread = nullptr;
 	}
 	if (m_stop_event)
 	{
 		CloseHandle(m_stop_event);
-		m_stop_event = NULL;
+		m_stop_event = nullptr;
 	}
 
 	if (SteamOClient)

@@ -32,7 +32,25 @@
     <ClCompile Include="coop_runtime.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="debug_actions.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+	<ClCompile Include="ip_connect_dialog.cpp">
+		<Filter>Source Files</Filter>
+	</ClCompile>
+	<ClCompile Include="menu_connect_hook.cpp">
+		<Filter>Source Files</Filter>
+	</ClCompile>
+	<ClCompile Include="save_sync.cpp">
+		<Filter>Source Files</Filter>
+	</ClCompile>
+	<ClCompile Include="world_sync.cpp">
+		<Filter>Source Files</Filter>
+	</ClCompile>
     <ClCompile Include="player2.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shared_camera.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="window_hook.cpp">
@@ -70,7 +88,25 @@
     <ClInclude Include="coop_runtime.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="debug_actions.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+	<ClInclude Include="ip_connect_dialog.h">
+		<Filter>Header Files</Filter>
+	</ClInclude>
+	<ClInclude Include="menu_connect_hook.h">
+		<Filter>Header Files</Filter>
+	</ClInclude>
+	<ClInclude Include="save_sync.h">
+		<Filter>Header Files</Filter>
+	</ClInclude>
+	<ClInclude Include="world_sync.h">
+		<Filter>Header Files</Filter>
+	</ClInclude>
     <ClInclude Include="player2.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shared_camera.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="gforce_constants.h">

@@ -20,9 +20,11 @@ namespace protocol
         WorldSpawn = kCoopPacketWorldSpawn,
         WorldSnapshot = kCoopPacketWorldSnapshot,
         WorldReady = kCoopPacketWorldReady,
-        WorldTriggerEvent = kCoopPacketWorldTriggerEvent,
-        WorldDamage = kCoopPacketWorldDamage,
-		WorldDespawn = kCoopPacketWorldDespawn
+		WorldTriggerEvent = kCoopPacketWorldTriggerEvent,
+		WorldDamage = kCoopPacketWorldDamage,
+		WorldDespawn = kCoopPacketWorldDespawn,
+		WorldObjectEvent = kCoopPacketWorldObjectEvent,
+		FlyAbility = kCoopPacketFlyAbility
 
     };
 

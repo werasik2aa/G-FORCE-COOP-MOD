@@ -2,6 +2,7 @@
 
 #include "coop_runtime.h"
 #include "coop_netgame.h"
+#include "menu_connect_hook.h"
 #include "player2.h"
 #include "ServerClient/SteamManager.h"
 #include "window_hook.h"
@@ -35,7 +36,7 @@ namespace coop
 			InterlockedExchange(&m_init_state, -1);
 			return FALSE;
 		}
-		runtime.Log("=== G-Force local co-op prototype v1 ===\r\n");
+		runtime.Log("=== G-Force network co-op prototype v1 ===\r\n");
 
 		if (!runtime.VerifyExecutable())
 		{
@@ -43,6 +44,8 @@ namespace coop
 			return FALSE;
 		}
 		runtime.LoadConfiguration();
+		if (!MenuConnectHook::Instance().Install())
+			runtime.Log("[menu-warning] native Connect by IP row unavailable; F8 remains available\r\n");
 		if (!WindowHook::Instance().Install())
 			runtime.Log("[window-warning] experimental window mode is unavailable\r\n");
 		if (!Player2Module::Instance().Install())
@@ -52,12 +55,12 @@ namespace coop
 			return FALSE;
 		}
 		if (!SteamManager->Initialize())
-			runtime.Log("[network-warning] network manager is unavailable; local co-op remains active\r\n");
+			runtime.Log("[network-warning] network manager is unavailable; local P2 debug route remains available\r\n");
 		if (!CoopNetGame::Instance().InstallInputHook())
 			runtime.Log("[network-warning] remote XInput injection is unavailable\r\n");
 
 		InterlockedExchange(&m_init_state, 2);
-		runtime.Log("[ready] loaded save=IP+Steam host; F8=IP connect dialog\r\n");
+		runtime.Log("[ready] F1=local Mooch dual-laser probe F2=spawn trigger F3=replay event F4=known interactive F5=P2 F6=ABR F7=pause bypass F8=IP connect F9=trigger catalog\r\n");
 		return TRUE;
 	}
 
@@ -66,6 +69,7 @@ namespace coop
 		if (InterlockedCompareExchange(&m_init_state, 3, 2) != 2)
 			return;
 
+		MenuConnectHook::Instance().Remove();
 		SteamManager->Destroy();
 		CoopNetGame::Instance().RemoveInputHook();
 		Player2Module::Instance().Remove();
