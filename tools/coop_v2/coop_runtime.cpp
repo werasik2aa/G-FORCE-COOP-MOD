@@ -124,13 +124,42 @@ namespace coop
 			return false;
 		lstrcpyW(m_module_directory, path);
 
-		const wchar_t* const log_file_name = L"gforce_coop.log";
-		if (lstrlenW(path) + 1 + lstrlenW(log_file_name) >=
+		// Runtime output belongs with the reverse-engineering cache, not beside the
+		// game executable.  Create the known project hierarchy lazily so a fresh
+		// checkout still receives diagnostics without polluting the game root.
+		if (lstrlenW(path) + lstrlenW(L"\\g_force\\re_cache\\runtime") >=
 			static_cast<int>(_countof(m_log_path)))
 		{
 			return false;
 		}
-		lstrcpyW(m_log_path, path);
+		wchar_t log_directory[MAX_PATH] = {};
+		lstrcpyW(log_directory, path);
+		lstrcatW(log_directory, L"\\g_force");
+		if (!CreateDirectoryW(log_directory, nullptr) &&
+			GetLastError() != ERROR_ALREADY_EXISTS)
+		{
+			return false;
+		}
+		lstrcatW(log_directory, L"\\re_cache");
+		if (!CreateDirectoryW(log_directory, nullptr) &&
+			GetLastError() != ERROR_ALREADY_EXISTS)
+		{
+			return false;
+		}
+		lstrcatW(log_directory, L"\\runtime");
+		if (!CreateDirectoryW(log_directory, nullptr) &&
+			GetLastError() != ERROR_ALREADY_EXISTS)
+		{
+			return false;
+		}
+
+		const wchar_t* const log_file_name = L"gforce_coop.log";
+		if (lstrlenW(log_directory) + 1 + lstrlenW(log_file_name) >=
+			static_cast<int>(_countof(m_log_path)))
+		{
+			return false;
+		}
+		lstrcpyW(m_log_path, log_directory);
 		lstrcatW(m_log_path, L"\\");
 		lstrcatW(m_log_path, log_file_name);
 

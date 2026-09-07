@@ -173,7 +173,7 @@ Shift/Space: он выдаёт этот один logical edge только в с
 `[p2-ledge-detach] queued ...` означает, что он поставлен, `served ...` — что
 его увидел native query; визуальный выход с уступа всё ещё требует live-проверки.
 
-Строка `[p2-recovery]` в `gforce_coop.log` означает, что recovery действительно
+Строка `[p2-recovery]` в `g_force\re_cache\runtime\gforce_coop.log` означает, что recovery действительно
 сработал. До двухпроцессного прогона это только статически обоснованный маршрут,
 а не заявленное исправление runtime-бага.
 
@@ -198,7 +198,7 @@ respawn, но из-за этого мог навсегда остаться в h
 4. Проверяются: P2 стоит на полу, камера остаётся за P1, управление P2 работает.
 5. Переключить фокус на второе окно или свернуть первое: оба процесса не должны
    замереть, терять simulation tick или переставать рисовать.
-6. Анализируется только хвост `E:\G-Force\gforce_coop.log`: при загрузке ожидается
+6. Анализируется только хвост `E:\G-Force\g_force\re_cache\runtime\gforce_coop.log`: при загрузке ожидается
    `[window] co-op focus-pause hook installed ...`. F7 для включения больше не нужен:
    он только повторно проверяет и печатает состояние уже постоянного bypass.
 
@@ -274,7 +274,7 @@ WinMM-прокси нельзя снова сокращать только до 
 ## Временные debug-клавиши
 
 Это диагностические действия над одним строго проверенным retail EXE. Они не являются
-пользовательским UI и пишут результат в `gforce_coop.log`.
+пользовательским UI и пишут результат в `g_force\re_cache\runtime\gforce_coop.log`.
 
 Отдельно от клавиш каждый реально прошедший через retail `TriggerEventDispatcher`
 event печатается сразу как `[trigger-activation]`. Это работает без соединения:
@@ -387,7 +387,7 @@ Deactivated не оставляет receiver навечно в старом pres
 remote claim или local hand-off очищает pending до dispatcher. Старый live-packet не
 может оживить Муху после принятого выхода.
 
-Для проверки смерти сравни обе `gforce_coop.log`: у владельца должен быть
+Для проверки смерти сравни оба `g_force\re_cache\runtime\gforce_coop.log`: у владельца должен быть
 `[fly-lifecycle ... local Fly_Deactivated ... input_seq=N ... published ordered zero-owner exit]`,
 а у второго процесса — `[fly-packet ... remote ownership 1 -> 0 input_seq=N fly_seq=0]`.
 После неё ожидаются `[fly-lifecycle ... queued ordered remote zero-owner input_seq=N ...]`

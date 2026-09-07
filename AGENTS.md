@@ -227,7 +227,7 @@ host state через `SteamOClient`, которого у host-процесса 
 - Собранные файлы: `E:\G-Force\g_force\tools\coop_v2\build\`
 - Установка: `E:\G-Force\winmm.dll`, `E:\G-Force\coop_dll.dll`,
   `E:\G-Force\coop.ini`
-- Runtime-лог: `E:\G-Force\gforce_coop.log`
+- Runtime-лог: `E:\G-Force\g_force\re_cache\runtime\gforce_coop.log`
 - Полный дизассемблер, читать точечно через `rg`:
   `tools/coop_v2/build/gforce_disasm.txt`
 - Атлас классов и регионов по RTTI: `tools/coop_v2/build/gforce_regions.txt`,
@@ -831,7 +831,7 @@ height=720
    стороне ответа, поэтому `CoopInput` не менялся; закрыты и подменяемые
    DirectInput-буферы, и `GetAsyncKeyState`. Привязка к scan-коду выброшена — клавиши
    переназначаемы; вместо неё пинятся индексы `0x09` и `0x0E`, а основанием стал
-   одноразовый дамп живой таблицы биндов в `gforce_coop.log` (`DumpActionBindingsOnce`
+   одноразовый дамп живой таблицы биндов в runtime-логе `g_force\re_cache\runtime\gforce_coop.log` (`DumpActionBindingsOnce`
    из `GameTick`, один проход по `0x43` записям за сессию, не кадровый лог; рядом
    `CaptureLocalPress` пишет по одной строке на индекс за процесс). Дамп дал то, что
    статикой не выводилось: `n=0x09` = `Q` (муха), `n=0x0E` = `T` (Mooch, доказан

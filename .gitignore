@@ -28,3 +28,7 @@
 
 # Generated reverse-engineering traces
 **/ida_trace_*.log
+
+# Python bytecode is local execution cache, never source or RE evidence.
+**/__pycache__/
+*.py[cod]
