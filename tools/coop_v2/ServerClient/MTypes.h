@@ -107,9 +107,10 @@ public:
 	std::uint32_t player_mode;
 	std::uint32_t selected_weapon_type;
 	std::uint32_t weapon_sequence;
-	// The engine's fire handler does not reconstruct this from analog_axis. It
-	// copies the cached XGamePad ray verbatim into its shot command, so send the
-	// exact ray calculated on the controlling machine.
+	// The engine's fire handler copies the cached XGamePad ray verbatim into its
+	// shot command. Fly_Active also needs its current direction to build Mooch's
+	// native Aim motor target, so the local Fly tick refreshes this existing ray
+	// every frame without changing the 336-byte input ABI.
 	float aim_origin[3];
 	float aim_direction[3];
 	// Yaw of the sender's own camera, exactly as 0x52AD20 returns it (already

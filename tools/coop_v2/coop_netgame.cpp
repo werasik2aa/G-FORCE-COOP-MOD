@@ -29,15 +29,6 @@ namespace coop
 	// Confirmed at Fly_Active 0x005B6017..0x005B608F: its cached aim direction
 	// is multiplied by 100 before it is written to the controller-local aim task.
 	constexpr float kFlyDualLaserTargetDistance = 100.0f;
-	// Policy thresholds, deliberately kept separate from retail offsets/ABI facts.
-	// A normal packet-driven transform remains smooth; these values are only the
-	// bounded escape hatch when the local post-motor pass has pulled P2 far away.
-	constexpr float kRemoteP2PostMotorImmediateRecoveryDistance = 2.5f;
-	constexpr float kRemoteP2PostMotorPeriodicRecoveryDistance = 0.75f;
-	constexpr DWORD kRemoteP2PostMotorPeriodicRecoveryIntervalMs = 2000;
-	constexpr DWORD kRemoteP2PostMotorRecoveryTraceIntervalMs = 1000;
-	constexpr float kRemoteP2LedgeDetachDistance = 3.0f;
-	constexpr DWORD kRemoteP2LedgeDetachRetryIntervalMs = 250;
 	constexpr DWORD kInvalidInputTraceIntervalMs = 1000;
 
 	const std::uint32_t kFlyRawActionIds[kCoopFlyRawActionCount] = {
@@ -48,12 +39,6 @@ namespace coop
 		0x40080036u,
 		0x4008000Bu
 	};
-	// Retail's second-action mapper translates 0x4008000A to this ordinary
-	// pressed-edge action. A severe on-foot divergence may schedule one logical
-	// edge through the existing query route; it never synthesizes a physical key
-	// or calls the inner Ledge state directly.
-	constexpr std::uint32_t kLedgeInactiveRouteActionId = 0x1000000Du;
-
 	namespace
 	{
 	int FindFlyRawActionIndex(std::uint32_t action)
@@ -643,16 +628,12 @@ namespace coop
 		m_remote_connected(0),
 		m_last_send_tick(0),
 		m_last_remote_transform_apply_tick(0),
-		m_last_remote_p2_recovery_tick(0),
-		m_last_remote_p2_recovery_trace_tick(0),
-		m_last_remote_p2_ledge_detach_tick(0),
 		m_last_invalid_input_trace_tick(0),
 		m_last_remote_fly_deactivation_suppression_tick(0),
 		m_peer_connected_tick(0),
 
 		m_logged_spawn(0),
 		m_remote_input_active(0),
-		m_pending_remote_p2_ledge_detach(0),
 		m_keyboard_state_swapped(false),
 		m_logged_keyboard_state_swap(false),
 		m_input_hooked(false),
@@ -693,9 +674,6 @@ namespace coop
 		m_health_component_subtract_trampoline(nullptr),
 		m_original_health_component_subtract(nullptr),
 		m_health_component_subtract_hooked(false),
-		m_live_entity_movement_scheduler_trampoline(nullptr),
-		m_original_live_entity_movement_scheduler(nullptr),
-		m_live_entity_movement_scheduler_hooked(false),
 		m_trigger_spawn_trampoline(nullptr),
 
 		m_original_trigger_spawn(nullptr),
@@ -730,7 +708,6 @@ namespace coop
 		m_last_remote_fly_ability_sequence(0),
 		m_remote_fly_laser_pulse_active(false),
 		m_fly_native_pass_active(0),
-		m_fly_native_pass_remote(0),
 		m_fly_native_synthetic_press_mask(0),
 		m_fly_native_pass_thread_id(0),
 		m_fly_native_pass_controller(nullptr),
@@ -802,8 +779,6 @@ namespace coop
 			sizeof(m_original_fire_handler_bytes));
 		ZeroMemory(m_original_weapon_ammo_consume_bytes,
 			sizeof(m_original_weapon_ammo_consume_bytes));
-		ZeroMemory(m_original_live_entity_movement_scheduler_bytes,
-			sizeof(m_original_live_entity_movement_scheduler_bytes));
 		ZeroMemory(m_original_trigger_spawn_bytes,
 			sizeof(m_original_trigger_spawn_bytes));
 		ZeroMemory(m_original_trigger_factory_bytes,
@@ -896,10 +871,6 @@ namespace coop
 			static_cast<LONG>(GetTickCount()));
 		InterlockedExchange(&m_logged_spawn, 0);
 		m_last_remote_transform_apply_tick = 0;
-		m_last_remote_p2_recovery_tick = 0;
-		m_last_remote_p2_recovery_trace_tick = 0;
-		m_last_remote_p2_ledge_detach_tick = 0;
-		InterlockedExchange(&m_pending_remote_p2_ledge_detach, 0);
 		AcquireSRWLockExclusive(&m_input_lock);
 		m_last_invalid_input_trace_tick = 0;
 		m_last_remote_fly_deactivation_suppression_tick = 0;
@@ -926,10 +897,6 @@ namespace coop
 		ReleaseSRWLockExclusive(&m_input_lock);
 		ClearFlyAbilityQueues();
 		m_last_remote_transform_apply_tick = 0;
-		m_last_remote_p2_recovery_tick = 0;
-		m_last_remote_p2_recovery_trace_tick = 0;
-		m_last_remote_p2_ledge_detach_tick = 0;
-		InterlockedExchange(&m_pending_remote_p2_ledge_detach, 0);
 		WorldSync::Instance().OnPeerDisconnected();
 		CoopRuntime::Instance().Log("[netgame] remote peer disconnected\r\n");
 	}
@@ -1517,12 +1484,6 @@ namespace coop
 		// from Darwin to the fly and the first Mooch press is consumed by P2's context.
 		if (action_index == kMoochActionIndex)
 			ConsumeLocalMoochFlyExit();
-		if (action == kLedgeInactiveRouteActionId)
-		{
-			CoopRuntime::Instance().Log(
-				"[p2-ledge-route] captured source press action=0x%08X\r\n",
-				action);
-		}
 		AcquireSRWLockExclusive(&m_input_lock);
 		if ((m_local_press_recorded[word] & (1u << bit)) == 0)
 		{
@@ -2034,8 +1995,6 @@ namespace coop
 			m_fly_native_pass_controller =
 				retail::ToPointer(controller_ref.value);
 			m_fly_native_pass_thread_id = GetCurrentThreadId();
-			InterlockedExchange(&m_fly_native_pass_remote,
-				remote_owner ? 1 : 0);
 			const int dual_laser_raw_index =
 				FindFlyRawActionIndex(kFlyDualLaserRawActionId);
 			const LONG dual_laser_raw_bit = dual_laser_raw_index >= 0 ?
@@ -2052,7 +2011,6 @@ namespace coop
 
 			InterlockedExchange(&m_fly_native_synthetic_press_mask, 0);
 			InterlockedExchange(&m_fly_native_pass_active, 0);
-			InterlockedExchange(&m_fly_native_pass_remote, 0);
 			m_fly_native_pass_thread_id = 0;
 			m_fly_native_pass_controller = nullptr;
 		}
@@ -2157,9 +2115,10 @@ namespace coop
 			return;
 		}
 
-		// This raw edge executes inside the current Fly tick. The tick publishes its
-		// final body transform immediately afterward, so tag the next post-tick epoch
-		// rather than the stale transform that was sent before this turn/shot.
+		// This raw edge executes inside the current Fly tick. That tick publishes the
+		// next transform epoch immediately afterward; a later global movement pass
+		// may additionally publish the settled root. Tag the first post-tick epoch
+		// rather than the snapshot from before this turn/shot.
 		std::uint32_t source_fly_transform_sequence = 0;
 		AcquireSRWLockShared(&m_input_lock);
 		if (m_local_input.fly_controlled != 0)
@@ -2317,6 +2276,70 @@ namespace coop
 				expired_sequence);
 		}
 		return event.sequence != 0;
+	}
+
+	bool CoopNetGame::ApplyRemoteFlyAimMotor(void* fly)
+	{
+		if (!fly || IsLocalFlyControlled() || !IsRemoteFlyControlled())
+			return false;
+
+		CoopInput remote = {};
+		if (!GetRemoteInput(remote) || remote.fly_controlled == 0 ||
+			remote.fly_transform_sequence == 0)
+		{
+			return false;
+		}
+
+		retail::AimRay remote_aim = {};
+		memcpy(&remote_aim.origin, remote.aim_origin, sizeof(remote_aim.origin));
+		memcpy(&remote_aim.direction, remote.aim_direction,
+			sizeof(remote_aim.direction));
+		if (!IsValidAimRay(remote_aim))
+			return false;
+
+		const float direction_length = sqrtf(
+			remote_aim.direction.x * remote_aim.direction.x +
+			remote_aim.direction.y * remote_aim.direction.y +
+			remote_aim.direction.z * remote_aim.direction.z);
+		if (!(direction_length > 0.5f) || !IsFiniteFloat(direction_length))
+			return false;
+
+		const retail::EntityRef fly_ref = { retail::ToAddress(fly) };
+		retail::HandlerRef handler = {};
+		retail::ControllerRef controller = {};
+		std::uint32_t fly_state_index = 0;
+		retail::MotorTaskRef fly_state = {};
+		if (!retail::EntityView(fly_ref).Handler(handler) ||
+			!retail::HandlerView(handler).Controller(controller) ||
+			!retail::ReadFlyActiveStateIndex(fly_state_index) ||
+			!retail::HandlerView(handler).FlyFlyMotionState(fly_state_index,
+				fly_state))
+		{
+			return false;
+		}
+
+		const float inverse_length = 1.0f / direction_length;
+		const float direction_x = remote_aim.direction.x * inverse_length;
+		const float direction_y = remote_aim.direction.y * inverse_length;
+		const float direction_z = remote_aim.direction.z * inverse_length;
+		float clamped_y = direction_y;
+		if (clamped_y < -1.0f)
+			clamped_y = -1.0f;
+		else if (clamped_y > 1.0f)
+			clamped_y = 1.0f;
+
+		// This is the exact inverse of FlyFly's stock direction formula in
+		// 0x005101F0: (sin(yaw)*cos(pitch), -sin(pitch),
+		// cos(yaw)*cos(pitch)). Unlike XMotorTask_Aim, this state drives the
+		// physical Mooch LookAt motor rather than only the laser endpoint.
+		const float yaw = atan2f(direction_x, direction_z);
+		const float pitch = -asinf(clamped_y);
+		if (!IsFiniteFloat(yaw) || !IsFiniteFloat(pitch))
+			return false;
+
+		const retail::FlyFlyMotionStateView fly_state_view(fly_state);
+		return fly_state_view.SetImmediateDirection(yaw, pitch) &&
+			retail::NativeGameApi::SubmitFlyFlyBodyDirection(controller, fly_state);
 	}
 
 	bool CoopNetGame::ApplyRemoteFlyDualLaserPresentation(void* fly)
@@ -2863,6 +2886,20 @@ namespace coop
 		ReleaseSRWLockExclusive(&m_input_lock);
 	}
 
+	void CoopNetGame::PublishLocalFlyAimRay()
+	{
+		if (!IsLocalFlyControlled())
+			return;
+
+		// Unlike Default, Fly_Active can run without passing through the normal
+		// Default-mode capture hook. Read the same process-global XGamePad used by
+		// the local native Fly tick and retain its current world ray in the existing
+		// input packet ABI.
+		retail::GamePadRef primary_gamepad = {};
+		if (retail::PrimaryGamePadStore().Read(primary_gamepad) && primary_gamepad)
+			CaptureLocalAimRay(retail::ToPointer(primary_gamepad.value));
+	}
+
 	bool CoopNetGame::ApplyRemotePlayerTransform(void* player2)
 	{
 		if (!player2 || !IsRemoteInputActiveOnThisThread() ||
@@ -2982,114 +3019,6 @@ namespace coop
 			local_mode == kAbrModeId;
 	}
 
-	void CoopNetGame::ReconcileRemoteP2AfterMotor()
-	{
-		CoopInput remote = {};
-		if (!GetRemoteInput(remote) || remote.transform_sequence == 0 ||
-			IsVehicleMotorActiveForRemoteP2(remote))
-		{
-			return;
-		}
-
-		retail::EntitySlotRepository players;
-		retail::EntityRef player2 = {};
-		if (!players.Get(retail::EntitySlot::RemoteP2, player2) || !player2)
-			return;
-
-		retail::Transform target = {};
-		memcpy(&target.position, remote.position, sizeof(target.position));
-		memcpy(&target.rotation, remote.rotation, sizeof(target.rotation));
-		if (!IsFiniteRetailTransform(target))
-			return;
-
-		retail::EntityView player2_view(player2);
-		retail::Transform current = {};
-		if (!player2_view.ReadTransform(current))
-			return;
-
-		const DWORD now = GetTickCount();
-		if (!IsFiniteRetailTransform(current))
-		{
-			if (player2_view.WriteTransform(target))
-			{
-				m_last_remote_p2_recovery_tick = now;
-				CoopRuntime::Instance().Log(
-					"[p2-recovery] post-motor repaired non-finite transform seq=%u\r\n",
-					remote.transform_sequence);
-			}
-			else
-			{
-				CoopRuntime::Instance().Log(
-					"[p2-recovery-error] post-motor non-finite repair write failed seq=%u\r\n",
-					remote.transform_sequence);
-			}
-			return;
-		}
-		const float dx = target.position.x - current.position.x;
-		const float dy = target.position.y - current.position.y;
-		const float dz = target.position.z - current.position.z;
-		const float distance = sqrtf(dx * dx + dy * dy + dz * dz);
-		if (!(distance == distance))
-			return;
-
-		// The native second-action route is the only confirmed way to leave the
-		// inner Ledge state. When the authoritative on-foot P2 is this far away,
-		// queue exactly one logical pressed edge for its next native input scope.
-		// This neither binds nor manufactures Shift/Space, and Fly/ABR remain out
-		// of the generic P2 recovery domain.
-		const bool should_queue_ledge_detach = remote.fly_controlled == 0 &&
-			distance >= kRemoteP2LedgeDetachDistance &&
-			(m_last_remote_p2_ledge_detach_tick == 0 ||
-				static_cast<DWORD>(now - m_last_remote_p2_ledge_detach_tick) >=
-					kRemoteP2LedgeDetachRetryIntervalMs);
-		if (should_queue_ledge_detach)
-		{
-			m_last_remote_p2_ledge_detach_tick = now;
-			if (InterlockedExchange(&m_pending_remote_p2_ledge_detach, 1) == 0)
-			{
-				CoopRuntime::Instance().Log(
-					"[p2-ledge-detach] queued logical action=0x%08X seq=%u distance=%.3f\r\n",
-					kLedgeInactiveRouteActionId, remote.transform_sequence,
-					distance);
-			}
-		}
-
-		const bool immediate = distance >=
-			kRemoteP2PostMotorImmediateRecoveryDistance;
-		const bool periodic = distance >=
-			kRemoteP2PostMotorPeriodicRecoveryDistance &&
-			(m_last_remote_p2_recovery_tick == 0 ||
-				static_cast<DWORD>(now - m_last_remote_p2_recovery_tick) >=
-					kRemoteP2PostMotorPeriodicRecoveryIntervalMs);
-		if (!immediate && !periodic)
-			return;
-
-		const bool trace = m_last_remote_p2_recovery_trace_tick == 0 ||
-			static_cast<DWORD>(now - m_last_remote_p2_recovery_trace_tick) >=
-				kRemoteP2PostMotorRecoveryTraceIntervalMs;
-		if (!player2_view.WriteTransform(target))
-		{
-			if (trace)
-			{
-				m_last_remote_p2_recovery_trace_tick = now;
-				CoopRuntime::Instance().Log(
-					"[p2-recovery-error] post-motor write failed seq=%u distance=%.3f\r\n",
-					remote.transform_sequence, distance);
-			}
-			return;
-		}
-
-		m_last_remote_p2_recovery_tick = now;
-		if (trace)
-		{
-			m_last_remote_p2_recovery_trace_tick = now;
-			CoopRuntime::Instance().Log(
-				"[p2-recovery] post-motor snap seq=%u distance=%.3f reason=%s\r\n",
-				remote.transform_sequence, distance,
-				immediate ? "distance" : "periodic");
-		}
-	}
-
 	bool CoopNetGame::ApplyRemoteFlyTransform(void* fly)
 	{
 		if (!fly)
@@ -3148,25 +3077,6 @@ namespace coop
 	{
 		Instance().HandleHealthComponentSubtract(component, amount, slot,
 			reinterpret_cast<void*>(_ReturnAddress()));
-	}
-
-	int __fastcall CoopNetGame::HookLiveEntityMovementScheduler(void* scheduler,
-		void*)
-	{
-		return Instance().HandleLiveEntityMovementScheduler(scheduler);
-	}
-
-	int CoopNetGame::HandleLiveEntityMovementScheduler(void* scheduler)
-	{
-		if (!m_original_live_entity_movement_scheduler)
-			return 0;
-
-		const int result = m_original_live_entity_movement_scheduler(scheduler);
-		// The retail pass has now committed its queued motor deltas.  The recovery
-		// does not replace collision, ledge state, or normal locomotion; it only
-		// restores a remote on-foot P2 when that pass caused a severe divergence.
-		ReconcileRemoteP2AfterMotor();
-		return result;
 	}
 
 	void __fastcall CoopNetGame::HookTriggerSpawnFromDefinition(void* trigger,
@@ -3505,6 +3415,10 @@ namespace coop
 		if (!m_original_object_event_forwarder)
 			return 0;
 		const bool is_outermost_route = !IsObjectEventRouteNested();
+		const retail::TriggerView counter_view(
+			retail::TriggerRef{ retail::ToAddress(object) });
+		retail::TriggerCounterState counter_before = {};
+		const bool have_counter_before = counter_view.ReadCounterState(counter_before);
 		int result = 0;
 		++g_object_event_route_depth;
 		__try
@@ -3520,6 +3434,19 @@ namespace coop
 			return result;
 		}
 		--g_object_event_route_depth;
+		retail::TriggerCounterState counter_after = {};
+		if (have_counter_before && counter_view.ReadCounterState(counter_after))
+		{
+			CoopRuntime::Instance().Log(
+				"[world-counter] origin=%s caller=%08X object=%p event=%08X "
+				"value=%u->%u threshold=%d state=%08X->%08X result=%d\r\n",
+				IsRemoteObjectEventReplayActive() ? "peer-replay" : "native",
+				static_cast<unsigned>(caller_return_address), object,
+				static_cast<unsigned>(event_code),
+				static_cast<unsigned>(counter_before.value),
+				static_cast<unsigned>(counter_after.value), counter_after.threshold,
+				counter_before.state_flags, counter_after.state_flags, result);
+		}
 		std::uintptr_t object_vtable = 0;
 		std::uint32_t object_state_flags = 0;
 		bool object_snapshot_available = false;
@@ -3591,7 +3518,8 @@ namespace coop
 		const bool local_fly_event = IsLocalFlyControlled() &&
 			(static_cast<std::uint32_t>(event_code) & 0xFFFF0000u) == 0x41080000u;
 		const bool fly_shadow_event = IsFlyNativeAbilityPassActiveOnThisThread();
-		const char* const event_source = fly_shadow_event ? "fly-shadow" :
+		const char* const event_source = IsRemoteObjectEventReplayActive() ?
+			"peer-replay" : fly_shadow_event ? "fly-shadow" :
 			(local_fly_event ? "fly-local" : "game");
 		const retail::TriggerRef pre_trigger_ref = { retail::ToAddress(trigger) };
 		const retail::TriggerView pre_trigger_view(pre_trigger_ref);
@@ -4123,10 +4051,6 @@ namespace coop
 		m_remote_gamepad_unavailable = false;
 		m_logged_remote_gamepad = false;
 		m_last_remote_transform_apply_tick = 0;
-		m_last_remote_p2_recovery_tick = 0;
-		m_last_remote_p2_recovery_trace_tick = 0;
-		m_last_remote_p2_ledge_detach_tick = 0;
-		InterlockedExchange(&m_pending_remote_p2_ledge_detach, 0);
 		AcquireSRWLockExclusive(&m_input_lock);
 		m_last_invalid_input_trace_tick = 0;
 		m_last_remote_fly_deactivation_suppression_tick = 0;
@@ -4388,27 +4312,7 @@ namespace coop
 			if (IsMirrorSuppressedAction(action))
 				return false;
 			const uint32_t action_index = action - kFirstKeyboardActionId;
-			bool pressed = m_remote_press_edge[action_index];
-			if (action == kLedgeInactiveRouteActionId &&
-				!IsFlyNativeAbilityPassActiveOnThisThread())
-			{
-				const bool synthetic = InterlockedExchange(
-					&m_pending_remote_p2_ledge_detach, 0) != 0;
-				if (synthetic)
-				{
-					pressed = true;
-					CoopRuntime::Instance().Log(
-						"[p2-ledge-detach] served logical action=0x%08X\r\n",
-						action);
-				}
-				else if (pressed)
-				{
-					CoopRuntime::Instance().Log(
-						"[p2-ledge-route] served remote press action=0x%08X\r\n",
-						action);
-				}
-			}
-			return pressed;
+			return m_remote_press_edge[action_index];
 		}
 		if (is_keyboard_action && IsMoochAction(action) &&
 			IsRemoteFlyControlledForInputQuery())
@@ -4567,9 +4471,9 @@ namespace coop
 			return false;
 
 		// 0x40080029 also appears in P1 WeaponTaser code. Only the exact Fly_Active
-		// return address is eligible here. During a native ability pass the edge is
-		// supplied for that exact call site; ordinary receiver input cannot leak
-		// into a remote/presentation Mooch.
+		// return address is eligible here. A presentation shadow pass is deliberately
+		// aim-only: it may inject its explicit reliable laser edge, but never consume
+		// an arbitrary remote raw edge (magnet/carry and movement remain unsynced).
 		const bool native_pass = IsFlyNativeAbilityPassActiveOnThisThread();
 		if (native_pass && IsFlyActiveRawPressedQuery(action,
 			caller_return_address))
@@ -4584,8 +4488,6 @@ namespace coop
 				InterlockedAnd(&m_fly_native_synthetic_press_mask, ~raw_bit);
 				return true;
 			}
-			if (InterlockedCompareExchange(&m_fly_native_pass_remote, 0, 0) != 0)
-				return ConsumeRemoteFlyRawEdge(action, true);
 			return false;
 		}
 		if (IsFlyActiveRawPressedQuery(action, caller_return_address) &&
@@ -4664,16 +4566,14 @@ namespace coop
 		if (!m_original_input_raw_held_query)
 			return false;
 
-		// During a native pass, answer only from the pass snapshot. F1 is a
-		// standalone one-shot and must not inherit a physically held Fly action;
-		// a remote replay may retain the peer's held raw buttons. Outside the pass,
-		// the receiver does not tick a remote-owned Fly as a second player.
+		// A native presentation pass never inherits held Fly actions. Its one
+		// supported action is the explicit reliable dual-laser press above; routing
+		// carry/magnet or locomotion through this pass would make the receiver a
+		// second owner instead of a visual/motor mirror.
 		const bool native_pass = IsFlyNativeAbilityPassActiveOnThisThread();
 		if (native_pass && IsFlyActiveRawHeldQuery(action,
 			caller_return_address))
 		{
-			if (InterlockedCompareExchange(&m_fly_native_pass_remote, 0, 0) != 0)
-				return GetRemoteFlyRawHeld(action);
 			return false;
 		}
 		if (IsFlyActiveRawHeldQuery(action, caller_return_address) &&
@@ -4726,6 +4626,14 @@ namespace coop
 			return 0.0f;
 
 		const bool remote_input_active = IsRemoteInputActiveOnThisThread();
+		if (IsFlyNativeAbilityPassActiveOnThisThread() &&
+			axis < kCoopInputAnalogAxisCount)
+		{
+			// The shadow pass supplies camera yaw/pitch and an aim ray, which are the
+			// Fly Aim motor inputs. Do not replay axes: root movement is replicated
+			// separately and must not be simulated a second time on this process.
+			return 0.0f;
+		}
 		if (remote_input_active && axis < kCoopInputAnalogAxisCount &&
 			(axis < 2 || m_active_remote_input.fly_controlled != 0))
 		{
@@ -5401,39 +5309,6 @@ namespace coop
 		m_health_component_subtract_hooked = false;
 	}
 
-	bool CoopNetGame::InstallLiveEntityMovementSchedulerHook()
-	{
-		if (m_live_entity_movement_scheduler_hooked)
-			return true;
-		if (!InstallJmpHookRaw(kLiveEntityMovementScheduler,
-			kExpectedLiveEntityMovementScheduler,
-			sizeof(kExpectedLiveEntityMovementScheduler),
-			reinterpret_cast<void*>(&HookLiveEntityMovementScheduler),
-			m_original_live_entity_movement_scheduler_bytes,
-			&m_live_entity_movement_scheduler_trampoline,
-			"post-motor remote P2 recovery"))
-		{
-			return false;
-		}
-		m_original_live_entity_movement_scheduler =
-			reinterpret_cast<LiveEntityMovementSchedulerFn>(
-				m_live_entity_movement_scheduler_trampoline);
-		m_live_entity_movement_scheduler_hooked = true;
-		return true;
-	}
-
-	void CoopNetGame::RemoveLiveEntityMovementSchedulerHook()
-	{
-		if (!m_live_entity_movement_scheduler_hooked)
-			return;
-		RemoveJmpHookRaw(kLiveEntityMovementScheduler,
-			m_original_live_entity_movement_scheduler_bytes,
-			sizeof(m_original_live_entity_movement_scheduler_bytes),
-			&m_live_entity_movement_scheduler_trampoline);
-		m_original_live_entity_movement_scheduler = nullptr;
-		m_live_entity_movement_scheduler_hooked = false;
-	}
-
 	bool CoopNetGame::InstallTriggerSpawnHook()
 
 	{
@@ -5769,8 +5644,7 @@ namespace coop
 					InstallCameraYawHook() &&
 					InstallGPigCameraUpdateHook() &&
 					InstallDefaultModeUpdateHook() && InstallFireHandlerHook() &&
-					InstallWeaponAmmoConsumeHook() &&
-					InstallLiveEntityMovementSchedulerHook();
+					InstallWeaponAmmoConsumeHook();
 				if (!InstallStateMachineSelectStateHook())
 				{
 					CoopRuntime::Instance().Log(
@@ -5821,7 +5695,6 @@ namespace coop
 	void CoopNetGame::RemoveInputHook()
 	{
 		RemoveStateMachineSelectStateHook();
-		RemoveLiveEntityMovementSchedulerHook();
 		RemoveLoadGameHook();
 		RemoveHealthComponentSubtractHook();
 		RemoveHealthComponentAddHook();

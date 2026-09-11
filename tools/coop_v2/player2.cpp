@@ -721,6 +721,18 @@ namespace coop
 
 		HandlePlayer1ModeTransition(player1_controller);
 
+		// A peer-owned Mooch is not guaranteed to receive a native controller tick
+		// while the local player stays in ordinary Darwin mode. Its root and Aim
+		// motor target must therefore be presented from this guaranteed game-thread
+		// seam as well. If Mooch receives its own later Idle tick, UpdateFlyController
+		// reapplies the same target after that tick clears its transient state.
+		if (!netgame.IsLocalFlyControlled())
+		{
+			void* const fly = GetFlyEntity();
+			netgame.ApplyRemoteFlyTransform(fly);
+			netgame.ApplyRemoteFlyAimMotor(fly);
+		}
+
 	}
 
 	void Player2Module::HandlePlayer1ModeTransition(void* player1_controller)
@@ -912,7 +924,8 @@ namespace coop
 		// A peer-owned Mooch is presentation-only on this process. Do not mirror its
 		// +0x53 state flag or run its remote controller/input scope: that would
 		// switch this machine's camera/player into Mooch. Clear an older DLL's
-		// mirrored state before the stock idle tick, then apply only the transform.
+		// mirrored state before the stock idle tick; a separate scoped Fly_Active
+		// pass later feeds only the native Aim motor and restores the shared camera.
 		if (remote_fly_presentation)
 			netgame.SetFlyControlActiveState(fly, false);
 
@@ -960,12 +973,17 @@ namespace coop
 			float local_camera_yaw = 0.0f;
 			netgame.PublishLocalCameraYaw(local_camera_yaw,
 				m_camera.ReadLocalYaw(local_camera_yaw));
+			netgame.PublishLocalFlyAimRay();
 		}
 		netgame.MaintainLocalFlyActiveEntity(fly);
+		// Publish the root transform produced by this native Fly tick. The receiver's
+		// EntityView invalidates retail's cached root matrix after applying it.
 		netgame.PublishLocalFlyTransform(fly);
 		if (!netgame.IsLocalFlyControlled())
 		{
 			netgame.ApplyRemoteFlyTransform(fly);
+			if (remote_fly_presentation)
+				netgame.ApplyRemoteFlyAimMotor(fly);
 			if (remote_fly_presentation)
 				netgame.ApplyRemoteFlyDualLaserPresentation(fly);
 		}

@@ -342,6 +342,21 @@ namespace retail
             return true;
         }
 
+        // The same handler-owned state table contains the 96-byte FlyFly motion
+        // entry selected by the engine-owned Fly runtime index. Expose only its
+        // address for FlyFlyMotionStateView; this is not a generic task factory.
+        bool FlyFlyMotionState(std::uint32_t state_index,
+            MotorTaskRef& out) const
+        {
+            out = {};
+            Address state_table = 0;
+            return TryReadAddress(AddOffset(handler_.value,
+                gforce::kHandlerFlyStateTableOffset), state_table) &&
+                state_table != 0 &&
+                TryReadAddress(AddOffset(state_table,
+                    state_index * sizeof(Address)), out.value) && out;
+        }
+
         bool Health(float& out) const
         {
             if (!TryRead(AddOffset(handler_.value,
@@ -403,7 +418,18 @@ namespace retail
             return TryWrite(AddOffset(entity_.value, gforce::kEntityPositionOffset),
                 value.position) &&
                 TryWrite(AddOffset(entity_.value, gforce::kEntityRotationOffset),
-                    value.rotation);
+                    value.rotation) &&
+                InvalidateTransformCache();
+        }
+
+        // Direct root writes bypass retail's normal setter.  Clear the same
+        // validity byte that retail clears so subsequent rendering, attachment,
+        // and aim reads rebuild the cached root matrix from this transform.
+        bool InvalidateTransformCache() const
+        {
+            const std::uint8_t invalid = 0;
+            return TryWrite(AddOffset(entity_.value,
+                gforce::kEntityTransformCacheValidOffset), invalid);
         }
 
         bool ReadHealth(float& out) const
@@ -533,6 +559,41 @@ namespace retail
 
     private:
         MotorSystemRef system_;
+    };
+
+    // A task-state-table entry used by XFlyFlyMode. The known fields are only
+    // the current/target angles and its direction-active byte recovered from
+    // XFlyFlyMode_Move/Update; no complete retail object layout is implied.
+    class FlyFlyMotionStateView final
+    {
+    public:
+        explicit FlyFlyMotionStateView(MotorTaskRef state) : state_(state) {}
+
+        bool SetImmediateDirection(float yaw, float pitch) const
+        {
+            if (!state_ || !(yaw > -1000.0f && yaw < 1000.0f) ||
+                !(pitch > -1.7f && pitch < 1.7f))
+            {
+                return false;
+            }
+
+            // Match the settled state produced by the stock smoother, then let
+            // the stock terminal helper derive and submit its LookAt target.
+            const std::uint8_t active = 1u;
+            return TryWrite(AddOffset(state_.value,
+                gforce::kFlyFlyTargetYawOffset), yaw) &&
+                TryWrite(AddOffset(state_.value,
+                    gforce::kFlyFlyCurrentYawOffset), yaw) &&
+                TryWrite(AddOffset(state_.value,
+                    gforce::kFlyFlyTargetPitchOffset), pitch) &&
+                TryWrite(AddOffset(state_.value,
+                    gforce::kFlyFlyCurrentPitchOffset), pitch) &&
+                TryWrite(AddOffset(state_.value,
+                    gforce::kFlyFlyDirectionActiveOffset), active);
+        }
+
+    private:
+        MotorTaskRef state_;
     };
 
     class MotorResourceView final
@@ -1245,6 +1306,37 @@ namespace retail
             }
         }
 
+        // Terminal portion of XFlyFlyMode_Move::Update. Its only observed work
+        // is to turn the supplied FlyFly state angles into a world LookAt point
+        // and submit that point to the controller-local motor task. Mode choice,
+        // input, camera and entity ownership remain outside this call.
+        static bool SubmitFlyFlyBodyDirection(ControllerRef controller,
+            MotorTaskRef fly_state)
+        {
+            if (!controller || !fly_state ||
+                !CodePrefixMatches(gforce::kSubmitFlyFlyBodyDirection,
+                    gforce::kExpectedSubmitFlyFlyBodyDirection,
+                    sizeof(gforce::kExpectedSubmitFlyFlyBodyDirection)))
+            {
+                return false;
+            }
+
+            using SubmitFlyFlyBodyDirectionFn = int (__thiscall*)(void*, void*);
+            const SubmitFlyFlyBodyDirectionFn submit =
+                reinterpret_cast<SubmitFlyFlyBodyDirectionFn>(
+                    gforce::kSubmitFlyFlyBodyDirection);
+            __try
+            {
+                (void)submit(ToPointer(controller.value),
+                    ToPointer(fly_state.value));
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
         // Calls only the already-registered Fly_Active::Update body.  Enter/Exit
         // and controller mode selection stay outside this boundary, which is what
         // keeps a remote presentation from stealing the local camera or HUD.
@@ -1386,10 +1478,31 @@ namespace retail
         HealthComponentRef component_;
     };
 
+    struct TriggerCounterState final
+    {
+        std::uint8_t value;
+        std::int32_t threshold;
+        std::uint32_t state_flags;
+    };
+
     class TriggerView final
     {
     public:
         explicit TriggerView(TriggerRef trigger) : trigger_(trigger) {}
+
+        // Do not interpret these offsets on another trigger subtype.
+        bool ReadCounterState(TriggerCounterState& out) const
+        {
+            Address vtable = 0;
+            return trigger_ && TryRead(trigger_.value, vtable) &&
+                vtable == gforce::kTriggerCounterVtable &&
+                TryRead(AddOffset(trigger_.value,
+                    gforce::kTriggerCounterValueOffset), out.value) &&
+                TryRead(AddOffset(trigger_.value,
+                    gforce::kTriggerCounterThresholdOffset), out.threshold) &&
+                TryRead(AddOffset(trigger_.value,
+                    gforce::kTriggerStateFlagsOffset), out.state_flags);
+        }
 
         bool Identity(TriggerIdentity& out) const
         {

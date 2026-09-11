@@ -29,17 +29,9 @@ namespace coop
 		constexpr uintptr_t kGPigUpdateVtableSlot = 0x0070C8A4u;
 		// XController_Fly uses the same base Update body as GPig, but a different
 		// vtable slot.  Both must reach HookControllerUpdate so the fly's native mode
-		// edge and its post-motor position can be observed.
+		// edge and final controller transform can be observed.
 		constexpr uintptr_t kFlyUpdateVtableSlot = 0x007180F4u;
 		constexpr uintptr_t kOriginalControllerUpdate = 0x005BFBE0u;
-		// The global post-controller motor pass walks the live entity manager and
-		// commits movement/turn deltas to entity root transforms.  Its first five
-		// bytes are three complete non-relative instructions, so they are safe for
-		// the existing E9 trampoline.  P2 recovery runs only after this stock pass.
-		constexpr uintptr_t kLiveEntityMovementScheduler = 0x0043C9E0u;
-		constexpr uint8_t kExpectedLiveEntityMovementScheduler[] = {
-			0x83, 0xEC, 0x7C, 0x53, 0x55
-		};
 
 		constexpr uintptr_t kInputActionQuery = 0x00488A70u;      // is-down (level)
 		constexpr uintptr_t kInputActionUpQuery = 0x00488B70u;    // is-up (inverse level)
@@ -80,6 +72,15 @@ namespace coop
 		constexpr uintptr_t kGetFlyDualLaserPresentationContext = 0x005B00E0u;
 		constexpr uintptr_t kGetFlyDualLaserAimTask = 0x00442300u;
 		constexpr uintptr_t kSetFlyDualLaserAimTarget = 0x004B9F30u;
+		// XFlyFlyMode_Move normally smooths these four state fields and calls this
+		// helper. The helper itself only converts the current angles to a world
+		// LookAt target and marks that target active; it neither changes Fly mode nor
+		// accesses the shared camera. Co-op uses that narrow terminal step for a
+		// presentation-only remote Mooch body direction.
+		constexpr uintptr_t kSubmitFlyFlyBodyDirection = 0x005101F0u;
+		constexpr uint8_t kExpectedSubmitFlyFlyBodyDirection[] = {
+			0x83, 0xEC, 0x5C, 0x53, 0x8B
+		};
 		// The native laser action is not a standalone fire routine.  It is a raw
 		// input branch inside this registered Fly_Active mode.  The co-op layer may
 		// call only the mode's update body, while its input hook supplies the one
@@ -231,14 +232,23 @@ namespace coop
 		// fly's handler through [fly + 0x144] at 0x5BBD6B.
 		constexpr uintptr_t kFlyEntity = 0x009128E8u;
 		// GPig_Mooch::Enter enables this exact state before native Fly_Active::Update
-		// can read its raw action branches.  The receiver mirrors only this lifecycle
-		// flag while the remote peer owns the shared fly.
+		// can read its raw action branches. The presentation peer keeps the retail
+		// flag cleared, preventing receiver-side Fly mode/camera ownership.
 		constexpr uintptr_t kFlyActiveStateIndex = 0x009155FCu;
 		constexpr size_t kHandlerFlyStateTableOffset = 0x4ECu;
 		// Fly_Idle::Update selects Fly_Active when this native state byte is set.
-		// Mirroring this flag lets the receiving controller follow its own normal
-		// Active -> Scanning mode transitions instead of forcing a mode directly.
+		// It must not be replicated as receiver ownership: receiver presentation
+		// writes the controller-local Aim task without selecting this mode.
 		constexpr size_t kFlyControlActiveOffset = 0x53u;
+		// 96-byte entry at Handler.MotorSystem task-state index
+		// [0x009155FC]. `XFlyFlyMode_Move::Update` smooths target yaw/pitch into
+		// current yaw/pitch then passes the state to kSubmitFlyFlyBodyDirection.
+		// Only these verified fields are exposed; this is not a complete state type.
+		constexpr size_t kFlyFlyTargetYawOffset = 0x2Cu;
+		constexpr size_t kFlyFlyCurrentYawOffset = 0x30u;
+		constexpr size_t kFlyFlyTargetPitchOffset = 0x34u;
+		constexpr size_t kFlyFlyCurrentPitchOffset = 0x38u;
+		constexpr size_t kFlyFlyDirectionActiveOffset = 0x50u;
 		constexpr uintptr_t kCameraManager = 0x00915738u;
 
 		constexpr uintptr_t kKeyboardStateOwner = 0x00AA6580u;
@@ -278,6 +288,10 @@ namespace coop
 		constexpr size_t kAmmoEntryCurrentOffset = 0x0Cu;
 
 		constexpr size_t kEntityHandlerOffset = 0x144u;
+		// Retail's root-transform resolver uses this as a validity byte for the
+		// cached 4x4 matrix at +0x88. Native writers clear it after changing root
+		// position/rotation; the next native reader rebuilds the matrix from them.
+		constexpr size_t kEntityTransformCacheValidOffset = 0x7Eu;
 		constexpr size_t kEntityRotationOffset = 0xC8u;
 		constexpr size_t kEntityPositionOffset = 0xE8u;
 		// Entity reference slot used by sub_472B00 resolver; found in ammo trace at
@@ -295,6 +309,13 @@ namespace coop
 		constexpr size_t kTriggerFamilyOffset = 0x100u;
 		constexpr size_t kTriggerSubtypeOffset = 0x104u;
 		constexpr size_t kTriggerFlagsOffset = 0x108u;
+		// Exact XTrigger_TR_Counter, verified in retail 0x00440D30. Read-only
+		// diagnostics: event low16 0x53 decrements, 0x64 resets, others increment;
+		// the native threshold check is equality, not >=.
+		constexpr uintptr_t kTriggerCounterVtable = 0x006F496Cu;
+		constexpr size_t kTriggerCounterValueOffset = 0x137u;
+		constexpr size_t kTriggerCounterThresholdOffset = 0x0Cu;
+		constexpr size_t kTriggerStateFlagsOffset = 0x110u;
 		constexpr size_t kTriggerSpawnIdOffset = 0x130u;
 		// The native spawn routine stores its freshly constructed game object here.
 		// It is useful for tracing a trigger-to-live-instance relationship, but it is

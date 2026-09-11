@@ -84,7 +84,7 @@ native lifecycles before a new server limit is considered.
 | Domain | Owner and data | Must not be mixed with |
 | --- | --- | --- |
 | Ordinary P2 on foot | Native Darwin controller consumes a scoped remote input snapshot; root transform is replicated. | Fly and ABR vehicle-motor fields. |
-| Mooch / Fly | Только owner запускает native Fly state с физическим input и публикует transform. Receiver оставляет P1/камеру в обычном состоянии, очищает remote Fly-control flag и применяет transform как presentation. | Remote Fly input/controller/camera takeover, Darwin weapon fire и обычный P2 controller input. |
+| Mooch / Fly | Только owner запускает native Fly state с физическим input и публикует transform и текущий XGamePad aim-ray. Receiver оставляет P1/камеру в обычном состоянии, очищает remote Fly-control flag, применяет root transform, записывает FlyFly target/current yaw+pitch и вызывает его terminal LookAt submitter. | Remote Fly input/controller/camera takeover, Darwin weapon fire, Fly movement axes и обычный P2 controller input. |
 | ABR / RDV vehicle | Native `XMotorFunction_GPigRDV` vehicle task/motor owns heading and attached parts. At either ABR boundary, only its stock vehicle tick runs; generic P2 input, camera, weapon and root-transform code are skipped. | Generic P2 transform recovery or partial root-rotation writes. |
 
 If a packet crosses a mode boundary, prefer skipping one generic correction to
@@ -129,47 +129,31 @@ evidence; the queued receiver request and real death/re-entry flow remain
 ## P2 ledge/fall and outer DeathMode rule
 
 The normal P2 path retains stock collision, ledge attachment and fall physics.
-It does not synthesize Shift/Space and does not disable physics. Retail first
-runs controller logic, then the global movement scheduler can apply queued
-motor motion after an earlier correction. The only mitigation is a post-scheduler
-on-foot distance reconciliation:
+It does not synthesize Shift/Space and does not disable physics. The previous
+post-scheduler reconciler was removed after vtable inspection proved that its
+target `0x0043C9E0` is an `XTrigger_OB_Conveyor` virtual method, not a global
+post-physics scheduler. Attaching P2 recovery to it was invalid.
 
-- snap immediately at `>= 2.5` units from the newest remote transform;
-- snap once every 2 seconds at `>= 0.75` residual units;
-- at `>= 3.0` units, queue one verified logical Ledge-to-Inactive edge for the
-  next P2 input scope;
-- do nothing in ABR/RDV.
-
-Further static RE narrows, but does not replace, that policy. The inner Ledge
-chooser has two task-driven paths: task index `0x009155F8` selects inner `Jump`
-(`0x61000003`), whose `Enter` clears an internal byte and starts an unidentified
-native operation before its `Update` can later return to `Inactive`; task index
-`0x00915604` clears two native task slots and returns directly to inner
-`Inactive` (`0x61000000`). The latter task is produced by Default helper
-`0x005B92A0` from second-namespace action `0x4008000A`. `0x0048AE10` maps that
-query to ordinary press-edge action `0x1000000D`, then uses the existing native
-press query. At a finite on-foot divergence `>=3.0` units, the post-scheduler
-reconciler atomically queues that logical edge; the next P2 scoped pressed query
-returns it once and clears the pending flag. The route is blocked during Fly
-shadow replay, and ABR/RDV is already outside the reconciler. No new wire field,
-fake key, or `0x4008xxxx` hook is needed. This still is not an approved name for
-Shift, Space, melee, or any physical key. `[p2-ledge-detach] queued` and
-`served` prove only scheduling/delivery, not that the native Ledge mode accepted
-it. Co-op does not call the inner Ledge state machine directly: its object
-lifetime and complete cleanup contract are not an external API.
+Further static RE still confirms that `0x0048AE10` maps second-namespace action
+`0x4008000A` to ordinary press-edge `0x1000000D`, and that a native Default-mode
+task can eventually lead Ledge to `Inactive`. This establishes input/state
+plumbing only. It does not identify Shift, Space, melee, or any physical key,
+and it does not authorise a distance-triggered synthetic press. Co-op does not
+call the inner Ledge state machine directly. A real post-physics/ledge seam is
+required before another recovery implementation is added; ABR/RDV remains outside
+that future on-foot route.
 
 Before an incoming snapshot replaces remote state, the network ingress rejects
 `NaN`/`Inf` in P1/Fly transforms, analog axes, aim ray and a valid camera yaw.
-The last accepted finite state remains active. The on-foot P2 writers check again;
-if P2's current root is already non-finite, they replace it with the finite peer
-target. This is containment, not a physics switch. `[net-input-reject]`,
-`[net-transform-recovery]` and the non-finite `[p2-recovery]` form the diagnostics.
+The last accepted finite state remains active. The normal P2 transform writer
+checks again before its root write. This is containment, not a physics switch.
+`[net-input-reject]` and `[net-transform-recovery]` form the diagnostics.
 The same finite-only boundary covers `WorldSpawn`/`WorldSnapshot`: host reads and
 client ingress reject bad entity transforms before a native root write.
 
-This is **not live-tested**. Runtime proof is `[p2-ledge-detach] queued` followed
-by `served` at a visible `>=3 m` divergence, plus visual confirmation that P2
-exits a bad ledge or fall state without breaking normal movement.
+P2 ledge/fall recovery is currently **not implemented**. A future live test must
+first establish the correct post-physics/ledge boundary, then verify that a
+remote P2 exits a bad attachment without breaking normal movement.
 
 An outer native `XGPigDeathMode` is separate from that Ledge state machine.
 The old P2 guard skipped its stock checkpoint respawn, but could also leave the
@@ -281,11 +265,19 @@ are distinct native representations, and that splice produced a skewed pose and
 laser direction.
 
 The aim-task ABI, item route, packet delivery and ownership boundary are
-**approved** static facts. A full `Release|Win32` rebuild passed on 2026-09-06;
-that proves compilation and matching byte fingerprints, not the visual result.
-The visual origin, damage behavior and timing of this corrected route remain
-**not-tested** until the standalone F1 and two-process checks below. The
-magnetic ability remains separate: RTTI names `XFlyCarryMode`,
+**approved** static facts. Root `fly_rotation` alone is not the same data as
+the native FlyFly body direction. The receiver therefore refreshes the owner
+XGamePad ray every Fly tick, calculates the inverse of FlyFly's stock vector
+formula (`yaw = atan2(x,z)`, `pitch = -asin(y)`), writes both target/current
+angle pairs to its 96-byte state-table entry, marks the direction active, then
+calls the byte-checked terminal `XFlyFlyMode_Move` step at `0x005101F0`. That
+step creates/updates only the stock controller-local LookAt target; it does not
+run a Fly state machine, input query, shared camera/HUD update or ownership
+transition. It is safe to use from the guaranteed P1 seam as well as after a
+Mooch Idle tick. The heavier scoped `Fly_Active::Update` remains strictly the
+one-shot reliable dual-laser replay, not a realtime orientation path. A full `Release|Win32` rebuild passed on
+2026-09-09; that proves compilation and matching byte fingerprints, not the
+two-process visual result. The magnetic ability remains separate: RTTI names `XFlyCarryMode`,
 `XMotorFunction_FlyCarry` and `XMotorTask_Carry` exist, but their current
 input edge, target identity and safe replay boundary have not been recovered,
 so no carry event is sent.
@@ -419,6 +411,37 @@ arrives before the replica link stays pending and is applied as soon as the matc
 a compiled lifecycle contract; live proof still requires a fresh-level spawn/kill
 race test and confirmation that one NPC appears on each process without autonomous
 client movement.
+
+## Spawn regression investigation — 2026-09-11
+
+User reports closed spawn boxes in **both** windows. The pre-fix runtime log
+contains host WorldSpawn IDs 1..13 and client links; it does not prove that the
+boxes in the screenshot were activated. Do not describe this as a global failure
+of client spawning or restore the removed client-spawn ban.
+
+User clarified two separate issues: spawn boxes already failed in a single-player
+run before today's change (whether that run loaded the DLL is not established);
+key-card insertion previously worked but now opens the peer door without marking
+the card inserted. Do not merge these symptoms or assume a clean-vanilla failure.
+
+The attempted synchronous replay suppression was withdrawn after this key-card
+regression report. HandleTriggerEvent, route-4 dispatch and legacy trigger replay
+retain their pre-experiment networking policy. The older relay/forwarder non-echo
+scope remains unchanged. Repeated events are observations, not proof that every
+nested event is redundant. Key-card recovery after withdrawal is **not-tested**.
+Local spawns, WorldSpawn binding, P2 and Fly behavior were not changed here.
+
+The log has repeated Counter events on both peers; whether that blocks these
+boxes is still **guess/not-tested**, not a confirmed fix.
+Read-only [world-counter] records exact Counter value before/after, threshold,
+state flags and native/peer-replay origin. F9 adds [world-counter-catalog] for
+untouched counters as well. The exact vtable gates these reads; no guessed
+counter value or activation event is written. See RE_CATALOG for field evidence.
+
+Test from a checkpoint before the activation (an already changed counter is not
+repaired retroactively): F9 near the boxes, approach the trigger, F9 again if no
+spawn. Keep the resulting re_cache/runtime/gforce_coop.log. No F2 forced spawn is
+needed, since it would bypass the scenario being diagnosed.
 
 ## Build and deploy
 

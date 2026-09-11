@@ -587,7 +587,7 @@ namespace coop
 		std::uint32_t stale_count = 0;
 
 		CoopRuntime::Instance().Log(
-			"[debug-F9] trigger catalog begin templates=%u; approved=verified ComputerBox, observed=recorded native event, guess=spawn template, unknown=unclassified\\r\\n",
+			"[debug-F9] trigger catalog begin templates=%u; approved=verified ComputerBox, observed=recorded native event, guess=spawn template, unknown=unclassified\r\n",
 			static_cast<unsigned int>(m_trigger_templates.size()));
 
 		for (std::size_t index = 0; index < m_trigger_templates.size(); ++index)
@@ -605,7 +605,7 @@ namespace coop
 			{
 				++stale_count;
 				CoopRuntime::Instance().Log(
-					"[interactive-point] index=%u confidence=stale reason=unreadable-or-reused trigger=%p family=%08X subtype=%08X definition=%d\\r\\n",
+					"[interactive-point] index=%u confidence=stale reason=unreadable-or-reused trigger=%p family=%08X subtype=%08X definition=%d\r\n",
 					static_cast<unsigned int>(index), candidate.trigger,
 					candidate.family, candidate.subtype, candidate.definition_id);
 				continue;
@@ -613,6 +613,15 @@ namespace coop
 
 			std::uint32_t flags = 0;
 			const bool have_flags = trigger.Flags(flags);
+			retail::TriggerCounterState counter = {};
+			if (trigger.ReadCounterState(counter))
+			{
+				CoopRuntime::Instance().Log(
+					"[world-counter-catalog] trigger=%p value=%u threshold=%d "
+					"state=%08X\r\n", candidate.trigger,
+					static_cast<unsigned>(counter.value), counter.threshold,
+					counter.state_flags);
+			}
 			retail::Transform transform = {};
 			const bool have_transform = trigger.ReadTransform(transform) &&
 				IsFiniteRetailTransform(transform);
@@ -653,7 +662,7 @@ namespace coop
 				const float dz = transform.position.z - player_position[2];
 				const float distance = sqrtf(dx * dx + dy * dy + dz * dz);
 				CoopRuntime::Instance().Log(
-					"[interactive-point] index=%u confidence=%s reason=%s trigger=%p family=%08X subtype=%08X definition=%d flags=%08X flags_ok=%u event=%08X event_seen=%u pos=(%.2f,%.2f,%.2f) distance=%.2f\\r\\n",
+					"[interactive-point] index=%u confidence=%s reason=%s trigger=%p family=%08X subtype=%08X definition=%d flags=%08X flags_ok=%u event=%08X event_seen=%u pos=(%.2f,%.2f,%.2f) distance=%.2f\r\n",
 					static_cast<unsigned int>(index), confidence, reason,
 					candidate.trigger, identity.family, identity.subtype,
 					identity.definition_id, flags, have_flags ? 1u : 0u,
@@ -664,7 +673,7 @@ namespace coop
 			else
 			{
 				CoopRuntime::Instance().Log(
-					"[interactive-point] index=%u confidence=%s reason=%s trigger=%p family=%08X subtype=%08X definition=%d flags=%08X flags_ok=%u event=%08X event_seen=%u pos=unavailable distance=unavailable\\r\\n",
+					"[interactive-point] index=%u confidence=%s reason=%s trigger=%p family=%08X subtype=%08X definition=%d flags=%08X flags_ok=%u event=%08X event_seen=%u pos=unavailable distance=unavailable\r\n",
 					static_cast<unsigned int>(index), confidence, reason,
 					candidate.trigger, identity.family, identity.subtype,
 					identity.definition_id, flags, have_flags ? 1u : 0u,
@@ -676,7 +685,7 @@ namespace coop
 		const std::uint32_t live_count = approved_count + observed_count +
 			guess_count + unknown_count;
 		CoopRuntime::Instance().Log(
-			"[debug-F9] trigger catalog end live=%u approved=%u observed=%u guess=%u unknown=%u stale=%u\\r\\n",
+			"[debug-F9] trigger catalog end live=%u approved=%u observed=%u guess=%u unknown=%u stale=%u\r\n",
 			live_count, approved_count, observed_count, guess_count, unknown_count,
 			stale_count);
 		return live_count != 0;

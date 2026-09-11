@@ -80,6 +80,10 @@ namespace coop
 		// A direct route-item pulse remains only as an explicitly logged fallback
 		// for a profile/runtime mismatch.
 		void BeginRemoteFlyDualLaserPresentationTick();
+		// Writes the owner direction into FlyFly's native body state, then invokes
+		// its terminal LookAt submitter after the remote root transform. It never
+		// calls Fly_Active or touches camera/HUD/controller ownership on receiver.
+		bool ApplyRemoteFlyAimMotor(void* fly);
 		bool ApplyRemoteFlyDualLaserPresentation(void* fly);
 		// Network ingress records a real, ordered remote-owner -> zero-owner edge
 		// under m_input_lock.  The exact Mooch game-thread tick consumes it once,
@@ -108,6 +112,10 @@ namespace coop
 		// controller currently owns the shared camera: P1 normally, Mooch after its
 		// own Fly tick. The caller must not publish P1's stale yaw during local Fly.
 		void PublishLocalCameraYaw(float yaw, bool valid);
+		// Fly_Active maintains its own XGamePad ray instead of passing through the
+		// normal Default-controller hook. Publish it every locally owned Fly tick so
+		// a receiver can reconstruct the native body aim target continuously.
+		void PublishLocalFlyAimRay();
 		// Darwin's normal on-foot controller owns this correction. Vehicle/RDV uses
 		// a separate native motor path and must never be fed through this helper.
 		bool ApplyRemotePlayerTransform(void* player2);
@@ -186,7 +194,6 @@ namespace coop
 		typedef void(__thiscall* HealthComponentSetFn)(void*, float, std::uint32_t, bool);
 		typedef void(__thiscall* HealthComponentAddFn)(void*, float, std::uint32_t);
 		typedef void(__thiscall* HealthComponentSubtractFn)(void*, float, std::uint32_t);
-		typedef int(__thiscall* LiveEntityMovementSchedulerFn)(void*);
 		enum Role
 		{
 			RoleNone,
@@ -358,10 +365,6 @@ namespace coop
 		void RemoveHealthComponentAddHook();
 		bool InstallHealthComponentSubtractHook();
 		void RemoveHealthComponentSubtractHook();
-		bool InstallLiveEntityMovementSchedulerHook();
-		void RemoveLiveEntityMovementSchedulerHook();
-		int HandleLiveEntityMovementScheduler(void* scheduler);
-		void ReconcileRemoteP2AfterMotor();
 		bool IsVehicleMotorActiveForRemoteP2(const CoopInput& remote) const;
 
 		bool InstallTriggerSpawnHook();
@@ -395,7 +398,6 @@ namespace coop
 		static void __fastcall HookHealthComponentSet(void* component, void*, float requested_value, std::uint32_t slot, bool notify);
 		static void __fastcall HookHealthComponentAdd(void* component, void*, float delta, std::uint32_t slot);
 		static void __fastcall HookHealthComponentSubtract(void* component, void*, float amount, std::uint32_t slot);
-		static int __fastcall HookLiveEntityMovementScheduler(void* scheduler, void*);
 		static void __fastcall HookTriggerSpawnFromDefinition(void* trigger, void*);
 		static bool __fastcall HookHostLoadGame(void* manager, void*, std::uint32_t slot);
 
@@ -420,11 +422,6 @@ namespace coop
 		retail::KeyboardStateSnapshot m_active_remote_scan_codes;
 		DWORD m_last_send_tick;
 		DWORD m_last_remote_transform_apply_tick;
-		DWORD m_last_remote_p2_recovery_tick;
-		DWORD m_last_remote_p2_recovery_trace_tick;
-		// A severe post-motor divergence can leave only the receiver in Ledge.
-		// This schedules the verified logical Inactive edge; it never fakes a key.
-		DWORD m_last_remote_p2_ledge_detach_tick;
 		// Throttles malformed snapshot diagnostics on the network worker. A rejected
 		// snapshot never replaces the last finite P2/Fly state.
 		DWORD m_last_invalid_input_trace_tick;
@@ -456,7 +453,6 @@ namespace coop
 		std::uint32_t m_remote_fly_laser_item_ids[2];
 		bool m_remote_fly_laser_pulse_active;
 		volatile LONG m_fly_native_pass_active;
-		volatile LONG m_fly_native_pass_remote;
 		volatile LONG m_fly_native_synthetic_press_mask;
 		DWORD m_fly_native_pass_thread_id;
 		void* m_fly_native_pass_controller;
@@ -473,7 +469,6 @@ namespace coop
 		volatile LONG m_peer_connected_tick;
 		volatile LONG m_logged_spawn;
 		volatile LONG m_remote_input_active;
-		volatile LONG m_pending_remote_p2_ledge_detach;
 		bool m_keyboard_state_swapped;
 		bool m_logged_keyboard_state_swap;
 		bool m_input_hooked;
@@ -567,10 +562,6 @@ namespace coop
 		BYTE* m_health_component_subtract_trampoline;
 		HealthComponentSubtractFn m_original_health_component_subtract;
 		bool m_health_component_subtract_hooked;
-		BYTE m_original_live_entity_movement_scheduler_bytes[5];
-		BYTE* m_live_entity_movement_scheduler_trampoline;
-		LiveEntityMovementSchedulerFn m_original_live_entity_movement_scheduler;
-		bool m_live_entity_movement_scheduler_hooked;
 		BYTE m_original_trigger_spawn_bytes[14];
 
 		BYTE* m_trigger_spawn_trampoline;

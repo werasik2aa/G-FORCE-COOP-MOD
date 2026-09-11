@@ -79,8 +79,8 @@ namespace coop
 		void RecordTriggerEvent(void* trigger, int event_code);
 		void RecordNativeSpawn(void* trigger, void* entity, std::uint32_t family, std::uint32_t subtype, std::int32_t definition_id);
 		// True only during the one native client-replica spawn requested by an
-		// already received host WorldSpawn packet. All other post-connect NPC/monster
-		// spawn attempts are suppressed before they can create an unlinked local AI.
+		// already received host WorldSpawn packet. Ordinary client-native spawns
+		// remain allowed and are linked later; this flag only identifies the fallback.
 		bool IsExpectedClientReplicaSpawn(void* trigger, std::uint32_t family,
 			std::uint32_t subtype) const;
 		// Consumes that one native-spawn admission. The replica may still wait for

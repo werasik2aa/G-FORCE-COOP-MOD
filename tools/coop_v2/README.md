@@ -17,6 +17,19 @@
 «Как находились адреса и как продолжать реверс». Там зафиксированы правила для
 IDA, `vftable`, x86 calling convention, rel32, field offsets и expected bytes.
 
+## Проверка ящиков со спавном (2026-09-11)
+
+Ящики не выпускали врагов ещё до сегодняшней правки, в том числе в одиночном
+запуске (наличие DLL там не уточнено). Это отдельно от новой проблемы ключ-карты.
+Эксперимент с подавлением вложенных trigger replay отменён после сообщения,
+что дверь открывается, но карта у хоста не считается вставленной. Восстановлена
+прежняя политика отправки событий; результат отката **не проверен в игре**.
+Счётчики только наблюдаем: [world-counter] пишет значение до/после, порог и источник
+native/peer-replay; F9 добавляет [world-counter-catalog].
+Перезагрузить контрольную точку до активации, нажать F9 у ящиков, пройти к триггеру
+и повторить F9, если враги не вышли. Лог остаётся в re_cache/runtime/gforce_coop.log.
+F2 не нужен: принудительный спавн скроет неисправность сценария.
+
 ## Состав
 
 - `coop_dll.cpp` — только ABI-экспорты DLL и `DllMain`.
@@ -151,31 +164,20 @@ pool. IDA подтверждает cleanup для `0..5`, но два retail sel
 transform, analog axes, aim ray и valid camera yaw: предыдущий конечный snapshot
 остаётся рабочим. Повторная проверка перед on-foot transform write чинит уже
 неконечный root P2 от свежей конечной цели. Это containment, не отключение physics;
-логи `[net-input-reject]`, `[net-transform-recovery]` и non-finite
-`[p2-recovery]` нужны для последующей проверки.
+логи `[net-input-reject]` и `[net-transform-recovery]` нужны для последующей
+проверки.
 
 Обычный remote P2 получает плавную transform-коррекцию после своего native
-controller tick. Затем retail scheduler `0x0043C9E0` ещё раз применяет motor
-delta и может утащить P2 в старую ledge/fall позицию. Поэтому после штатного
-scheduler pass co-op проверяет только on-foot P2:
+controller tick. Проверка vtable показала, что прежний «scheduler» `0x0043C9E0`
+на самом деле является методом `XTrigger_OB_Conveyor`, а не глобальным
+post-physics проходом. Его hook, distance-snap и автоматический Ledge edge из
+DLL удалены: они не должны выполняться в произвольном обновлении конвейера.
 
-- при расхождении `>= 2.5` units записывает свежий сетевой transform сразу;
-- при остатке `>= 0.75` units делает один safety-snap не чаще раза в 2 секунды;
-- при `>= 3.0` units и только вне Mooch ставит один native logical edge
-  `0x1000000D` для следующего P2 input scope;
-- оставляет native ledge/fall state machine и физику включёнными;
-- полностью пропускает ABR/RDV: по packet mode, controller P2 и controller P1.
-
-`0x1000000D` — подтверждённый retail pressed-edge route из второго namespace
-`0x4008000A` к inner `Ledge → Inactive`; это **не** имя физической клавиши.
-При сильном расхождении co-op не вызывает Ledge напрямую и не подделывает
-Shift/Space: он выдаёт этот один logical edge только в следующем scoped P2 query.
-`[p2-ledge-detach] queued ...` означает, что он поставлен, `served ...` — что
-его увидел native query; визуальный выход с уступа всё ещё требует live-проверки.
-
-Строка `[p2-recovery]` в `g_force\re_cache\runtime\gforce_coop.log` означает, что recovery действительно
-сработал. До двухпроцессного прогона это только статически обоснованный маршрут,
-а не заявленное исправление runtime-бага.
+Маршрут `0x4008000A → 0x1000000D` к `Ledge → Inactive` статически подтверждён,
+но это только маршрут настоящего native press-edge, а не имя Shift/Space и не
+разрешение подделывать нажатие по расстоянию. Поэтому P2 ledge/fall остаётся
+открытой задачей: физика и нормальные ledge state остаются включёнными, ABR/RDV
+не смешивается с on-foot P2, а настоящий seam после физики ещё нужно найти.
 
 Отдельно существует outer `XGPigDeathMode`: это не Ledge substate. Раньше P2 в
 нём целиком пропускал native update, чтобы не запускать локальный checkpoint
@@ -210,14 +212,14 @@ respawn, но из-за этого мог навсегда остаться в h
 
 | Проверка | Действие | Подтверждение в логах / игре |
 | --- | --- | --- |
-| P2 ledge/fall | Увести удалённого P2 на уступ или в падение и довести рассинхрон до ~3 м. | Сначала `[p2-ledge-detach] queued logical action=0x1000000D ...`, затем `served logical action=...`; P2 должен штатно отпустить уступ. `[p2-recovery]` остаётся только у on-foot P2; fake Shift/Space и отключения physics нет. `[net-input-reject]` означает, что плохой snapshot сохранён не был. |
+| P2 ledge/fall | Увести удалённого P2 на уступ или в падение и довести рассинхрон до ~3 м. | Открытая задача: нет auto-snap, synthetic press или отключения physics. `[net-input-reject]` означает, что плохой snapshot сохранён не был. Для исправления нужен отдельный проверенный post-physics/ledge seam. |
 | P2 пропал / DeathMode | Дать удалённому P2 попасть в outer DeathMode, пока peer P1 уже снова в `Default`. | После одного более нового packet: `[p2-death-recovery] ... seq=N entry_seq=M`; P2 выходит из hide/death pose. Пока peer не в `Default`, `[p2-death-guard]` ожидаем и не означает crash. |
 | Main-menu Connect by IP | В exact retail EXE открыть главное меню и нажать строку сразу после `Credits`. | Пока **not-tested**: сначала ожидаются `[menu-init] ... installed`, затем по одному `[menu] BuildMainMenu observed`, `Credits AddChild seam observed`, `native Connect by IP row added` и `Connect by IP label resolved`. Клик должен дать тот же IP-диалог, что `F8`, и `F8 request queued`. Если ABI не совпал, лог называет конкретный адрес, строки не будет, но `F8` должен остаться. |
 | F1 local Mooch laser | В одном foreground-процессе, без клиента и без входа в Q, поставить Муху в кадр и один раз нажать F1. | Ожидается `[debug-F1] native Mooch dual-laser raw button fired target=(...)`. F1 подаёт тот же exact raw edge в shadow `Fly_Active::Update`, но временно ставит origin XGamePad в центр Мухи. После прохода возвращаются камера, включая Fly request/apply window `+0x91C..+0x9B7`, HUD/ownership и сеть не меняются; не должно быть рывка P1-камеры. При несовпадении профиля логируется direct visual fallback. Боевой live-result всё ещё **not-tested**. |
-| Лазер и поворот Мухи | Local owner Мухи резко поворачивает её и нажимает штатную атаку, пока receiver остаётся за обычным P1 или в Q. | Owner: `[fly-laser] queued ... post_tick_fly_seq=N`; receiver применяет packet только после transform `N`, затем пишет **полный** `fly_rotation` без подмены одного компонента `camera_yaw` и запускает native `Fly_Active::Update` с лучом из центра Мухи. Режим, камера и HUD receiver не выбираются; direct pulse остаётся fallback. Визуальный/боевой live-result ещё **not-tested**. |
+| Лазер и поворот Мухи | Local owner Мухи резко поворачивает её и нажимает штатную атаку, пока receiver остаётся за обычным P1 или в Q. | Owner: `[fly-laser] queued ... post_tick_fly_seq=N`; owner публикует transform `N` сразу после native Fly tick. Receiver ждёт epoch `N`, пишет **полный** `fly_rotation` без splice `camera_yaw`, затем `EntityView` очищает retail cache-valid byte `entity+0x7E`: следующий native reader пересчитывает cached matrix `+0x88` из root rotation `+0xC8` и position `+0xE8`. Режим, камера и HUD receiver не выбираются; direct pulse остаётся fallback. Визуальный/боевой live-result ещё **not-tested**. |
 | P2/P3 scanner / HUD | Дать оружие со сканированием remote P2 (или существующему P3), затем проверить P1. | Открытая проблема. Экспериментальный P2/P3 scanner guard удалён: он не исправил общий зелёный HUD. Не считать scanner синхронизированным или изолированным, пока не найден и не проверен настоящий presentation route. |
 | Смерть Мухи | Убить/respawn Mooch, пока peer подключён. | Owner публикует `local Fly_Deactivated ... zero-owner exit`; peer получает `remote ownership 1 -> 0`. Если receiver локально пытается войти в `Fly_Deactivated`, пока peer ещё присылает живую Муху, ожидается `[fly-lifecycle ... suppressed receiver Fly_Deactivated ...]`; после zero-owner packet этот guard больше не действует и stock respawn разрешён. Это пока **not-tested** вживую. |
-| ABR/RDV | Войти в ABR через F6 при P2, затем подвигаться/повернуть машину. | Нет `[p2-recovery]` и нет обычной P2 camera/weapon/root-transform коррекции в ABR. Реальный vehicle turn остаётся отдельным **not-tested** маршрутом. |
+| ABR/RDV | Войти в ABR через F6 при P2, затем подвигаться/повернуть машину. | Нет обычной P2 camera/weapon/root-transform коррекции в ABR. Реальный vehicle turn остаётся отдельным **not-tested** маршрутом. |
 | F2/F3/F4 | На sandbox-level нажать кнопки у подходящих trigger. | Только соответствующие `[debug-F2]`, `[debug-F3]`, `[debug-F4]`; F3 не должен придумывать event code, F4 работает лишь для verified ComputerBox. |
 | Реальная активация trigger | Игроком или Мухой реально активировать объект/кнопку, в том числе в одиночной игре. | Сразу после native dispatcher ожидается `[trigger-activation] source=game|fly-local|fly-shadow ... family=... subtype=... definition=... pos=(...)`. Это факт вызова retail event, а не угадывание назначения; `result` — возврат dispatcher. |
 | Дверь/панель через карту | На двух процессах с одной свежей DLL игроком или Мухой активировать уже наблюдённую зелёную/зелёно-красную дверь. | Source: один или несколько `[world-object] queued seq=... route=1|2` в порядке native chain. Peer: те же `peer received`, затем `native route result route=...` и `applied`; дверь действительно меняет состояние. Это уже **observed live** для проверенной двери. `direct forwarder skipped noncanonical` не маскировать — приложить строку. `0x41080010` сам по себе не «open door». |
@@ -732,13 +734,13 @@ truth, и она отличается от всего, что было видн�
 
 На кадре hand-off `Q`/`T` P2 по-прежнему пропускается, чтобы EXE успел сменить
 active entity. После подтверждённого remote ownership receiver не запускает обычный
-remote controller tick Мухи и не передаёт ей камеру/HUD. После stock idle tick он
-применяет полученный transform, а отдельный reliable laser event может запустить
-короткий shadow `Fly_Active::Update` с private XGamePad и exact raw-button edge;
-state-machine guard не даёт этому проходу сменить реальный режим. Локальный owner
-публикует полный transform после native Fly tick; raw laser edge помечает именно
+remote controller tick Мухи и не передаёт ей камеру/HUD. Локальный owner публикует
+полный transform сразу после native Fly tick; raw laser edge помечает первый
 следующий post-tick `fly_transform_sequence`, поэтому receiver ждёт этот epoch до
-shadow pass. Так remote Mooch остаётся presentation-only как controller, но её
+shadow pass. Receiver пишет root transform через `EntityView`, который после
+`+0xC8/+0xE8` очищает cache-valid byte `+0x7E`. Поэтому retail при следующем
+render/attachment/aim read пересчитывает cached matrix `+0x88`, а не использует
+старое направление. Так remote Mooch остаётся presentation-only как controller, но её
 laser item/world route получает native возможность обработать выстрел. Receiver
 копирует полный native `fly_rotation` без splice одного компонента из
 `camera_yaw`: это были разные representation и такая splice давала кривой pose/
@@ -758,6 +760,5 @@ camera `handler+0x91C..+0x9B7`; без него камера P1 дёргаетс
   оси приходят неизменными, прежний целевой yaw сохраняется.
 - `0x48AE10` / `0x4008000A` из `0x5B92A0` уже разобран до `0x1000000D` через
   `0x489FD0` и стандартный `0x488CE0` press-edge. Это не даёт имени физической
-  клавиши. При расхождении P2 `>=3 м` один native logical edge ставится без
-  fake key; проверить нужно `[p2-ledge-detach] queued`, затем `served` и выход
-  P2 с уступа в двух процессах.
+  клавиши и больше не используется DLL как автоматический Ledge escape: сначала
+  нужен проверенный post-physics seam.
