@@ -9,7 +9,6 @@
 #include "gforce_constants.h"
 #include "player2.h"
 #include "retail/retail_views.h"
-#include "window_hook.h"
 #include "world_sync.h"
 
 namespace coop
@@ -26,7 +25,7 @@ namespace coop
 			DebugKnownInteractive,
 			DebugPlayer2Spawn,
 			DebugAbr,
-			DebugPauseBypass,
+			DebugUnusedF7,
 			DebugInteractiveCatalog,
 			DebugKeyCount = static_cast<int>(kDebugActionCount)
 		};
@@ -171,8 +170,6 @@ namespace coop
 			Player2Module::Instance().EnsureLocalPlayer2ForDebug();
 		if (ConsumePressed(VK_F6, m_key_was_down[DebugAbr]))
 			Player2Module::Instance().EnableLocalAbrForDebug();
-		if (ConsumePressed(VK_F7, m_key_was_down[DebugPauseBypass]))
-			WindowHook::Instance().EnableDebugPauseBypass();
 		if (ConsumePressed(VK_F9, m_key_was_down[DebugInteractiveCatalog]))
 			WorldSync::Instance().DebugLogInteractiveCandidates();
 	}

@@ -54,12 +54,11 @@ F2 не нужен: принудительный спавн скроет неи�
   wave-in и wave-out API, которые импортирует Steam `steamclient.dll`.
 - `coop.ini` — устройство P2 и смещение спавна.
 - `[window]` в `coop.ini` — экспериментальное перетягиваемое D3D9-окно 1280x720 для
-  будущих тестов host/client. Focus/minimize pause постоянно обходится независимо от
-  `coop.ini`: DLL сохраняет известный EXE-флаг активности после
-  `WM_ACTIVATE`/`WM_KILLFOCUS` и перед D3D9 `Present`; `GetForegroundWindow` и
-  `IsIconic` остаются дополнительным узким перехватом. Неактивное окно должно
-  продолжать симуляцию и рендер, но его клавиатурный ввод не подменяется.
-  Оконный режим отключается `experimental_windowed=0`.
+  тестов host/client; `experimental_windowed=0` оставляет stock fullscreen.
+  Focus/minimise pause bypass отключён: прежние hooks `GetForegroundWindow`,
+  `IsIconic`, WndProc и guessed frame-active flag не сняли pause и могли мешать
+  корректному выходу из fullscreen. До подтверждённого simulation seam окно
+  использует stock focus/minimise поведение.
 - `GForceCoop.sln` — Visual Studio solution для ручной разработки: `coop_dll`,
   `winmm_proxy`, только целевая платформа Win32. `proxy_smoke` в текущем
   исходном дереве и solution отсутствует; упоминания о нём относятся к старому
@@ -155,10 +154,9 @@ pool. IDA подтверждает cleanup для `0..5`, но два retail sel
 
 ## P2: ledge/fall и outer DeathMode recovery — on-foot only, not live-tested
 
-Проблема не лечится поддельным нажатием Shift/Space и не лечится отключением
-физики. Retail `XGPigLedgeMode` сначала делает собственный contact query и
-выбирает native state; отключить его означало бы потерять нормальные прыжки,
-падение и collision.
+Проблема не лечится телепортом, `state->Idle`, outer `Default` или отключением
+физики. Retail `XGPigLedgeMode` сам владеет contact query и native state;
+вмешательство в них ломает нормальные прыжки, падение и collision.
 
 До замены remote snapshot сетевой вход отбрасывает `NaN`/`Inf` в P1/Fly
 transform, analog axes, aim ray и valid camera yaw: предыдущий конечный snapshot
@@ -168,16 +166,33 @@ transform, analog axes, aim ray и valid camera yaw: предыдущий кон
 проверки.
 
 Обычный remote P2 получает плавную transform-коррекцию после своего native
-controller tick. Проверка vtable показала, что прежний «scheduler» `0x0043C9E0`
-на самом деле является методом `XTrigger_OB_Conveyor`, а не глобальным
-post-physics проходом. Его hook, distance-snap и автоматический Ledge edge из
-DLL удалены: они не должны выполняться в произвольном обновлении конвейера.
+controller tick. Старый hook `0x0043C9E0` удалён: это метод
+`XTrigger_OB_Conveyor`, а не глобальный post-physics scheduler.
 
-Маршрут `0x4008000A → 0x1000000D` к `Ledge → Inactive` статически подтверждён,
-но это только маршрут настоящего native press-edge, а не имя Shift/Space и не
-разрешение подделывать нажатие по расстоянию. Поэтому P2 ledge/fall остаётся
-открытой задачей: физика и нормальные ledge state остаются включёнными, ABR/RDV
-не смешивается с on-foot P2, а настоящий seam после физики ещё нужно найти.
+Новая узкая защита наблюдает успешный native `StateMachine_SelectState` и
+классифицирует вложенную машину по её полному набору зарегистрированных vtable,
+а не по повторно используемому numeric mode ID: отдельные метки `ledge` и `climb`
+не смешиваются. Так она видит Ledge Strafe/Short и Climb Drop с пустым `Update`,
+которые старый observer пропускал. После проверки `state + 4 == P2` метка хранится
+до native перехода той же машины в `Inactive`; сам `Inactive` по-прежнему не
+создаёт захват. Но это теперь только
+диагностика: зависшая привязка способна остановить сами Ledge/Climb updates, и
+не должна запрещать восстановление. Если P2 и peer находятся в `Default`,
+Mooch/ABR не активны, дистанция между finite P2 и peer target больше 0.2 м
+непрерывно 250 ms, а настоящий edge ещё не пришёл, штатный P2 tick получает
+логический pressed-edge
+`0x1000000D` по существующему маршруту
+`0x4008000A → 0x1000000D → 0x488CE0`. Это не физический Shift/Space, не вызов
+Ledge/Climb-машины и не пакет. После native tick edge сразу очищается. Защёлки
+нет: пока расхождение больше 0.2 м, после каждого нового окна 250 ms отправляется
+следующий штатный edge. Физика, normal attachment states и обычная
+transform-коррекция остаются включёнными.
+
+Это **not-tested** в игре. Нужны `[p2-attachment-release] queued ...` и
+`result consumed=1`; P2 должен штатно отцепиться. Пока он остаётся дальше 0.2 м,
+повторный импульс через 250 ms ожидаем. `[p2-attachment-observer]
+family=ledge|climb attachment=1 ...` различает семейства, но больше не является
+условием recovery.
 
 Отдельно существует outer `XGPigDeathMode`: это не Ledge substate. Раньше P2 в
 нём целиком пропускал native update, чтобы не запускать локальный checkpoint
@@ -198,11 +213,10 @@ respawn, но из-за этого мог навсегда остаться в h
 2. Пользователь запускает игру и проходит вступительную катсцену.
 3. Пользователь нажимает `F5` один раз.
 4. Проверяются: P2 стоит на полу, камера остаётся за P1, управление P2 работает.
-5. Переключить фокус на второе окно или свернуть первое: оба процесса не должны
-   замереть, терять simulation tick или переставать рисовать.
+5. Переключить фокус на второе окно или свернуть первое: сейчас сохраняется stock
+   pause behavior. Не считать это ошибкой until a real simulation seam is recovered.
 6. Анализируется только хвост `E:\G-Force\g_force\re_cache\runtime\gforce_coop.log`: при загрузке ожидается
-   `[window] co-op focus-pause hook installed ...`. F7 для включения больше не нужен:
-   он только повторно проверяет и печатает состояние уже постоянного bypass.
+   `[window] D3D hook installed ... focus/minimise bypass disabled`.
 
 ### Критичные проверки двух процессов
 
@@ -212,7 +226,7 @@ respawn, но из-за этого мог навсегда остаться в h
 
 | Проверка | Действие | Подтверждение в логах / игре |
 | --- | --- | --- |
-| P2 ledge/fall | Увести удалённого P2 на уступ или в падение и довести рассинхрон до ~3 м. | Открытая задача: нет auto-snap, synthetic press или отключения physics. `[net-input-reject]` означает, что плохой snapshot сохранён не был. Для исправления нужен отдельный проверенный post-physics/ledge seam. |
+| P2 Ledge/Climb | Дать P1 зацепиться за стол/уступ, дождаться, что P2 держит старую привязку, и увести P1 более чем на 0.2 м минимум на 0.25 s. | Ожидаются `[p2-attachment-release] queued ...` и `result consumed=1`; пока P2 остаётся далеко, пара может повторяться раз в 0.25 s. P2 должен выйти через stock input, после чего плавно догоняет P1. Если `consumed=0`, сохранить лог. В ABR/Mooch/cutscene/death строк быть не должно. |
 | P2 пропал / DeathMode | Дать удалённому P2 попасть в outer DeathMode, пока peer P1 уже снова в `Default`. | После одного более нового packet: `[p2-death-recovery] ... seq=N entry_seq=M`; P2 выходит из hide/death pose. Пока peer не в `Default`, `[p2-death-guard]` ожидаем и не означает crash. |
 | Main-menu Connect by IP | В exact retail EXE открыть главное меню и нажать строку сразу после `Credits`. | Пока **not-tested**: сначала ожидаются `[menu-init] ... installed`, затем по одному `[menu] BuildMainMenu observed`, `Credits AddChild seam observed`, `native Connect by IP row added` и `Connect by IP label resolved`. Клик должен дать тот же IP-диалог, что `F8`, и `F8 request queued`. Если ABI не совпал, лог называет конкретный адрес, строки не будет, но `F8` должен остаться. |
 | F1 local Mooch laser | В одном foreground-процессе, без клиента и без входа в Q, поставить Муху в кадр и один раз нажать F1. | Ожидается `[debug-F1] native Mooch dual-laser raw button fired target=(...)`. F1 подаёт тот же exact raw edge в shadow `Fly_Active::Update`, но временно ставит origin XGamePad в центр Мухи. После прохода возвращаются камера, включая Fly request/apply window `+0x91C..+0x9B7`, HUD/ownership и сеть не меняются; не должно быть рывка P1-камеры. При несовпадении профиля логируется direct visual fallback. Боевой live-result всё ещё **not-tested**. |
@@ -357,7 +371,6 @@ peer DLL mismatch`, а не тихо создаст неполную репли�
 | `F4` | Посылает `ComputerBox` event `0x41080022` только ближайшему template с subtype `0x1F000095`, definition `43`. | Другие статически найденные `0x41xxxxxx` коды не являются подтверждёнными кнопками и намеренно не вызываются. |
 | `F5` | Создаёт local P2 в этом процессе из сохранённого native P1 spawn context. | Не нужен второй процесс; допустимы только P1 Default/ABR. |
 | `F6` | Сначала гарантирует `F5`, затем запрашивает native ABR для P1. | Локальная P2 ABR task всё ещё network-only experiment. |
-| `F7` | Повторно проверяет и логирует уже постоянный co-op bypass focus/minimize pause. | При запуске hooks ставятся и в fullscreen, и в test-windowed; `Present` также принудительно пишет active state. `test_windowed` теперь меняет только presentation/style. Результат в фоне всё ещё **не проверен вживую**. См. `re_cache/RE_CATALOG.md`. |
 | `F9` | Печатает read-only каталог всех ещё живых зарегистрированных trigger-точек. | Не вызывает trigger и не создаёт entity. `approved` — только exact ComputerBox; `observed` — уже виденный native event; `guess` — spawn-template; `unknown` — остальное. Координаты и identity наблюдены, но имя/назначение не угадываются. |
 
 `Fly_Deactivated` (`0x61000075`) — локальный native-переход в `Fly_Respawn`, а не
@@ -422,8 +435,8 @@ not revive a route, packet layout or address merely because it appears below.
   порт можно не писать — тогда используется `44139`. `Enter` подключает, `Esc`
   отменяет. Последний успешно начатый адрес остаётся значением по умолчанию до
   закрытия игры.
-- Focus/minimize pause постоянно отключена для co-op процесса; F7 только выводит
-  diagnostic повторной проверки. Полученный Steam rich-presence Join по-прежнему
+- Focus/minimise pause bypass удалён до нахождения реального simulation seam; F7
+  не имеет co-op действия. Полученный Steam rich-presence Join по-прежнему
   закрывает local listener-ы и фиксирует процесс в
   client-режиме, поэтому joiner не становится временным host при загрузке полученного
   `DATA4`.

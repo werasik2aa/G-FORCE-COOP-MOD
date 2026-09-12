@@ -21,9 +21,10 @@ namespace coop
 		void OnHostLoadGame(std::uint32_t slot);
 		void SendHostJoinSave(CSteamOfflineSocketServer* server, std::int32_t connection);
 		bool OnRemotePacket(const void* data, std::uint32_t size);
-		// Runs from the P1 game-thread tick after the network worker has written the
-		// selected DATA<n>. Entering the stock loader here keeps all level-state
-		// work out of the socket thread and does not depend on D3D Present.
+		// Runs after the network worker has written selected DATA<n>: from P1's
+		// game-thread tick in a loaded world, or from the post-Present front-end
+		// bootstrap before that controller exists. It never runs on the socket
+		// worker; the post-Present path has no active D3D call or WorldSync work.
 		bool OnMainFrame();
 
 	private:

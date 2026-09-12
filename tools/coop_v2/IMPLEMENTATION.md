@@ -128,20 +128,34 @@ evidence; the queued receiver request and real death/re-entry flow remain
 
 ## P2 ledge/fall and outer DeathMode rule
 
-The normal P2 path retains stock collision, ledge attachment and fall physics.
-It does not synthesize Shift/Space and does not disable physics. The previous
-post-scheduler reconciler was removed after vtable inspection proved that its
-target `0x0043C9E0` is an `XTrigger_OB_Conveyor` virtual method, not a global
-post-physics scheduler. Attaching P2 recovery to it was invalid.
+The normal P2 path retains stock collision, Ledge attachment and fall physics.
+It does not disable physics, write an inner state, select outer `Default`, snap
+the root, or fabricate a physical key. The former post-scheduler reconciler
+remains removed: `0x0043C9E0` is an `XTrigger_OB_Conveyor` virtual method, not a
+global post-physics scheduler.
 
-Further static RE still confirms that `0x0048AE10` maps second-namespace action
-`0x4008000A` to ordinary press-edge `0x1000000D`, and that a native Default-mode
-task can eventually lead Ledge to `Inactive`. This establishes input/state
-plumbing only. It does not identify Shift, Space, melee, or any physical key,
-and it does not authorise a distance-triggered synthetic press. Co-op does not
-call the inner Ledge state machine directly. A real post-physics/ledge seam is
-required before another recovery implementation is added; ABR/RDV remains outside
-that future on-foot route.
+After the stock generic `StateMachine_SelectState` call succeeds, the recovery
+observer classifies a nested machine from its registered state-vtable set, not
+from a reused numeric ID. A machine containing the exact Ledge
+Idle/Into/StrafeEnd/Jump vtables is logged as `ledge`; a separate machine with
+the exact Climb Drop/Jump child vtables is logged as `climb`. Both use the
+observed owner `GPig` reference at `state + 4`. This covers Ledge Strafe/Short
+and Climb Drop branches whose own `Update` is a nullsub and which an update-only
+observer can miss. A family label is cleared when that same machine selects
+`Inactive`; it is diagnostic evidence, not permission to write inner state.
+
+`0x0048AE10` maps second-namespace action `0x4008000A` to ordinary press-edge
+`0x1000000D`. During the normal remote-P2 controller tick, co-op offers that
+logical edge to the existing `0x00488CE0` input query only if P2 and the peer
+snapshot are both in outer `Default`, no local/remote Mooch or ABR path is active,
+a finite P2/peer transform divergence stays above 0.2 m for at least 250 ms, and no
+real peer edge exists for the same action. The Ledge/Climb observer is diagnostic
+only: a stale attachment can itself stop native updates, so it must not veto the
+only stock release action known to repair it. The scoped edge is cleared after its
+stock tick. There is deliberately no one-shot latch: if P2 remains farther than
+0.2 m, a fresh persistence window can offer another release edge every 250 ms.
+Stock input decides whether a current state consumes each release; normal transform
+smoothing follows as before. The physical binding remains intentionally unknown.
 
 Before an incoming snapshot replaces remote state, the network ingress rejects
 `NaN`/`Inf` in P1/Fly transforms, analog axes, aim ray and a valid camera yaw.
@@ -151,9 +165,12 @@ checks again before its root write. This is containment, not a physics switch.
 The same finite-only boundary covers `WorldSpawn`/`WorldSnapshot`: host reads and
 client ingress reject bad entity transforms before a native root write.
 
-P2 ledge/fall recovery is currently **not implemented**. A future live test must
-first establish the correct post-physics/ledge boundary, then verify that a
-remote P2 exits a bad attachment without breaking normal movement.
+This recovery is build-verified but **not live-tested**. Runtime proof requires
+`[p2-attachment-release] queued ...` and `result consumed=1`, followed by a
+normal stock exit from the attachment. While the gap persists, another pair after
+250 ms is expected rather than suppressed. An optional
+`[p2-attachment-observer] family=ledge|climb attachment=1 ...` records the
+classified native family; its absence does not suppress recovery.
 
 An outer native `XGPigDeathMode` is separate from that Ledge state machine.
 The old P2 guard skipped its stock checkpoint respawn, but could also leave the
@@ -185,7 +202,7 @@ Current unverified routes include remote P2 ledge/fall and outer DeathMode
 visibility recovery, standalone F1 dual-laser visual result and live
 two-process result of the now-isolated Mooch dual-laser route, Mooch
 magnetic-carry route,
-permanent focus/minimize pause bypass, Fly turning/presentation,
+retail focus/minimize pause seam, Fly turning/presentation,
 peer ABR turning, and P2/P3 scanner/HUD presentation. Do not report any of them
 as fixed without a live test.
 
@@ -197,13 +214,12 @@ network P2 factory and lifecycle stay in `player2.cpp`. Its tick is outside
 `CoopNetGame::GameTick`'s `HasRemotePeer()` early return, so F1 is polled in a
 single foreground game even with no client, server, or socket.
 
-Focus/minimise pause is now a permanent co-op policy, not an F7 gate. `WindowHook`
-installs its D3D and foreground hooks in both fullscreen and test-windowed modes,
-captures the game HWND independently of the optional presentation rewrite, and
-writes the retail active-frame byte before every `Present`. `test_windowed` changes
-only D3D presentation/window style. F7 merely rechecks and logs the already active
-policy. This is compiled but remains **not live-tested** with two separately focused
-or minimised windows.
+The former focus/minimise pause bypass is disabled. Its `FramePauseState` write and
+`GetForegroundWindow`/`IsIconic` hooks did not remove retail pause in live use and
+could interfere with fullscreen shutdown. `WindowHook` now owns only the opt-in D3D
+windowed-presentation path; it never subclasses the game window or alters focus,
+minimise or frame-active state. F7 has no co-op action. A real simulation seam
+remains an open RE task.
 
 F1 is a local, one-frame dual-laser test rather than the discarded scanner
 probe. It reads the current Mooch transform and the foreground P1 XGamePad

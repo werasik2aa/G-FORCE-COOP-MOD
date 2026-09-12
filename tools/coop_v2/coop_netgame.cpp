@@ -707,6 +707,8 @@ namespace coop
 		m_local_fly_ability_sequence(0),
 		m_last_remote_fly_ability_sequence(0),
 		m_remote_fly_laser_pulse_active(false),
+		m_remote_ledge_release_edge_armed(false),
+		m_remote_ledge_release_edge_consumed(false),
 		m_fly_native_pass_active(0),
 		m_fly_native_synthetic_press_mask(0),
 		m_fly_native_pass_thread_id(0),
@@ -1370,8 +1372,16 @@ namespace coop
 			return true;
 		}
 
-		return m_original_state_machine_select_state(controller, mode_id,
-			force_reselect);
+		const bool selected = m_original_state_machine_select_state(controller,
+			mode_id, force_reselect);
+		if (selected)
+		{
+			// The dispatcher also owns nested motors. Player2Module identifies the
+			// machine from its registry before observing it, so this cannot turn a
+			// reused numeric mode ID from another class into a Ledge transition.
+			Player2Module::Instance().ObserveInnerStateSelection(controller, mode_id);
+		}
+		return selected;
 	}
 
 	void __fastcall CoopNetGame::HookFireHandler(void* mode, void*,
@@ -1642,6 +1652,64 @@ namespace coop
 		const uint32_t action_index = action - kFirstKeyboardActionId;
 		return (m_active_remote_input.action_down[action_index / 32] &
 			(1u << (action_index % 32))) != 0;
+	}
+
+	bool CoopNetGame::GetActiveRemotePlayerTransform(
+		retail::Transform& transform, std::uint32_t& transform_sequence,
+		std::uint32_t& player_mode) const
+	{
+		transform = {};
+		transform_sequence = 0;
+		player_mode = 0;
+		if (!IsRemoteInputActiveOnThisThread() ||
+			m_active_remote_input.transform_sequence == 0 ||
+			!IsFiniteWireTransform(m_active_remote_input.position,
+				m_active_remote_input.rotation))
+		{
+			return false;
+		}
+
+		memcpy(&transform.position, m_active_remote_input.position,
+			sizeof(transform.position));
+		memcpy(&transform.rotation, m_active_remote_input.rotation,
+			sizeof(transform.rotation));
+		transform_sequence = m_active_remote_input.transform_sequence;
+		player_mode = m_active_remote_input.player_mode;
+		return true;
+	}
+
+	bool CoopNetGame::HasActiveRemotePressedEdge(std::uint32_t action) const
+	{
+		if (!IsRemoteInputActiveOnThisThread() ||
+			action < kFirstKeyboardActionId ||
+			action >= kFirstKeyboardActionId + kKeyboardActionCount)
+		{
+			return false;
+		}
+		const std::uint32_t action_index = action - kFirstKeyboardActionId;
+		return m_remote_press_edge[action_index];
+	}
+
+	bool CoopNetGame::ArmRemoteLedgeReleaseEdge()
+	{
+		if (!IsRemoteInputActiveOnThisThread() ||
+			m_active_remote_input.transform_sequence == 0 ||
+			m_remote_ledge_release_edge_armed)
+		{
+			return false;
+		}
+		m_remote_ledge_release_edge_armed = true;
+		m_remote_ledge_release_edge_consumed = false;
+		return true;
+	}
+
+	bool CoopNetGame::FinishRemoteLedgeReleaseEdge(bool& consumed)
+	{
+		consumed = m_remote_ledge_release_edge_consumed;
+		const bool was_armed = m_remote_ledge_release_edge_armed;
+		m_remote_ledge_release_edge_armed = false;
+		m_remote_ledge_release_edge_consumed = false;
+		return was_armed;
 	}
 
 	bool CoopNetGame::IsMoochAction(std::uint32_t action) const
@@ -4036,6 +4104,11 @@ namespace coop
 
 	void CoopNetGame::EndRemoteInput()
 	{
+		// This edge is meaningful only while the stock P2 controller is consuming
+		// its one coherent remote snapshot. Never let an unconsumed recovery leak
+		// into a later local, Fly, menu or load input query.
+		m_remote_ledge_release_edge_armed = false;
+		m_remote_ledge_release_edge_consumed = false;
 		InterlockedExchange(&m_remote_input_active, 0);
 		m_remote_input_thread_id = 0;
 		RestoreKeyboardState();
@@ -4069,6 +4142,8 @@ namespace coop
 		ZeroMemory(m_remote_fly_laser_item_ids,
 			sizeof(m_remote_fly_laser_item_ids));
 		m_remote_fly_laser_pulse_active = false;
+		m_remote_ledge_release_edge_armed = false;
+		m_remote_ledge_release_edge_consumed = false;
 		ZeroMemory(m_debug_fly_laser_route_items,
 			sizeof(m_debug_fly_laser_route_items));
 		ZeroMemory(m_debug_fly_laser_item_ids,
@@ -4309,6 +4384,15 @@ namespace coop
 		{
 			if (action == kFireActionId && IsRemoteFlyControlledForInputQuery())
 				return false;
+			if (action == kLedgeReleaseActionId &&
+				m_remote_ledge_release_edge_armed)
+			{
+				// Do not fabricate a scan code or call a Ledge state directly.
+				// This merely makes the checked logical press-edge visible during
+				// the one stock P2 controller tick that armed it.
+				m_remote_ledge_release_edge_consumed = true;
+				return true;
+			}
 			if (IsMirrorSuppressedAction(action))
 				return false;
 			const uint32_t action_index = action - kFirstKeyboardActionId;

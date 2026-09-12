@@ -32,6 +32,33 @@ namespace coop
 		// edge and final controller transform can be observed.
 		constexpr uintptr_t kFlyUpdateVtableSlot = 0x007180F4u;
 		constexpr uintptr_t kOriginalControllerUpdate = 0x005BFBE0u;
+		// Exact inner GPig attachment-machine vtable bases. The generic native state
+		// dispatcher identifies each family by registered state classes, including
+		// branches whose Update is a nullsub. These are class identifiers only; the
+		// mod never writes them or selects an inner state directly.
+		constexpr uintptr_t kGPigLedgeIdleVtable = 0x0070351Cu;
+		constexpr uintptr_t kGPigLedgeIntoVtable = 0x00703574u;
+		constexpr uintptr_t kGPigLedgeStrafeEndVtable = 0x007036D4u;
+		constexpr uintptr_t kGPigLedgeJumpVtable = 0x007038E4u;
+		// XGPigClimbMode is separate from XGPigLedgeMode. Every stock Climb
+		// registry contains these two exact child classes, so they are sufficient
+		// to classify the whole nested machine without guessing the other children.
+		constexpr uintptr_t kGPigClimbDropVtable = 0x006FFCBCu;
+		constexpr uintptr_t kGPigClimbJumpVtable = 0x006FFD14u;
+		// Supplemental active inner Ledge updates.  The generic observer above is
+		// the authoritative attachment lifetime signal; these hooks remain a
+		// byte-checked secondary observation for the known concrete update paths.
+		constexpr uintptr_t kGPigLedgeIdleUpdateVtableSlot = 0x00703528u;
+		constexpr uintptr_t kGPigLedgeIntoUpdateVtableSlot = 0x00703580u;
+		constexpr uintptr_t kGPigLedgeStrafeEndUpdateVtableSlot = 0x007036E0u;
+		constexpr uintptr_t kGPigLedgeJumpUpdateVtableSlot = 0x007038F0u;
+		constexpr uintptr_t kGPigLedgeIdleUpdate = 0x004F09E0u;
+		constexpr uintptr_t kGPigLedgeStrafeEndUpdate = 0x004F0BC0u;
+		constexpr uintptr_t kGPigLedgeJumpUpdate = 0x004F0CA0u;
+		// Every observed concrete Ledge/Climb state passes its owning GPig at this
+		// exact field to native code. This is a narrow observer boundary, not a
+		// complete Ledge or Climb class layout.
+		constexpr size_t kGPigAttachmentStateOwnerEntityOffset = 0x04u;
 
 		constexpr uintptr_t kInputActionQuery = 0x00488A70u;      // is-down (level)
 		constexpr uintptr_t kInputActionUpQuery = 0x00488B70u;    // is-up (inverse level)
@@ -435,6 +462,14 @@ namespace coop
 		constexpr size_t kControllerModeCountOffset = 0x10u;
 		constexpr size_t kControllerModeTableOffset = 0x14u;
 		constexpr uint32_t kControllerModeSafetyLimit = 64u;
+		// Generic StateMachine_SelectState uses the same compact registry layout as
+		// a controller, but it is also used by nested motors such as GPig Ledge.
+		// Keep separate names so feature code cannot mistake a nested machine for a
+		// top-level player controller.
+		constexpr size_t kStateMachineModeCountOffset = 0x10u;
+		constexpr size_t kStateMachineModeTableOffset = 0x14u;
+		constexpr size_t kStateMachineCurrentModeOffset = 0x1Cu;
+		constexpr uint32_t kStateMachineModeSafetyLimit = 64u;
 // Every registered controller mode stores its owning controller at +0x04.
 constexpr size_t kModeControllerOffset = 0x04u;
 constexpr size_t kModeIdOffset = 0x08u;
@@ -550,12 +585,9 @@ constexpr size_t kModeIdOffset = 0x08u;
 		constexpr uint32_t kFirstKeyboardActionId = 0x10000000u;
 		constexpr uint32_t kKeyboardActionCount = 0x43u;
 		constexpr uint32_t kFireActionId = 0x10000007u;
-
-		// FrameLoop::UpdateForegroundPauseState at 0x005F4850 compares the result of
-		// GetForegroundWindow against [0x0091AAC8], stores that equality here, then
-		// clears it when IsIconic(expected_window) is true. F7's IAT hooks make both
-		// predicates report active for this process, while Present keeps this byte set.
-		constexpr uintptr_t kFramePauseState = 0x0091AACCu;
+		// The Default-mode second-action query 0x4008000A maps to this ordinary
+		// pressed edge.  Its physical bind is intentionally not named here.
+		constexpr uint32_t kLedgeReleaseActionId = 0x1000000Du;
 
 		// Actions that must never be driven by the remote snapshot, pinned by INDEX so a
 		// rebind cannot reopen them.  The live table dumped from the shipped build

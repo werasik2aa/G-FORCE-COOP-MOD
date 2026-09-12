@@ -119,6 +119,17 @@ namespace coop
 		// Darwin's normal on-foot controller owns this correction. Vehicle/RDV uses
 		// a separate native motor path and must never be fed through this helper.
 		bool ApplyRemotePlayerTransform(void* player2);
+		// Valid only during a scoped remote P2 controller tick. This exposes the
+		// finite peer target to the Ledge recovery gate without copying its private
+		// input packet into Player2Module.
+		bool GetActiveRemotePlayerTransform(retail::Transform& transform,
+			std::uint32_t& transform_sequence, std::uint32_t& player_mode) const;
+		bool HasActiveRemotePressedEdge(std::uint32_t action) const;
+		// Supplies one synthetic instance of the existing logical Ledge-release
+		// edge to the stock P2 update. It is scoped to one P2 tick and never sends
+		// a fake physical key or invokes the Ledge machine directly.
+		bool ArmRemoteLedgeReleaseEdge();
+		bool FinishRemoteLedgeReleaseEdge(bool& consumed);
 
 		// The shared Mooch is an entity, not a noclip camera. Apply its complete
 		// networked transform after the native fly controller tick.
@@ -452,6 +463,8 @@ namespace coop
 		retail::FlyDualLaserRouteItemRef m_remote_fly_laser_route_items[2];
 		std::uint32_t m_remote_fly_laser_item_ids[2];
 		bool m_remote_fly_laser_pulse_active;
+		bool m_remote_ledge_release_edge_armed;
+		bool m_remote_ledge_release_edge_consumed;
 		volatile LONG m_fly_native_pass_active;
 		volatile LONG m_fly_native_synthetic_press_mask;
 		DWORD m_fly_native_pass_thread_id;

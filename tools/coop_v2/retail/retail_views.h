@@ -815,6 +815,78 @@ namespace retail
         ModeRef mode_;
     };
 
+    class GPigAttachmentStateView final
+    {
+    public:
+        explicit GPigAttachmentStateView(GPigAttachmentStateRef state) : state_(state) {}
+
+        bool OwnerEntity(EntityRef& out) const
+        {
+            out = {};
+            return state_ && TryReadPointer(AddOffset(state_.value,
+                gforce::kGPigAttachmentStateOwnerEntityOffset), out);
+        }
+
+    private:
+        GPigAttachmentStateRef state_;
+    };
+
+    // Compact registry exposed by the common native StateMachine_SelectState
+    // dispatcher.  It is deliberately distinct from ControllerView: nested
+    // motors share this registry shape but are not player controllers.
+    class StateMachineView final
+    {
+    public:
+        explicit StateMachineView(StateMachineRef state_machine) :
+            state_machine_(state_machine) {}
+
+        bool CurrentState(ModeRef& out) const
+        {
+            out = {};
+            return state_machine_ && TryReadPointer(AddOffset(state_machine_.value,
+                gforce::kStateMachineCurrentModeOffset), out);
+        }
+
+        // Classifies a nested machine by its complete registered-state set,
+        // rather than treating a reused numeric mode ID as a class identity.
+        bool ContainsRegisteredVTable(Address expected_vtable) const
+        {
+            if (!state_machine_ || expected_vtable == 0)
+                return false;
+
+            std::uint32_t count = 0;
+            Address table = 0;
+            if (!TryRead(AddOffset(state_machine_.value,
+                gforce::kStateMachineModeCountOffset), count) ||
+                count == 0 || count > gforce::kStateMachineModeSafetyLimit ||
+                !TryReadAddress(AddOffset(state_machine_.value,
+                    gforce::kStateMachineModeTableOffset), table) ||
+                table == 0)
+            {
+                return false;
+            }
+
+            for (std::uint32_t index = 0; index < count; ++index)
+            {
+                ModeRef candidate = {};
+                Address candidate_vtable = 0;
+                if (TryReadPointer(AddOffset(table,
+                    index * sizeof(Address)), candidate) &&
+                    ModeView(candidate).VTable(candidate_vtable) &&
+                    candidate_vtable == expected_vtable)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        StateMachineRef ref() const { return state_machine_; }
+
+    private:
+        StateMachineRef state_machine_;
+    };
+
     class ControllerView final
     {
     public:

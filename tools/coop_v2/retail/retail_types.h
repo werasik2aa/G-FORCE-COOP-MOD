@@ -142,6 +142,19 @@ namespace retail
         bool operator!=(const ControllerRef& other) const { return !(*this == other); }
     };
 
+    // Opaque compact state-machine object passed to the common native
+    // StateMachine_SelectState dispatcher.  It may be an outer controller or
+    // a nested motor machine; callers must classify its registered states
+    // before assigning it gameplay meaning.
+    struct StateMachineRef final
+    {
+        Address value = 0;
+
+        explicit operator bool() const { return value != 0; }
+        bool operator==(const StateMachineRef& other) const { return value == other.value; }
+        bool operator!=(const StateMachineRef& other) const { return !(*this == other); }
+    };
+
     // A momentary resolved chain from one retail table slot to its controller.
     // It owns no game memory and grants no authority to tick that controller;
     // it just lets feature code state its required slot explicitly instead of
@@ -303,6 +316,15 @@ namespace retail
         explicit operator bool() const { return value != 0; }
         bool operator==(const ModeRef& other) const { return value == other.value; }
         bool operator!=(const ModeRef& other) const { return !(*this == other); }
+    };
+
+    // A concrete inner GPig Ledge/Climb state. Only its owner-GPig reference is
+    // exposed; treating it as a complete state-machine layout would be wrong.
+    struct GPigAttachmentStateRef final
+    {
+        Address value = 0;
+
+        explicit operator bool() const { return value != 0; }
     };
 
     // This is the inline XMotorSystem region inside a GPig handler.  It is not

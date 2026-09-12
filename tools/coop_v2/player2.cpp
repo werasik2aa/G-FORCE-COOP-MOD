@@ -10,6 +10,8 @@
 #include "world_sync.h"
 #include "ServerClient/SteamManager.h"
 
+#include <float.h>
+#include <math.h>
 #include <string.h>
 
 namespace coop
@@ -76,6 +78,9 @@ namespace coop
 				static_cast<std::int32_t>(candidate - baseline) > 0);
 		}
 
+		constexpr float kP2AttachmentReleaseDistance = 0.2f;
+		constexpr DWORD kP2AttachmentReleaseRepeatWindowMs = 250u;
+
 	}
 
 	Player2Module& Player2Module::Instance()
@@ -96,11 +101,20 @@ namespace coop
 		m_remote_p2_death_mode_entry_sequence(0),
 
 		m_last_player1_mode(0),
+		m_remote_p2_attachment_active_tick(0),
+		m_remote_p2_attachment_release_divergence_begin_tick(0),
+		m_remote_p2_attachment_active(false),
+		m_remote_p2_attachment_family(AttachmentFamily::None),
+		m_remote_p2_attachment_state_machine(),
 		m_abr_native_task_configured_player2(),
 
 		m_last_weapon_type(0xFFFFFFFFu),
 		m_spawn_context(),
 		m_default_mode_active_stores_patched(false),
+		m_ledge_observer_hooks_installed(false),
+		m_original_ledge_idle_or_into_update(nullptr),
+		m_original_ledge_strafe_end_update(nullptr),
+		m_original_ledge_jump_update(nullptr),
 		m_original_update(
 			reinterpret_cast<ControllerUpdateFn>(kOriginalControllerUpdate))
 
@@ -765,6 +779,11 @@ namespace coop
 		m_remote_p2_death_mode_observed = false;
 		m_remote_p2_death_mode_entry_sequence = 0;
 		m_last_player1_mode = 0;
+		m_remote_p2_attachment_active_tick = 0;
+		m_remote_p2_attachment_release_divergence_begin_tick = 0;
+		m_remote_p2_attachment_active = false;
+		m_remote_p2_attachment_family = AttachmentFamily::None;
+		m_remote_p2_attachment_state_machine = {};
 		m_last_weapon_type = 0xFFFFFFFFu;
 		m_spawn_context = {};
 		m_abr_native_task_configured_player2 = {};
@@ -847,6 +866,214 @@ namespace coop
 				context ? context : "unknown", controller);
 			return false;
 		}
+	}
+
+	void Player2Module::ObserveRemoteLedgeState(void* ledge_state)
+	{
+		if (!ledge_state)
+			return;
+
+		const retail::GPigAttachmentStateRef attachment_state_ref = {
+			retail::ToAddress(ledge_state)
+		};
+		retail::EntityRef owner = {};
+		retail::EntitySlotRepository players;
+		retail::EntityRef remote_p2 = {};
+		if (retail::GPigAttachmentStateView(attachment_state_ref).OwnerEntity(owner) &&
+			players.Get(retail::EntitySlot::RemoteP2, remote_p2) &&
+			owner == remote_p2)
+		{
+			// This is an observation only. The concrete native state still owns the
+			// attachment, animation and contact result.
+			m_remote_p2_attachment_active_tick = GetTickCount();
+		}
+	}
+
+	void Player2Module::ObserveInnerStateSelection(void* state_machine,
+		std::uint32_t selected_mode)
+	{
+		if (!state_machine)
+			return;
+
+		const retail::StateMachineRef state_machine_ref = {
+			retail::ToAddress(state_machine)
+		};
+		const retail::StateMachineView state_machine_view(state_machine_ref);
+		// Numeric state IDs are shared by many nested motors. Identify the exact
+		// Ledge and Climb families by registered native classes instead.
+		const bool is_ledge_machine =
+			state_machine_view.ContainsRegisteredVTable(kGPigLedgeIdleVtable) ||
+			state_machine_view.ContainsRegisteredVTable(kGPigLedgeIntoVtable) ||
+			state_machine_view.ContainsRegisteredVTable(kGPigLedgeStrafeEndVtable) ||
+			state_machine_view.ContainsRegisteredVTable(kGPigLedgeJumpVtable);
+		const bool is_climb_machine = !is_ledge_machine &&
+			(state_machine_view.ContainsRegisteredVTable(kGPigClimbDropVtable) ||
+				state_machine_view.ContainsRegisteredVTable(kGPigClimbJumpVtable));
+		if (!is_ledge_machine && !is_climb_machine)
+		{
+			return;
+		}
+
+		retail::ModeRef current_state = {};
+		retail::ModeId current_mode = 0;
+		retail::EntityRef owner = {};
+		retail::EntitySlotRepository players;
+		retail::EntityRef remote_p2 = {};
+		if (!state_machine_view.CurrentState(current_state) ||
+			!retail::ModeView(current_state).Id(current_mode))
+		{
+			return;
+		}
+		const retail::GPigAttachmentStateRef attachment_state_ref = {
+			current_state.value
+		};
+		if (!retail::GPigAttachmentStateView(attachment_state_ref).OwnerEntity(owner) ||
+			!players.Get(retail::EntitySlot::RemoteP2, remote_p2) ||
+			owner != remote_p2)
+		{
+			return;
+		}
+
+		const AttachmentFamily family = is_ledge_machine ?
+			AttachmentFamily::Ledge : AttachmentFamily::Climb;
+		const AttachmentFamily previous_family = m_remote_p2_attachment_family;
+		const bool was_active = m_remote_p2_attachment_active &&
+			m_remote_p2_attachment_state_machine == state_machine_ref;
+		const bool is_active = current_mode != kInactiveModeId;
+		m_remote_p2_attachment_active_tick = GetTickCount();
+		m_remote_p2_attachment_active = is_active;
+		m_remote_p2_attachment_family = is_active ? family : AttachmentFamily::None;
+		m_remote_p2_attachment_state_machine = state_machine_ref;
+		if (!is_active)
+		{
+			m_remote_p2_attachment_release_divergence_begin_tick = 0;
+		}
+		if (was_active != is_active ||
+			(is_active && previous_family != family))
+		{
+			CoopRuntime::Instance().Log(
+				"[p2-attachment-observer] family=%s attachment=%u machine=%p mode=0x%08X selected=0x%08X\r\n",
+				family == AttachmentFamily::Ledge ? "ledge" : "climb",
+				is_active ? 1u : 0u, state_machine, current_mode, selected_mode);
+		}
+	}
+
+	int Player2Module::RunLedgeStateUpdate(void* ledge_state,
+		LedgeStateUpdateFn original)
+	{
+		if (!ledge_state || !original)
+			return 0;
+		ObserveRemoteLedgeState(ledge_state);
+		__try
+		{
+			return original(ledge_state);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log(
+				"[p2-ledge-recovery] native Ledge update fault state=%p\r\n",
+				ledge_state);
+			return 0;
+		}
+	}
+
+	bool Player2Module::TryQueueRemoteAttachmentRelease(void* player2,
+		void* controller, CoopNetGame& netgame, float& distance)
+	{
+		distance = 0.0f;
+		const DWORD now = GetTickCount();
+		// Do not require a particular inner Ledge/Climb class here. The exact
+		// observer remains diagnostic, but a stale native attachment is precisely
+		// what can prevent that observer from advancing. Persistent P2/owner
+		// separation is the recovery signal; stock input decides whether the
+		// current state can consume the ordinary release action.
+		if (!player2 || !controller ||
+			GetModeId(controller) != kDefaultModeId ||
+			netgame.IsLocalFlyControlled() || netgame.IsRemoteFlyControlled())
+		{
+			m_remote_p2_attachment_release_divergence_begin_tick = 0;
+			return false;
+		}
+
+		retail::Transform target = {};
+		std::uint32_t target_sequence = 0;
+		std::uint32_t target_mode = 0;
+		if (!netgame.GetActiveRemotePlayerTransform(target, target_sequence,
+			target_mode) || target_mode != kDefaultModeId)
+		{
+			m_remote_p2_attachment_release_divergence_begin_tick = 0;
+			return false;
+		}
+
+		const retail::EntityRef player2_ref = { retail::ToAddress(player2) };
+		retail::Transform current = {};
+		if (!retail::EntityView(player2_ref).ReadTransform(current))
+		{
+			m_remote_p2_attachment_release_divergence_begin_tick = 0;
+			return false;
+		}
+
+		const float dx = target.position.x - current.position.x;
+		const float dy = target.position.y - current.position.y;
+		const float dz = target.position.z - current.position.z;
+		distance = sqrtf(dx * dx + dy * dy + dz * dz);
+		if (!(distance >= 0.0f) || distance > FLT_MAX)
+		{
+			m_remote_p2_attachment_release_divergence_begin_tick = 0;
+			return false;
+		}
+		if (distance <= kP2AttachmentReleaseDistance ||
+			netgame.HasActiveRemotePressedEdge(kLedgeReleaseActionId))
+		{
+			m_remote_p2_attachment_release_divergence_begin_tick = 0;
+			return false;
+		}
+
+		if (m_remote_p2_attachment_release_divergence_begin_tick == 0)
+		{
+			m_remote_p2_attachment_release_divergence_begin_tick = now;
+			return false;
+		}
+		if (static_cast<DWORD>(now -
+			m_remote_p2_attachment_release_divergence_begin_tick) <
+			kP2AttachmentReleaseRepeatWindowMs)
+		{
+			return false;
+		}
+		if (!netgame.ArmRemoteLedgeReleaseEdge())
+			return false;
+
+		// No one-shot latch: if stock input does not detach a stale attachment,
+		// record a fresh divergence window and offer the same native release edge
+		// again after 250 ms while P2 remains more than one metre away.
+		m_remote_p2_attachment_release_divergence_begin_tick = 0;
+		CoopRuntime::Instance().Log(
+			"[p2-attachment-release] queued distance=%.2f observer=%s target_seq=%u\r\n",
+			distance, m_remote_p2_attachment_family == AttachmentFamily::Ledge ?
+				"ledge" : (m_remote_p2_attachment_family == AttachmentFamily::Climb ?
+					"climb" : "none"),
+			target_sequence);
+		return true;
+	}
+
+	int __fastcall Player2Module::HookLedgeIdleOrIntoUpdate(void* ledge_state,
+		void*)
+	{
+		return Instance().RunLedgeStateUpdate(ledge_state,
+			Instance().m_original_ledge_idle_or_into_update);
+	}
+
+	int __fastcall Player2Module::HookLedgeStrafeEndUpdate(void* ledge_state,
+		void*)
+	{
+		return Instance().RunLedgeStateUpdate(ledge_state,
+			Instance().m_original_ledge_strafe_end_update);
+	}
+
+	int __fastcall Player2Module::HookLedgeJumpUpdate(void* ledge_state, void*)
+	{
+		return Instance().RunLedgeStateUpdate(ledge_state,
+			Instance().m_original_ledge_jump_update);
 	}
 
 	void Player2Module::UpdateController(void* controller)
@@ -1050,10 +1277,22 @@ namespace coop
 		SharedCameraCoordinator::AimState saved_fly_camera_state = {};
 		const bool restore_fly_camera = preserve_fly_camera &&
 			m_camera.SaveAimState(saved_fly_camera_state);
+		float attachment_release_distance = 0.0f;
+		const bool attachment_release_queued = TryQueueRemoteAttachmentRelease(player2,
+			controller, netgame, attachment_release_distance);
 		const bool stock_update_completed =
 			RunStockControllerUpdate(controller, "remote-player2");
 		if (restore_fly_camera)
 			m_camera.RestoreAimState(saved_fly_camera_state);
+		if (attachment_release_queued)
+		{
+			bool attachment_release_consumed = false;
+			netgame.FinishRemoteLedgeReleaseEdge(attachment_release_consumed);
+			CoopRuntime::Instance().Log(
+				"[p2-attachment-release] result consumed=%u distance=%.2f\r\n",
+				attachment_release_consumed ? 1u : 0u,
+				attachment_release_distance);
+		}
 		if (!stock_update_completed)
 			return;
 
@@ -1153,6 +1392,124 @@ namespace coop
 		return true;
 	}
 
+	bool Player2Module::InstallLedgeObserverHooks()
+	{
+		if (m_ledge_observer_hooks_installed)
+			return true;
+
+		void** const idle_slot = reinterpret_cast<void**>(
+			kGPigLedgeIdleUpdateVtableSlot);
+		void** const into_slot = reinterpret_cast<void**>(
+			kGPigLedgeIntoUpdateVtableSlot);
+		void** const strafe_end_slot = reinterpret_cast<void**>(
+			kGPigLedgeStrafeEndUpdateVtableSlot);
+		void** const jump_slot = reinterpret_cast<void**>(
+			kGPigLedgeJumpUpdateVtableSlot);
+		if (*idle_slot != reinterpret_cast<void*>(kGPigLedgeIdleUpdate) ||
+			*into_slot != reinterpret_cast<void*>(kGPigLedgeIdleUpdate) ||
+			*strafe_end_slot != reinterpret_cast<void*>(kGPigLedgeStrafeEndUpdate) ||
+			*jump_slot != reinterpret_cast<void*>(kGPigLedgeJumpUpdate))
+		{
+			CoopRuntime::Instance().Log(
+				"[error] Ledge observer vtable mismatch idle=%p into=%p strafe-end=%p jump=%p\r\n",
+				*idle_slot, *into_slot, *strafe_end_slot, *jump_slot);
+			return false;
+		}
+
+		m_original_ledge_idle_or_into_update =
+			reinterpret_cast<LedgeStateUpdateFn>(*idle_slot);
+		m_original_ledge_strafe_end_update =
+			reinterpret_cast<LedgeStateUpdateFn>(*strafe_end_slot);
+		m_original_ledge_jump_update =
+			reinterpret_cast<LedgeStateUpdateFn>(*jump_slot);
+		void* const idle_or_into_hook = reinterpret_cast<void*>(
+			&HookLedgeIdleOrIntoUpdate);
+		void* const strafe_end_hook = reinterpret_cast<void*>(
+			&HookLedgeStrafeEndUpdate);
+		void* const jump_hook = reinterpret_cast<void*>(&HookLedgeJumpUpdate);
+		void* const idle_or_into_original = reinterpret_cast<void*>(
+			m_original_ledge_idle_or_into_update);
+		void* const strafe_end_original = reinterpret_cast<void*>(
+			m_original_ledge_strafe_end_update);
+
+		if (!MemoryPatch::Write(idle_slot, &idle_or_into_hook,
+			sizeof(idle_or_into_hook)))
+			goto failed;
+		if (!MemoryPatch::Write(into_slot, &idle_or_into_hook,
+			sizeof(idle_or_into_hook)))
+		{
+			MemoryPatch::Write(idle_slot, &idle_or_into_original,
+				sizeof(idle_or_into_original));
+			goto failed;
+		}
+		if (!MemoryPatch::Write(strafe_end_slot, &strafe_end_hook,
+			sizeof(strafe_end_hook)))
+		{
+			MemoryPatch::Write(into_slot, &idle_or_into_original,
+				sizeof(idle_or_into_original));
+			MemoryPatch::Write(idle_slot, &idle_or_into_original,
+				sizeof(idle_or_into_original));
+			goto failed;
+		}
+		if (!MemoryPatch::Write(jump_slot, &jump_hook, sizeof(jump_hook)))
+		{
+			MemoryPatch::Write(strafe_end_slot, &strafe_end_original,
+				sizeof(strafe_end_original));
+			MemoryPatch::Write(into_slot, &idle_or_into_original,
+				sizeof(idle_or_into_original));
+			MemoryPatch::Write(idle_slot, &idle_or_into_original,
+				sizeof(idle_or_into_original));
+			goto failed;
+		}
+
+		m_ledge_observer_hooks_installed = true;
+		CoopRuntime::Instance().Log(
+			"[ok] P2 active-Ledge observer vtable slots installed\r\n");
+		return true;
+
+	failed:
+		m_original_ledge_idle_or_into_update = nullptr;
+		m_original_ledge_strafe_end_update = nullptr;
+		m_original_ledge_jump_update = nullptr;
+		return false;
+	}
+
+	void Player2Module::RemoveLedgeObserverHooks()
+	{
+		if (!m_ledge_observer_hooks_installed)
+			return;
+
+		void** const idle_slot = reinterpret_cast<void**>(
+			kGPigLedgeIdleUpdateVtableSlot);
+		void** const into_slot = reinterpret_cast<void**>(
+			kGPigLedgeIntoUpdateVtableSlot);
+		void** const strafe_end_slot = reinterpret_cast<void**>(
+			kGPigLedgeStrafeEndUpdateVtableSlot);
+		void** const jump_slot = reinterpret_cast<void**>(
+			kGPigLedgeJumpUpdateVtableSlot);
+		void* const idle_or_into_original = reinterpret_cast<void*>(
+			m_original_ledge_idle_or_into_update);
+		void* const strafe_end_original = reinterpret_cast<void*>(
+			m_original_ledge_strafe_end_update);
+		void* const jump_original = reinterpret_cast<void*>(
+			m_original_ledge_jump_update);
+		if (*idle_slot == reinterpret_cast<void*>(&HookLedgeIdleOrIntoUpdate))
+			MemoryPatch::Write(idle_slot, &idle_or_into_original,
+				sizeof(idle_or_into_original));
+		if (*into_slot == reinterpret_cast<void*>(&HookLedgeIdleOrIntoUpdate))
+			MemoryPatch::Write(into_slot, &idle_or_into_original,
+				sizeof(idle_or_into_original));
+		if (*strafe_end_slot == reinterpret_cast<void*>(&HookLedgeStrafeEndUpdate))
+			MemoryPatch::Write(strafe_end_slot, &strafe_end_original,
+				sizeof(strafe_end_original));
+		if (*jump_slot == reinterpret_cast<void*>(&HookLedgeJumpUpdate))
+			MemoryPatch::Write(jump_slot, &jump_original, sizeof(jump_original));
+		m_ledge_observer_hooks_installed = false;
+		m_original_ledge_idle_or_into_update = nullptr;
+		m_original_ledge_strafe_end_update = nullptr;
+		m_original_ledge_jump_update = nullptr;
+	}
+
 	bool Player2Module::Install()
 	{
 		void** gpig_update_slot = reinterpret_cast<void**>(kGPigUpdateVtableSlot);
@@ -1215,6 +1572,21 @@ namespace coop
 			m_default_mode_active_stores_patched = false;
 			return false;
 		}
+		if (!InstallLedgeObserverHooks())
+		{
+			void* original = reinterpret_cast<void*>(kOriginalControllerUpdate);
+			MemoryPatch::Write(fly_update_slot, &original, sizeof(original));
+			MemoryPatch::Write(gpig_update_slot, &original, sizeof(original));
+			MemoryPatch::Write(reinterpret_cast<void*>(kSpawnCall1),
+				m_original_spawn_call1, sizeof(m_original_spawn_call1));
+			MemoryPatch::Write(reinterpret_cast<void*>(kSpawnCall2),
+				m_original_spawn_call2, sizeof(m_original_spawn_call2));
+			MemoryPatch::Write(reinterpret_cast<void*>(kDefaultModeActiveStores),
+				m_original_default_mode_active_stores,
+				sizeof(m_original_default_mode_active_stores));
+			m_default_mode_active_stores_patched = false;
+			return false;
+		}
 
 		CoopRuntime::Instance().Log("[ok] spawn CALLs patched at 0x%08X and 0x%08X\r\n",
 
@@ -1231,6 +1603,7 @@ namespace coop
 
 	void Player2Module::Remove()
 	{
+		RemoveLedgeObserverHooks();
 		void** gpig_update_slot = reinterpret_cast<void**>(kGPigUpdateVtableSlot);
 
 		void** fly_update_slot = reinterpret_cast<void**>(kFlyUpdateVtableSlot);

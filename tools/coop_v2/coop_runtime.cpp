@@ -314,7 +314,7 @@ namespace coop
 				m_game_ini_path);
 		}
 		Log("[config] enabled=%ld\r\n", m_config.enabled);
-		Log("[config-window] experimental_windowed=%ld focus_pause=permanent-bypass client=%dx%d\r\n",
+		Log("[config-window] experimental_windowed=%ld focus_pause=stock client=%dx%d\r\n",
 			m_config.test_windowed,
 			m_config.window_width, m_config.window_height);
 	}

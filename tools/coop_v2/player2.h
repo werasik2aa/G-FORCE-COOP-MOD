@@ -10,6 +10,8 @@
 
 namespace coop
 {
+	class CoopNetGame;
+
 	class Player2Module final
 	{
 	public:
@@ -24,6 +26,11 @@ namespace coop
 		// process or a connected peer.
 		bool EnsureLocalPlayer2ForDebug();
 		bool EnableLocalAbrForDebug();
+		// Called after the stock generic state dispatcher has completed a native
+		// transition. It observes only positively identified inner Ledge/Climb
+		// machines; it never selects or writes a state.
+		void ObserveInnerStateSelection(void* state_machine,
+			std::uint32_t selected_mode);
 		// Called during native save load / transition to clear P2 state
 		// and prevent crashes from stale entity pointers.
 		void ResetForWorldLoad();
@@ -33,7 +40,15 @@ namespace coop
 		// retail boundary.  Do not maintain a second look-alike Vec4 declaration.
 		using Vec4 = retail::Vec4;
 
+		enum class AttachmentFamily : std::uint8_t
+		{
+			None,
+			Ledge,
+			Climb
+		};
+
 		typedef void(__thiscall* ControllerUpdateFn)(void*);
+		typedef int(__thiscall* LedgeStateUpdateFn)(void*);
 
 		Player2Module();
 		~Player2Module() = default;
@@ -74,12 +89,21 @@ namespace coop
 		bool UpdateFlyController(void* controller);
 		void UpdateRemotePlayer2Controller(void* controller);
 		bool RunStockControllerUpdate(void* controller, const char* context);
+		int RunLedgeStateUpdate(void* ledge_state, LedgeStateUpdateFn original);
+		void ObserveRemoteLedgeState(void* ledge_state);
+		bool TryQueueRemoteAttachmentRelease(void* player2, void* controller,
+			CoopNetGame& netgame, float& distance);
+		bool InstallLedgeObserverHooks();
+		void RemoveLedgeObserverHooks();
 		void* SpawnGPig(const Vec4* position, const Vec4* rotation, std::uint32_t gpig_id, void* context);
 		bool PatchSpawnCall(std::uintptr_t address, const BYTE expected[5], BYTE original[5]);
 		bool PatchDefaultModeActivePublish();
 
 		static void __fastcall HookControllerUpdate(void* controller, void*);
 		static void* __cdecl HookSpawnGPig(const Vec4* position, const Vec4* rotation, std::uint32_t gpig_id, void* context);
+		static int __fastcall HookLedgeIdleOrIntoUpdate(void* ledge_state, void*);
+		static int __fastcall HookLedgeStrafeEndUpdate(void* ledge_state, void*);
+		static int __fastcall HookLedgeJumpUpdate(void* ledge_state, void*);
 
 		volatile LONG m_player2_ready;
 		volatile LONG m_spawn_snapshot_ready;
@@ -93,6 +117,11 @@ namespace coop
 		SharedCameraCoordinator m_camera;
 
 		std::uint32_t m_last_player1_mode;
+		std::uint32_t m_remote_p2_attachment_active_tick;
+		std::uint32_t m_remote_p2_attachment_release_divergence_begin_tick;
+		bool m_remote_p2_attachment_active;
+		AttachmentFamily m_remote_p2_attachment_family;
+		retail::StateMachineRef m_remote_p2_attachment_state_machine;
 
 		// This cache is written only after ConfigurePlayer2RdvTask verifies that
 		// the stock configurator enabled the native task.  A merely allocated task
@@ -107,6 +136,10 @@ namespace coop
 		BYTE m_original_spawn_call2[5];
 		BYTE m_original_default_mode_active_stores[10];
 		bool m_default_mode_active_stores_patched;
+		bool m_ledge_observer_hooks_installed;
+		LedgeStateUpdateFn m_original_ledge_idle_or_into_update;
+		LedgeStateUpdateFn m_original_ledge_strafe_end_update;
+		LedgeStateUpdateFn m_original_ledge_jump_update;
 		ControllerUpdateFn m_original_update;
 	};
 }
