@@ -470,17 +470,20 @@ is explicitly not an implementation instruction.
 | --- | --- | --- |
 | Death / checkpoint rollback | **Observation:** a death can place a player at the beginning of a level after world progress has closed doors, forcing a load. | Trace native death, checkpoint selection, save/load and level-transition routes separately. The existing outer-DeathMode presentation guard must not be presented as a checkpoint fix. |
 | Cutscene deaths | **Observation:** some cutscene exits kill one or both peers. | Capture exact cutscene identity and both process logs across `cutscene exit → mode change → damage/death`. Do not reuse P2 attachment release or force Default as a generic cure. |
+| Join after prior trigger/event activity | **Priority observation:** a late-joining peer needs durable consequences of prior progression: doors/shutters, counters, spawned/despawned objects and relevant progress state. | Recover a catalog of persistent root-object/cell state and an explicit snapshot/replay policy. Never blindly replay all historic events: transient hits, cutscenes and non-idempotent spawns can duplicate entities or repeat presentation. |
 | Progression doors/shutters | **Observation:** some objects block only the client from reachable level regions. | Treat each root object identity and its complete relay/forwarder chain as distinct. A known card-door route is evidence for that object only; `0x41080010` is not a semantic open-door opcode. |
 | Saberization and Saberizer HUD | **Observation:** Saberization lacks peer synchronization and a peer can retain an inappropriate laser-gun HUD. | Recover gameplay state/owner separately from presentation/HUD selection. The removed scanner experiment is negative evidence: do not reinstate a broad scanner/HUD suppression hook. |
 | Whip world hits | **Observation:** particles appear, while boxes/grilles do not react. | Recover one stock hit receiver or object event for each target family before networking it. Visual particle emission is non-authoritative and cannot prove a hit. |
 | Mooch versus laser mines | **Hypothesis:** tripwire/mines react through an ordinary target hit or trigger receiver, not a direct mine-disable call. | Test local F1 and normal Mooch attack against one identified mine; log source Fly, target identity, hit/event route and native result before choosing replication. |
 | Dynamic physics / key-card | **Observation:** card insertion can replicate without making the card itself a shared physical object. | Design only after discovering stable identity and native ownership/lifetime: pickup, carry, transform, drop, destruction and late link must have explicit authority. Never network raw addresses. |
-| NPC animation, attacks and damage | Host-to-client HP has a compiled route, but full AI behavior is **not live-proven**. | Fresh-level tests: host/client trigger, delayed linking, kill-before-link, attack animation, incoming and outgoing damage. Do not infer global NPC sync from a single successful kill. |
+| NPC death, animation, attacks and damage | **Observation:** a client can receive and locally kill a dynamic “toaster” before a distant host creates its canonical copy and assigns `world_id`; normally linked NPC fights can still carry client damage. | Investigate damage/death loss or reconciliation **before late link**, not a blanket absence of client damage. Fresh-level tests: host/client trigger, delayed linking, kill-before-link, attack animation, incoming and outgoing damage. Do not infer global NPC sync from a single successful kill. |
+| World streaming / unloaded level areas | **Observation:** an alternative client route can unload parts of an apparently linear level in that process. | Recover native streaming-cell/zone transition and its relation to local loaded state versus shared progression. Do not mask it with teleportation, door replay or a forced spawn. |
 | Chat | Missing feature. | Define a transport and presentation route independent of game control edges, with message limits, peer identity, UI focus, menu/cutscene policy and disconnect behavior. |
 
-Recommended evidence order is: death/cutscene recovery, concrete blocked progression
-objects and physics card, Saberization/HUD, whip and Mooch mine interactions, then
-NPC regressions and chat design. Each new live result must record level/checkpoint,
+Recommended evidence order is: late-join persistent-state policy, death/cutscene
+recovery, concrete blocked progression objects and physics card, Saberization/HUD,
+whip and Mooch mine interactions, then streaming transitions, NPC lifecycle
+regressions and chat design. Each new live result must record level/checkpoint,
 host/client role, runtime PID log excerpts, object identity and the exact visible
 result. Update `RE_CATALOG.md` with exact static evidence before promoting a
 candidate from `guess` to `approved`.
