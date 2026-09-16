@@ -1,6 +1,7 @@
 #include "window_hook.h"
 
 #include "chat_overlay.h"
+#include "coop_netgame.h"
 #include "coop_runtime.h"
 #include "save_sync.h"
 #include "world_sync.h"
@@ -22,7 +23,8 @@ namespace coop
 		m_d3d_create_device_slot(nullptr),
 		m_d3d_reset_slot(nullptr),
 		m_d3d_present_slot(nullptr),
-		m_game_window(nullptr)
+		m_game_window(nullptr),
+		m_present_count(0)
 	{}
 
 	void WindowHook::ApplyExperimentalWindowStyle(HWND window)
@@ -130,6 +132,10 @@ namespace coop
 			ChatOverlay::Instance().Render(
 				destination_window ? destination_window : m_game_window);
 			SaveSync::Instance().OnMainFrame();
+			// Present also fires in menus, roughly every frame: reuse it as the
+			// quit-to-menu watchdog tick (~1/sec).
+			if (InterlockedIncrement(&m_present_count) % 60 == 0)
+				CoopNetGame::Instance().CheckMenuQuitTick();
 		}
 		return result;
 	}

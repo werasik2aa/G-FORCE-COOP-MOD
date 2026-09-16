@@ -21,6 +21,9 @@ namespace coop
 		void OnHostLoadGame(std::uint32_t slot);
 		void SendHostJoinSave(CSteamOfflineSocketServer* server, std::int32_t connection);
 		bool OnRemotePacket(const void* data, std::uint32_t size);
+		// True while a host save is queued for the native loader but not yet
+		// consumed. Quit detection must not mistake this window for menu exit.
+		bool HasPendingLoad() const;
 		// Runs after the network worker has written selected DATA<n>: from P1's
 		// game-thread tick in a loaded world, or from the post-Present front-end
 		// bootstrap before that controller exists. It never runs on the socket

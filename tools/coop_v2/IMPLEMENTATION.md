@@ -17,10 +17,10 @@ AI visibly fights forced modes, add stickiness (apply once per change).
 
 ## Session lifecycle (quit/reconnect)
 
-Quitting to the main menu tears the session down: `MenuConnectHook` calls
-`CoopNetGame::QuitSessionToMainMenu` on every main-menu build, which
-disconnects only when no local P1 exists (pause menus keep P1) and the peer
-is older than 60 s (a load may still be incoming). Host closes both
+Quitting to the main menu tears the session down: the per-frame Present hook
+(which also fires in menus) runs `CheckMenuQuitTick` ~1/sec, and 15 continuous
+seconds with an active session, no local P1 and no pending host-save load
+confirm the quit (pause menus keep P1; loads set pending). Host closes both
 listeners (clients get a clean close) and disarms the automatic host so the
 next loaded save reopens it; client disconnects free the server slot.
 Reconnect uses the same menu row: the already-a-client block now applies

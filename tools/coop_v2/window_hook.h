@@ -47,5 +47,6 @@ namespace coop
 		void** m_d3d_reset_slot;
 		void** m_d3d_present_slot;
 		HWND m_game_window;
+		volatile LONG m_present_count;
 	};
 }

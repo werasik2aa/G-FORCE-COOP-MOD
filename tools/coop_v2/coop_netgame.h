@@ -27,10 +27,11 @@ namespace coop
 
 		void OnPeerConnected();
 		void OnPeerDisconnected();
-		// Quit-to-main-menu teardown, called from the main-menu builder. Ends
-		// the session only when no local P1 exists (pause menus keep P1) and
-		// the peer is not freshly connected (a load may still be incoming).
-		// Safe to call on every menu build; no-ops without an active session.
+		// Quit-to-main-menu teardown. Called ~1/sec from the Present hook (which
+		// also fires in menus). Ends the session only after 15 continuous
+		// seconds with no local P1 and no pending host-save load; pause menus
+		// keep P1 and never arm. Safe to call any time; no-ops without a session.
+		void CheckMenuQuitTick();
 		void QuitSessionToMainMenu();
 		void OnRemotePacket(const void* data, std::uint32_t size);
 		// Socket-thread ingress validates and queues this reliable event. Native
@@ -525,6 +526,7 @@ namespace coop
 		std::uint32_t m_local_weapon_sequence;
 		std::uint32_t m_last_local_weapon_type;
 		volatile LONG m_peer_connected_tick;
+		volatile LONG m_menu_quit_miss_tick;
 		volatile LONG m_logged_spawn;
 		volatile LONG m_remote_input_active;
 		bool m_keyboard_state_swapped;

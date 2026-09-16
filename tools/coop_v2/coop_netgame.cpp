@@ -655,6 +655,7 @@ namespace coop
 		m_last_invalid_input_trace_tick(0),
 		m_last_remote_fly_deactivation_suppression_tick(0),
 		m_peer_connected_tick(0),
+		m_menu_quit_miss_tick(0),
 
 		m_logged_spawn(0),
 		m_remote_input_active(0),
@@ -927,25 +928,55 @@ namespace coop
 			"[netgame] peer connected; P2 spawn queued for game thread\r\n");
 	}
 
+	void CoopNetGame::CheckMenuQuitTick()
+	{
+		// Runs ~1/sec from the Present hook, which also fires in menus. A
+		// missing local P1 with an active session means either quit-to-menu
+		// or a native load in flight; only the former persists, so require
+		// 15 continuous seconds before tearing down. Pause/overlay menus keep
+		// P1 alive and never arm. Pending host-save loads disarm outright.
+		if (!HasRemotePeer())
+		{
+			m_menu_quit_miss_tick = 0;
+			return;
+		}
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding player1 = {};
+		if (players.GetBinding(retail::EntitySlot::LocalP1, player1))
+		{
+			m_menu_quit_miss_tick = 0;
+			return;
+		}
+		if (SaveSync::Instance().HasPendingLoad())
+		{
+			m_menu_quit_miss_tick = 0;
+			return;
+		}
+		const LONG now = static_cast<LONG>(GetTickCount());
+		if (m_menu_quit_miss_tick == 0)
+		{
+			m_menu_quit_miss_tick = now;
+			CoopRuntime::Instance().Log(
+				"[netgame] no local P1 with active session; confirming menu quit\r\n");
+			return;
+		}
+		if (static_cast<DWORD>(now - m_menu_quit_miss_tick) < 15000)
+			return;
+		m_menu_quit_miss_tick = 0;
+		QuitSessionToMainMenu();
+	}
+
 	void CoopNetGame::QuitSessionToMainMenu()
 	{
 		if (!HasRemotePeer())
 			return;
-		// A live local P1 means we are still in the world (pause/overlay
-		// menu), not quitting: never tear down a running session from here.
+		// Re-verify under the same conditions as the tick above.
 		retail::EntitySlotRepository players;
 		retail::EntitySlotBinding player1 = {};
 		if (players.GetBinding(retail::EntitySlot::LocalP1, player1))
 			return;
-		// A freshly connected peer may still be loading the host save while
-		// menu builds happen; give the load a minute before concluding quit.
-		const LONG peer_tick = InterlockedCompareExchange(
-			&m_peer_connected_tick, 0, 0);
-		if (peer_tick == 0 || static_cast<DWORD>(GetTickCount() -
-			static_cast<DWORD>(peer_tick)) < 60000)
-		{
+		if (SaveSync::Instance().HasPendingLoad())
 			return;
-		}
 		if (IsClient())
 		{
 			CoopRuntime::Instance().Log(

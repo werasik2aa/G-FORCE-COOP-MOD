@@ -1,6 +1,5 @@
 #include "menu_connect_hook.h"
 
-#include "coop_netgame.h"
 #include "coop_runtime.h"
 #include "gforce_constants.h"
 #include "retail/retail_memory.h"
@@ -390,7 +389,6 @@ namespace coop
 		m_building_menu = const_cast<void*>(previous_menu);
 		m_building_menu_thread = previous_thread;
 		m_button_inserted_for_build = previous_inserted;
-		CoopNetGame::Instance().QuitSessionToMainMenu();
 		return result;
 	}
 

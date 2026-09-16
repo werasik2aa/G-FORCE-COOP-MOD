@@ -385,6 +385,12 @@ namespace coop
 		return true;
 	}
 
+	bool SaveSync::HasPendingLoad() const
+	{
+		return InterlockedCompareExchange(
+			const_cast<volatile long*>(&m_pending_load), 0, 0) != 0;
+	}
+
 	bool SaveSync::OnMainFrame()
 	{
 		if (InterlockedExchange(&m_pending_load, 0) == 0)
