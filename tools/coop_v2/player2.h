@@ -78,19 +78,17 @@ namespace coop
 
 		bool SpawnPlayer2FromSnapshot(const char* trigger);
 		// Client-only role hand-off: the spawned Black Pig becomes the true local
-		// P1 and the original Darwin becomes the packet-driven remote P2. While ABR
-		// is actually active on either side the hand-off is disabled (the Black Pig
-		// has no stock ABR orientation contract); the roles are restored before
-		// the next local tick. The RDV world flag alone does not block: it stays
-		// set on ordinary levels too.
+		// P1 and the original Darwin becomes the packet-driven remote P2, on
+		// ordinary levels and ABR tracks alike. The stripped P2 conflict mask
+		// is restored on promotion; without it the native arbiter drops the
+		// promoted controller to Inactive.
 		bool PromoteClientBlackPigToPlayer1(void*& player1_controller);
-		bool RestoreClientDarwinForRdv(void*& player1_controller);
-		// Shared single-thread role hand-off plumbing. Both directions swap the
-		// same two selectable slots and rebind the spawn context plus the two
-		// process-global active pointers to the pre-swap RemoteP2 entity, with
-		// rollback when the rebind fails. Entity/mode IDs below are identical
-		// across the FRE/USA/RUS data builds (only audio archives and UI text
-		// differ), so this path has no per-language branch.
+		// Shared single-thread role hand-off plumbing. Swaps the two selectable
+		// slots and rebinds the process-global active entity to the pre-swap
+		// RemoteP2 entity, with rollback when the rebind fails. The spawn
+		// context is deliberately untouched. Entity/mode IDs below are
+		// identical across the FRE/USA/RUS data builds (only audio archives
+		// and UI text differ), so this path has no per-language branch.
 		bool RebindClientLocalPlayerTo(retail::EntityRef new_local_entity);
 		void ResetClientRoleCaches();
 		void RefreshPlayer1ControllerFromSlot(void*& player1_controller);
@@ -151,8 +149,6 @@ namespace coop
 		bool m_debug_player2_enabled;
 		bool m_client_black_pig_promoted;
 		LONG m_last_role_heartbeat_tick;
-		bool m_client_black_pig_blocked_for_rdv_world;
-		bool m_client_black_pig_rdv_block_logged;
 		bool m_client_role_gate_logged;
 		retail::EntityRef m_client_black_pig_entity;
 		retail::EntityRef m_client_original_darwin_entity;

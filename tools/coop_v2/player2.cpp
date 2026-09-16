@@ -133,8 +133,6 @@ namespace coop
 		m_debug_player2_enabled(false),
 		m_client_black_pig_promoted(false),
 		m_last_role_heartbeat_tick(0),
-		m_client_black_pig_blocked_for_rdv_world(false),
-		m_client_black_pig_rdv_block_logged(false),
 		m_client_role_gate_logged(false),
 		m_client_black_pig_entity(),
 		m_client_original_darwin_entity(),
@@ -627,11 +625,9 @@ namespace coop
 				return true;
 			}
 			// A world rebuild replaced one side without the normal reset seam.
-			// Drop the role cache and the previous world block, then evaluate
-			// the fresh entities below instead of the stale locals.
+			// Drop the role cache, then evaluate the fresh entities below
+			// instead of the stale locals.
 			ResetClientRoleCaches();
-			m_client_black_pig_blocked_for_rdv_world = false;
-			m_client_black_pig_rdv_block_logged = false;
 			m_client_role_gate_logged = false;
 			if (!players.GetBinding(retail::EntitySlot::LocalP1, local) ||
 				!players.GetBinding(retail::EntitySlot::RemoteP2, remote))
@@ -641,59 +637,20 @@ namespace coop
 			}
 		}
 
-		std::uint32_t context_flags = 0;
-		if (!retail::SpawnContextView(m_spawn_context).Flags(context_flags))
-		{
-			LogClientRoleGateOnce("context-flags-unreadable", 0, 0);
-			RefreshPlayer1ControllerFromSlot(player1_controller);
-			return false;
-		}
-
+		// The hand-off stays active on ABR tracks too: the earlier wrong-way
+		// turns were the stripped P2 conflict mask, which is restored below.
 		const std::uint32_t local_mode = GetModeId(
 			retail::ToPointer(local.controller.value));
-		const std::uint32_t remote_mode = GetModeId(
-			retail::ToPointer(remote.controller.value));
-		std::uint32_t peer_sequence = 0;
-		std::uint32_t peer_mode = 0;
-		const bool peer_is_abr =
-			netgame.GetRemotePlayerModeSnapshot(peer_sequence, peer_mode) &&
-			peer_sequence != 0 && peer_mode == kAbrModeId;
-		// NOTE: the RDV world flag (0x20000000) stays set on ordinary levels
-		// too (observed on DATA4), so it cannot gate the hand-off. Block only
-		// while ABR is actually active on either side: the Black Pig lacks the
-		// stock ABR orientation contract and faces the wrong way on track turns.
-		(void)context_flags;
-		if (local_mode == kAbrModeId || remote_mode == kAbrModeId || peer_is_abr)
-		{
-			// While either side drives, keep the stock Darwin as the local owner.
-			// The restore below runs before the next local tick.
-			m_client_black_pig_blocked_for_rdv_world = true;
-		}
-		if (m_client_black_pig_blocked_for_rdv_world)
-		{
-			if (m_client_black_pig_promoted)
-				RestoreClientDarwinForRdv(player1_controller);
-			if (!m_client_black_pig_rdv_block_logged)
-			{
-				CoopRuntime::Instance().Log(
-					"[client-role] Black Pig local role disabled for RDV world flags=0x%08X local_mode=0x%08X remote_mode=0x%08X peer_mode=0x%08X\r\n",
-					context_flags, local_mode, remote_mode,
-					peer_is_abr ? peer_mode : 0u);
-				m_client_black_pig_rdv_block_logged = true;
-			}
-			RefreshPlayer1ControllerFromSlot(player1_controller);
-			return m_client_black_pig_promoted;
-		}
-
 		const std::uint32_t black_mode = GetModeId(
 			retail::ToPointer(remote.controller.value));
-		if (local_mode != kDefaultModeId)
+		if (local_mode != kDefaultModeId && local_mode != kAbrModeId)
 		{
-			LogClientRoleGateOnce("local-not-default", local_mode, black_mode);
+			LogClientRoleGateOnce("local-not-drivable", local_mode, black_mode);
 			RefreshPlayer1ControllerFromSlot(player1_controller);
 			return false;
 		}
-		if (black_mode != kInactiveModeId && black_mode != kDefaultModeId)
+		if (black_mode != kInactiveModeId && black_mode != kDefaultModeId &&
+			black_mode != kAbrModeId)
 		{
 			LogClientRoleGateOnce("black-pig-not-idle", local_mode, black_mode);
 			RefreshPlayer1ControllerFromSlot(player1_controller);
@@ -720,20 +677,23 @@ namespace coop
 		// restore the native arbiter drops the promoted controller to Inactive
 		// and the client freezes (no move/attack/Mooch) with live input.
 		{
+			const std::uint32_t promoted_mode = GetModeId(player1_controller);
+			const std::uint32_t contract_mode =
+				promoted_mode == kAbrModeId ? kAbrModeId : kDefaultModeId;
 			retail::ModeRef mode = {};
 			std::uint32_t mask_before = 0;
 			std::uint32_t mask_after = 0;
 			const bool read_before =
 				retail::ControllerView(remote.controller).RegisteredMode(
-					kDefaultModeId, mode) &&
+					contract_mode, mode) &&
 				retail::ModeView(mode).ConflictMask(mask_before);
 			const bool restored = RestoreLocalModeContract(remote.controller,
-				kDefaultModeId);
+				contract_mode);
 			const bool read_after = read_before &&
 				retail::ModeView(mode).ConflictMask(mask_after);
 			CoopRuntime::Instance().Log(
-				"[client-role] Default mask restore controller=%p before=0x%08X after=0x%08X restored=%d read=%d/%d\r\n",
-				player1_controller, mask_before, mask_after,
+				"[client-role] mask restore controller=%p mode=0x%08X before=0x%08X after=0x%08X restored=%d read=%d/%d\r\n",
+				player1_controller, contract_mode, mask_before, mask_after,
 				restored ? 1 : 0, read_before ? 1 : 0,
 				read_after ? 1 : 0);
 		}
@@ -748,85 +708,6 @@ namespace coop
 			"[client-role] Black Pig promoted to local P1=%p mode=0x%08X; Darwin moved to remote P2=%p\r\n",
 			retail::ToPointer(remote.entity.value), GetModeId(player1_controller),
 			retail::ToPointer(local.entity.value));
-		return true;
-	}
-
-	bool Player2Module::RestoreClientDarwinForRdv(
-		void*& player1_controller)
-	{
-		if (!m_client_black_pig_promoted)
-			return true;
-
-		retail::EntitySlotRepository players;
-		retail::EntitySlotBinding local = {};
-		retail::EntitySlotBinding remote = {};
-		if (!players.GetBinding(retail::EntitySlot::LocalP1, local) ||
-			local.entity != m_client_black_pig_entity ||
-			!players.GetBinding(retail::EntitySlot::RemoteP2, remote) ||
-			remote.entity != m_client_original_darwin_entity)
-		{
-			// The world was rebuilt under the promotion. Forget the role cache
-			// and let the next ticks evaluate the fresh entities instead of
-			// ticking a stale controller.
-			ResetClientRoleCaches();
-			m_client_black_pig_blocked_for_rdv_world = false;
-			m_client_black_pig_rdv_block_logged = false;
-			m_client_role_gate_logged = false;
-			RefreshPlayer1ControllerFromSlot(player1_controller);
-			return false;
-		}
-
-		// Preserve the client's current root while returning ownership to Darwin.
-		// The offset used for initial Black Pig placement is intentionally omitted.
-		retail::Transform local_transform = {};
-		if (!retail::EntityView(local.entity).ReadTransform(local_transform) ||
-			!retail::EntityView(remote.entity).WriteTransform(local_transform))
-		{
-			return false;
-		}
-		if (!RebindClientLocalPlayerTo(remote.entity))
-		{
-			return false;
-		}
-
-		player1_controller = retail::ToPointer(remote.controller.value);
-		std::uint32_t darwin_mode = GetModeId(player1_controller);
-		if (darwin_mode == kInactiveModeId)
-		{
-			retail::ControllerView(remote.controller).SelectMode(kDefaultModeId);
-			darwin_mode = GetModeId(player1_controller);
-		}
-		if (darwin_mode == kDefaultModeId || darwin_mode == kAbrModeId)
-			RestoreLocalModeContract(remote.controller, darwin_mode);
-
-		// Black Pig is a remote presentation again. If it had already entered ABR,
-		// restore the reduced P2 conflict mask that its next network tick expects.
-		const std::uint32_t black_mode = GetModeId(
-			retail::ToPointer(local.controller.value));
-		if (black_mode == kAbrModeId)
-		{
-			retail::ModeRef abr_mode = {};
-			std::uint32_t conflict_mask = 0;
-			const retail::ControllerView black_controller(local.controller);
-			if (black_controller.RegisteredMode(kAbrModeId, abr_mode) &&
-				retail::ModeView(abr_mode).ConflictMask(conflict_mask) &&
-				conflict_mask == kAbrModeConflictMask)
-			{
-				retail::ModeView(abr_mode).SetConflictMask(
-					kAbrModeConflictMask & ~kP2DefaultExclusiveMask);
-			}
-		}
-
-		const bool keep_rdv_block = m_client_black_pig_blocked_for_rdv_world;
-		const bool keep_rdv_log = m_client_black_pig_rdv_block_logged;
-		ResetClientRoleCaches();
-		m_client_black_pig_blocked_for_rdv_world = keep_rdv_block;
-		m_client_black_pig_rdv_block_logged = keep_rdv_log;
-
-		CoopRuntime::Instance().Log(
-			"[client-role] RDV world restored Darwin to local P1=%p mode=0x%08X; Black Pig returned to remote P2=%p mode=0x%08X\r\n",
-			retail::ToPointer(remote.entity.value), darwin_mode,
-			retail::ToPointer(local.entity.value), black_mode);
 		return true;
 	}
 
@@ -1425,8 +1306,6 @@ namespace coop
 		InterlockedExchange(&m_spawn_snapshot_ready, 0);
 		InterlockedExchange(&m_spawn_in_progress, 0);
 		m_debug_player2_enabled = false;
-		m_client_black_pig_blocked_for_rdv_world = false;
-		m_client_black_pig_rdv_block_logged = false;
 		m_client_role_gate_logged = false;
 		m_remote_p2_attachment_active_tick = 0;
 		m_remote_p2_attachment_release_divergence_begin_tick = 0;
