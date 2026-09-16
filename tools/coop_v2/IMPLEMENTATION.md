@@ -81,17 +81,18 @@ world-streaming, checkpoint-respawn or universal event-replay solution. Live
 two-process proof remains required.
 
 ChatOverlay is a retained non-activating GDI window owned by the game and opened
-by F10. Present maintains its position over the client area, while WM_PAINT owns
+by ENTER (only when a local P1 exists, so menu keys never pop it). Present
+maintains its position over the client area, while WM_PAINT owns
 rendering. The first WS_CHILD replacement was completely hidden by the D3D
 surface in live testing. It changes no game D3D render state and needs no Reset
 font/resource recovery. Its 216-byte
 reliable ChatPacket carries bounded UTF-8 text independently of CoopInput, Fly
 abilities and world events. The socket worker only validates and queues text;
 P1's game-thread tick collects foreground keyboard characters. While the panel
-is visible, local key capture and F1–F9 debug actions are suppressed, so typed
-text cannot control remote P2. Esc or F10 hides it. Peer disconnect drops
+is visible, the ENTER toggle is suppressed, so typed
+text cannot control remote P2. Esc hides it (F10 still closes as well). Peer disconnect drops
 unsent/incoming chat packets. A received line opens a six-second, non-input,
-semi-transparent notification while F10 chat is closed. The retained UI is
+semi-transparent notification while ENTER chat is closed. The retained UI is
 build-verified; its behaviour
 in both experimental windowed and exclusive-display configurations needs a live
 check.
@@ -241,7 +242,7 @@ for a Ledge state. P2 then reruns its Default conflict-mask setup; a failed
 checked read/write stays uninitialised and is retried (with one throttled
 diagnostic) rather than silently claiming completion. A stale packet, peer
 Fly/ABR mode, or an inner Ledge state never triggers this route.
-The guard applies only while an actual remote peer owns P2; a F5-only local
+The guard applies only while an actual remote peer owns P2; a local-only
 diagnostic P2 keeps the stock DeathMode flow rather than waiting forever for a
 nonexistent snapshot.
 It keeps stock collision/fall physics intact. This is also **not live-tested**:
@@ -257,48 +258,29 @@ one-packet wait or a wait while the peer is not yet in Default.
    `RE_CATALOG.md` before treating it as an implementation contract.
 
 Current unverified routes include remote P2 ledge/fall and outer DeathMode
-visibility recovery, standalone F1 dual-laser visual result and live
+visibility recovery, live
 two-process result of the now-isolated Mooch dual-laser route, Mooch
 magnetic-carry route,
 retail focus/minimize pause seam, Fly turning/presentation,
 peer ABR turning, and P2/P3 scanner/HUD presentation. Do not report any of them
 as fixed without a live test.
 
-## Debug keys
+## Chat key
 
-`debug_actions.cpp` is the sole F1–F7/F9 dispatcher and owns the F5/F6 local
-debug gates; it runs on the game thread after P1's stock tick. The normal
-network P2 factory and lifecycle stay in `player2.cpp`. Its tick is outside
-`CoopNetGame::GameTick`'s `HasRemotePeer()` early return, so F1 is polled in a
-single foreground game even with no client, server, or socket.
+`debug_actions.cpp` owns only the ENTER chat toggle now that the F1–F7/F9
+debug probes are removed; it runs on the game thread after P1's stock tick.
+The toggle fires only while a local P1 exists, so ENTER in menus never pops
+the panel. All former debug gates (local P2 spawn, local ABR, trigger
+spawn/replay/activate, interactive catalog, Mooch dual-laser probe) are gone;
+their implementation functions were removed with them, while shared
+fly-laser helpers used by the real network flow stay.
 
 The former focus/minimise pause bypass is disabled. Its `FramePauseState` write and
 `GetForegroundWindow`/`IsIconic` hooks did not remove retail pause in live use and
 could interfere with fullscreen shutdown. `WindowHook` now owns only the opt-in D3D
 windowed-presentation path; it never subclasses the game window or alters focus,
-minimise or frame-active state. F7 has no co-op action. A real simulation seam
+minimise or frame-active state. A real simulation seam
 remains an open RE task.
-
-F1 is a local, one-frame dual-laser test rather than the discarded scanner
-probe. It reads the current Mooch transform and the foreground P1 XGamePad
-aim direction, makes a world target from `P1 ray origin + direction * 100`,
-temporarily rewrites the native XGamePad ray so its origin is the current Mooch
-center, and invokes the registered `Fly_Active::Update` body. The raw-input
-hook supplies one synthetic edge only for the verified Fly laser call site
-(`0x40080029` returning to `0x005B60F7`); it does not globally fake the action.
-The shadow pass guards state selection and restores the XGamePad ray,
-active-entity globals and Fly control flag immediately afterward. Its camera
-snapshot includes the full `handler+0x91C..+0x9B7` Fly request/apply window in
-addition to the ordinary aim state: `Fly_Active` writes that block before the
-laser raw branch, and leaving it behind visibly snaps P1's camera toward Mooch.
-It therefore works with no client and without entering Q, provided the level
-has a live Mooch, registered `Fly_Active` mode and a valid P1 aim ray. A peer-owned
-Mooch remains presentation-only as a controller, but F1 can exercise its local
-native ability path without changing owner or peer state. A direct route-item
-pulse is retained only as an explicitly logged fallback when the native
-fingerprint/registry contract is unavailable. The old `XMotorTask_MoochScan`
-experiment remains catalog-only evidence of a misleading RTTI route; it is not
-an ability API.
 
 ### Mooch dual laser: isolated reliable event
 
@@ -408,7 +390,7 @@ button in the level. To locate their earlier input route, the existing logical
 `0x00488CE0` and raw `0x0048AE10` rising-edge hooks record local, non-synthetic
 native successes as `[input-edge-local]`. Each record contains the action id and
 the exact caller return address, plus the P1 position only as a test-location aid.
-It neither changes the result nor sends/replays any packet. F1/receiver Fly native
+It neither changes the result nor sends/replays any packet. Receiver Fly native
 passes are intentionally excluded because their edges are synthesized by the DLL.
 
 The live green/green-red panel test hit cdecl relay `0x0041E890` and object
@@ -532,11 +514,11 @@ is explicitly not an implementation instruction.
 | Progression doors/shutters | **Observation:** some objects block only the client from reachable level regions. | Treat each root object identity and its complete relay/forwarder chain as distinct. A known card-door route is evidence for that object only; `0x41080010` is not a semantic open-door opcode. |
 | Saberization and Saberizer HUD | **Solved for activation:** the saberized lamp flies on both screens via NPC mode sync (below). Saberizer is `type=0x40050007`/`item=0x50000003`; fire input replicates and P2 shoots visibly. The green scan overlay driver is still unknown (`0x5B8C20` never runs in steady state, P2 never enters Scan `0x6100000C`); the removed hook is negative evidence. | Recover gameplay state/owner separately from presentation/HUD selection. |
 | Whip world hits | **Observation:** particles appear, while boxes/grilles do not react. | Recover one stock hit receiver or object event for each target family before networking it. Visual particle emission is non-authoritative and cannot prove a hit. |
-| Mooch versus laser mines | **Hypothesis:** tripwire/mines react through an ordinary target hit or trigger receiver, not a direct mine-disable call. | Test local F1 and normal Mooch attack against one identified mine; log source Fly, target identity, hit/event route and native result before choosing replication. |
+| Mooch versus laser mines | **Hypothesis:** tripwire/mines react through an ordinary target hit or trigger receiver, not a direct mine-disable call. | Test normal Mooch attack against one identified mine; log source Fly, target identity, hit/event route and native result before choosing replication. |
 | Dynamic physics / key-card | **Observation:** card insertion can replicate without making the card itself a shared physical object. | Design only after discovering stable identity and native ownership/lifetime: pickup, carry, transform, drop, destruction and late link must have explicit authority. Never network raw addresses. |
 | NPC death, animation, attacks and damage | **Observation:** a client can receive and locally kill a dynamic “toaster” before a distant host creates its canonical copy and assigns `world_id`; normally linked NPC fights can still carry client damage. | Investigate damage/death loss or reconciliation **before late link**, not a blanket absence of client damage. Fresh-level tests: host/client trigger, delayed linking, kill-before-link, attack animation, incoming and outgoing damage. Do not infer global NPC sync from a single successful kill. |
 | World streaming / unloaded level areas | **Observation:** an alternative client route can unload parts of an apparently linear level in that process. | Recover native streaming-cell/zone transition and its relation to local loaded state versus shared progression. A rally may reunite peers at a confirmed cutscene/checkpoint, but must not be a generic streaming fix. |
-| Chat | **Build state:** F10 opens a bounded retained non-activating GDI window owned by the game; transport uses a separate reliable UTF-8 packet. The old direct-DC panel flashed, while the first WS_CHILD replacement was completely hidden by D3D. | Two-process text delivery, Cyrillic layout, stable redraw in windowed/exclusive display, connection loss and message limits. Keep it independent from game action edges. |
+| Chat | **Build state:** ENTER opens a bounded retained non-activating GDI window owned by the game (only with a live local P1); transport uses a separate reliable UTF-8 packet. The old direct-DC panel flashed, while the first WS_CHILD replacement was completely hidden by D3D. | Two-process text delivery, Cyrillic layout, stable redraw in windowed/exclusive display, connection loss and message limits. Keep it independent from game action edges. |
 
 Recommended evidence order is: late-join persistent-state policy, death/cutscene
 recovery, concrete blocked progression objects and physics card, Saberization/HUD,

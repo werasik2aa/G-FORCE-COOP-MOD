@@ -22,11 +22,6 @@ namespace coop
 		void Remove();
 		void PublishDefaultModeActiveEntity(void* entity);
 		bool EnsureNetworkPlayer2();
-		// Game-thread-only local debug controls. They use the same recorded native
-		// P1 spawn context as network P2 creation, but do not require a second game
-		// process or a connected peer.
-		bool EnsureLocalPlayer2ForDebug();
-		bool EnableLocalAbrForDebug();
 		// Called after the stock generic state dispatcher has completed a native
 		// transition. It observes only positively identified inner Ledge/Climb
 		// machines; it never selects or writes a state.

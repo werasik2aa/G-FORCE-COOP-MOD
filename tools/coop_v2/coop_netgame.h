@@ -112,16 +112,6 @@ namespace coop
 		// the normal Fly_Deactivated transition.
 		bool ConsumeRemoteFlyZeroOwnerTransition(std::uint32_t& input_sequence);
 		bool SetFlyControlActiveState(void* fly, bool active) const;
-		// Game-thread-only F1 probe. It creates one local two-emitter pulse from
-		// Mooch's current transform and the local aim direction, without requiring
-		// a second game process. The request is fed through the same raw-button
-		// branch as a real Fly shot; it never selects a controller mode, changes
-		// camera/HUD state, or sends a network packet.
-		bool RequestDebugFlyDualLaser();
-		// Clears the previous one-tick F1 emitter pulse from the foreground
-		// game-thread dispatcher.
-		void TickDebugFlyDualLaser();
-
 		// Fly_Active::Enter normally publishes Mooch as both active entities, but
 		// P1's still-ticking Default controller later overwrites those globals.  Keep
 		// the native fly ownership published after its own tick; never manufacture
@@ -347,7 +337,6 @@ namespace coop
 			std::uint32_t remote_fly_transform_sequence,
 			protocol::FlyAbilityPacket& event);
 		void ClearRemoteFlyDualLaserPulse();
-		void ClearDebugFlyDualLaserPulse();
 		void SendQueuedFlyAbilityPackets();
 		void ClearFlyAbilityQueues();
 		void ClearIncomingFlyAbilityEvents();

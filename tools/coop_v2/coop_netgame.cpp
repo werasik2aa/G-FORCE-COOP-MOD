@@ -2443,24 +2443,6 @@ namespace coop
 		m_remote_fly_laser_pulse_active = false;
 	}
 
-	void CoopNetGame::ClearDebugFlyDualLaserPulse()
-	{
-		if (!m_debug_fly_laser_pulse_active)
-			return;
-
-		if (!SetFlyDualLaserRouteItemsActive(m_debug_fly_laser_route_items,
-			m_debug_fly_laser_item_ids, false))
-		{
-			CoopRuntime::Instance().Log(
-				"[debug-F1] could not clear prior standalone Mooch laser pulse\r\n");
-		}
-		ZeroMemory(m_debug_fly_laser_route_items,
-			sizeof(m_debug_fly_laser_route_items));
-		ZeroMemory(m_debug_fly_laser_item_ids,
-			sizeof(m_debug_fly_laser_item_ids));
-		m_debug_fly_laser_pulse_active = false;
-	}
-
 	bool CoopNetGame::ConsumeReadyRemoteFlyDualLaserEvent(
 		std::uint32_t remote_fly_transform_sequence,
 		protocol::FlyAbilityPacket& event)
@@ -2641,74 +2623,6 @@ namespace coop
 		std::uint32_t state_index = 0;
 		return retail::ReadFlyActiveStateIndex(state_index) &&
 			retail::HandlerView(handler_ref).SetFlyControlActive(state_index, active);
-	}
-
-	bool CoopNetGame::RequestDebugFlyDualLaser()
-	{
-		// F1 is deliberately independent of ownership and Q/HUD state. It sends
-		// the same raw pressed edge into a shadow Fly_Active update, so one window
-		// can test the real Mooch attack without a second client.
-		ClearDebugFlyDualLaserPulse();
-
-		retail::EntitySlotRepository players;
-		retail::EntityRef fly = {};
-		retail::Transform fly_transform = {};
-		if (!players.Get(retail::EntitySlot::Mooch, fly) || !fly ||
-			!retail::EntityView(fly).ReadTransform(fly_transform) ||
-			!IsFiniteRetailTransform(fly_transform))
-		{
-			CoopRuntime::Instance().Log(
-				"[debug-F1] unavailable: Mooch transform is not ready\r\n");
-			return false;
-		}
-
-		retail::GamePadRef primary_gamepad = {};
-		retail::AimRay aim_ray = {};
-		if (!retail::PrimaryGamePadStore().Read(primary_gamepad) ||
-			!primary_gamepad ||
-			!ReadValidAimRay(retail::ToPointer(primary_gamepad.value), aim_ray))
-		{
-			CoopRuntime::Instance().Log(
-				"[debug-F1] unavailable: P1 aim ray is not ready\r\n");
-			return false;
-		}
-
-		float laser_target[3] = {};
-		if (!BuildFlyDualLaserTarget(aim_ray.origin, aim_ray.direction,
-			laser_target))
-		{
-			CoopRuntime::Instance().Log(
-				"[debug-F1] unavailable: P1 aim target is invalid\r\n");
-			return false;
-		}
-
-		void* const fly_pointer = retail::ToPointer(fly.value);
-		if (RunFlyNativeDualLaserPass(fly_pointer, laser_target, false))
-		{
-			CoopRuntime::Instance().Log(
-				"[debug-F1] native Mooch dual-laser raw button fired target=(%.2f, %.2f, %.2f); no client/Q/HUD required\r\n",
-				laser_target[0], laser_target[1], laser_target[2]);
-			return true;
-		}
-
-		if (ApplyDirectFlyDualLaserPulse(fly_pointer, laser_target, false))
-		{
-			CoopRuntime::Instance().Log(
-				"[debug-F1] native Mooch raw button unavailable; direct visual fallback target=(%.2f, %.2f, %.2f)\r\n",
-				laser_target[0], laser_target[1], laser_target[2]);
-			return true;
-		}
-
-		CoopRuntime::Instance().Log(
-			"[debug-F1] unavailable: native and direct Mooch laser paths failed\r\n");
-		return false;
-	}
-
-	void CoopNetGame::TickDebugFlyDualLaser()
-	{
-		// DebugActions calls this before sampling F1. A pulse therefore lasts one
-		// full foreground game tick and never waits for Fly_Active or a client.
-		ClearDebugFlyDualLaserPulse();
 	}
 
 	bool CoopNetGame::IsLocalFlyControlled() const

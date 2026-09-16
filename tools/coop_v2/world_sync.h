@@ -67,17 +67,6 @@ namespace coop
 			std::uint32_t& world_id, void*& entity) const;
 		// Returns the live entity currently bound to a native trigger object.
 		void* EntityOfTrigger(void* trigger) const;
-		// Game-thread-only diagnostics. They never invent a retail pointer or event
-		// code: targets come from the native factory registry, and F3 replays only
-		// an event that this process has already observed.
-		bool DebugSpawnNearestTrigger();
-		bool DebugDispatchNearestRecordedEvent();
-		bool DebugActivateNearestKnownInteractive();
-		// F9-only read-only catalogue of every still-live registered trigger.
-		// It reports exact observed identity/position and deliberately keeps all
-		// non-ComputerBox classifications below "approved".
-		bool DebugLogInteractiveCandidates();
-
 		// These methods run only on the game thread, from the already verified
 		// trigger factory/spawn hooks and P1's post-update tick.
 		void RecordTriggerTemplate(void* trigger, std::uint32_t family,
@@ -131,13 +120,6 @@ namespace coop
 			std::uint32_t transform_signature;
 			int last_event_code;
 			bool has_last_event;
-		};
-
-		enum class DebugTriggerFilter
-		{
-			SpawnDefinition,
-			RecordedEvent,
-			KnownInteractive
 		};
 
 		struct HostEntity
@@ -239,8 +221,6 @@ namespace coop
 		TriggerTemplate* FindTriggerTemplate(const TriggerKey& key);
 		TriggerTemplate* FindSpawnTemplate(const WorldSpawnPacket& packet,
 			const char*& match_kind);
-		TriggerTemplate* FindNearestDebugTrigger(DebugTriggerFilter filter);
-		bool ReadDebugPlayerPosition(float position[4]) const;
 		void AddClientEntity(void* entity, const TriggerKey& key,
 			std::uint32_t trigger_signature, std::uint32_t world_id);
 		bool TrySpawnClientEntity(PendingSpawn& pending);

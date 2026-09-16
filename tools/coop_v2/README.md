@@ -66,7 +66,7 @@ F2 не нужен: принудительный спавн скроет неи�
   `winmm_proxy`, только целевая платформа Win32. `proxy_smoke` в текущем
   исходном дереве и solution отсутствует; упоминания о нём относятся к старому
   smoke-test эксперименту.
-- `debug_actions.h/.cpp` — единственная точка временных F1–F7/F9/F10 действий. Она
+- `debug_actions.h/.cpp` — единственная точка переключения чата ENTER. Она
   исполняется только после штатного тика P1 на game thread, а не из сетевого worker.
 - `build.bat` — сборка x86 и подготовка runtime DLL.
 - `dump_info.cpp` — вспомогательный исходник для анализа. Старый
@@ -234,7 +234,6 @@ respawn, но из-за этого мог навсегда остаться в h
 | P2 Ledge/Climb | Дать P1 зацепиться за стол/уступ, дождаться, что P2 держит старую привязку, и увести P1 более чем на 0.5 м минимум на 0.25 s. | Ожидаются `[p2-attachment-release] queued ...` и `result consumed=1`; пока P2 остаётся далеко, пара может повторяться раз в 0.25 s. P2 должен выйти через stock input, после чего плавно догоняет P1. Если `consumed=0`, сохранить лог. В ABR/Mooch/cutscene/death строк быть не должно. |
 | P2 пропал / DeathMode | Дать удалённому P2 попасть в outer DeathMode, пока peer P1 уже снова в `Default`. | После одного более нового packet: `[p2-death-recovery] ... seq=N entry_seq=M`; P2 выходит из hide/death pose. Пока peer не в `Default`, `[p2-death-guard]` ожидаем и не означает crash. |
 | Main-menu Connect by IP | В exact retail EXE открыть главное меню и нажать строку сразу после `Credits`. | Пока **not-tested**: сначала ожидаются `[menu-init] ... installed`, затем по одному `[menu] BuildMainMenu observed`, `Credits AddChild seam observed`, `native Connect by IP row added` и `Connect by IP label resolved`. Клик должен дать тот же IP-диалог, что `F8`, и `F8 request queued`. Если ABI не совпал, лог называет конкретный адрес, строки не будет, но `F8` должен остаться. |
-| F1 local Mooch laser | В одном foreground-процессе, без клиента и без входа в Q, поставить Муху в кадр и один раз нажать F1. | Ожидается `[debug-F1] native Mooch dual-laser raw button fired target=(...)`. F1 подаёт тот же exact raw edge в shadow `Fly_Active::Update`, но временно ставит origin XGamePad в центр Мухи. После прохода возвращаются камера, включая Fly request/apply window `+0x91C..+0x9B7`, HUD/ownership и сеть не меняются; не должно быть рывка P1-камеры. При несовпадении профиля логируется direct visual fallback. Боевой live-result всё ещё **not-tested**. |
 | Лазер и поворот Мухи | Local owner Мухи резко поворачивает её и нажимает штатную атаку, пока receiver остаётся за обычным P1 или в Q. | Owner: `[fly-laser] queued ... post_tick_fly_seq=N`; owner публикует transform `N` сразу после native Fly tick. Receiver ждёт epoch `N`, пишет **полный** `fly_rotation` без splice `camera_yaw`, затем `EntityView` очищает retail cache-valid byte `entity+0x7E`: следующий native reader пересчитывает cached matrix `+0x88` из root rotation `+0xC8` и position `+0xE8`. Режим, камера и HUD receiver не выбираются; direct pulse остаётся fallback. Визуальный/боевой live-result ещё **not-tested**. |
 | P2/P3 scanner / HUD | Дать оружие со сканированием remote P2 (или существующему P3), затем проверить P1. | Открытая проблема. Экспериментальный P2/P3 scanner guard удалён: он не исправил общий зелёный HUD. Не считать scanner синхронизированным или изолированным, пока не найден и не проверен настоящий presentation route. |
 | Смерть Мухи | Убить/respawn Mooch, пока peer подключён. | Owner публикует `local Fly_Deactivated ... zero-owner exit`; peer получает `remote ownership 1 -> 0`. Если receiver локально пытается войти в `Fly_Deactivated`, пока peer ещё присылает живую Муху, ожидается `[fly-lifecycle ... suppressed receiver Fly_Deactivated ...]`; после zero-owner packet этот guard больше не действует и stock respawn разрешён. Это пока **not-tested** вживую. |
@@ -264,7 +263,7 @@ respawn, но из-за этого мог навсегда остаться в h
 | P0 | Двери, задвижки и другие progression-объекты иногда отрезают client путь. | **Наблюдение.** Для каждого конкретного объекта записать factory identity, route и всю native event-chain. Проверенная дверь через карту не доказывает работу всех дверей; event `0x41080010` не является универсальной командой открытия. |
 | P1 | Сейберизация не синхронизирована; у peer ошибочно остаётся HUD лазера пушки-сейберизатора. | **Наблюдение.** Найти отдельно gameplay state/ownership и presentation/HUD route. Не выключать HUD глобально и не объявлять scanner route решением: старый scanner guard был удалён как нерабочий. |
 | P1 | Хлыст виден частицами, но не ломает коробки, не открывает вентиляционные решётки и не действует на мир. | **Наблюдение.** Частицы не считаются попаданием. Сначала зафиксировать native hit/receiver/event для одной коробки и одной решётки, затем решать, нужен ли общий world-event или отдельные классы целей. |
-| P1 | Лазер Мухи должен выключать лазерные растяжки/мины. | **Гипотеза:** нужен обычный native hit/trigger target, а не прямой вызов «отключить мину». Проверить локально F1 и штатной атакой, затем записать объект, попадание и результат; только после этого выбирать сетевой маршрут. |
+| P1 | Лазер Мухи должен выключать лазерные растяжки/мины. | **Гипотеза:** нужен обычный native hit/trigger target, а не прямой вызов «отключить мину». Проверить штатной атакой, затем записать объект, попадание и результат; только после этого выбирать сетевой маршрут. |
 | P1 | Физические объекты (в том числе key-card) не имеют общей физики/позиции. | **Наблюдение.** Событие вставки карты и её transform — разные задачи. Нужны stable identity, authority и правила для захвата, падения, destruction и late join; сырая репликация указателей запрещена. |
 | P1 | Смерть NPC, анимации, атаки и remote damage. | **Наблюдение:** client может получить и локально убить «тостера» до того, как далёкий host создаст canonical сущность и назначит `world_id`. При обычном уже связанном NPC client-урон может доходить. Значит исследуется потеря/неверная сверка damage/death **до late-link**, а не объявляется нерабочим весь client damage. Проверить delayed spawn, kill-before-link, attack animation и урон в обоих направлениях на свежем уровне. |
 | P0 | Streaming/выгрузка частей локации при разном пути игроков. | **Наблюдение:** если client проходит альтернативным путём, в его процессе могут выгрузиться части уровня, хотя маршрут выглядит линейным. Найти native streaming cell/zone transition и отделить локальную загрузку секторов от общего progression state; не лечить это телепортом, door-event или повторным spawn. |
@@ -356,7 +355,7 @@ WinMM-прокси нельзя снова сокращать только до 
 
 Отдельно от клавиш каждый реально прошедший через retail `TriggerEventDispatcher`
 event печатается сразу как `[trigger-activation]`. Это работает без соединения:
-`source=fly-shadow` означает F1 или receiver-side native Fly shadow pass,
+`source=fly-shadow` означает receiver-side native Fly shadow pass,
 `fly-local` — штатный local Fly event, `game` — всё остальное. Запись сообщает
 факт dispatcher-вызова и его точку, но не присваивает неизвестному trigger имя
 или право на F4-активацию.
@@ -379,7 +378,7 @@ callback с proximity-trigger’ом.
 consumer подавляется на одну секунду: некоторые retail raw `pressed` queries возвращают
 `true` несколько кадров подряд и иначе засыпают лог одинаковыми строками. Лог ничего
 не подменяет, не реплицирует и не называет объект, а служит следующей точкой для
-статического разбора. Scoped F1 и receiver-side synthetic Fly pass намеренно не
+статического разбора. Scoped receiver-side synthetic Fly pass намеренно не
 попадают в этот лог.
 
 Для поиска и синхронизации world-кнопок используются byte-gated relay `0x41E890`
@@ -444,14 +443,13 @@ streaming остаются отдельными задачами.
 
 | Клавиша | Действие | Граница безопасности |
 | --- | --- | --- |
-| `F1` | Локальная одноразовая проверка dual laser Мухи: берёт transform Мухи и текущий P1 aim, временно центрирует native XGamePad ray и запускает shadow `Fly_Active` с synthetic raw edge. | Не выбирает controller mode и не меняет ownership, scanner/HUD/camera; не использует сеть. Не требует входа в Q или клиента. При peer-owned Мухе это локальный native-проход для проверки receiver-side реакции; direct item pulse используется только при несовпадении runtime-профиля. |
 | `F2` | Повторяет native spawn ближайшего зарегистрированного trigger с `kTriggerHasSpawnDefinition`. | Может создать ещё один объект, поэтому это только sandbox/debug. |
 | `F3` | Повторяет последний реально наблюдённый native event ближайшего trigger. | Не угадывает event code. |
 | `F4` | Посылает `ComputerBox` event `0x41080022` только ближайшему template с subtype `0x1F000095`, definition `43`. | Другие статически найденные `0x41xxxxxx` коды не являются подтверждёнными кнопками и намеренно не вызываются. |
 | `F5` | Создаёт local P2 в этом процессе из сохранённого native P1 spawn context. | Не нужен второй процесс; допустимы только P1 Default/ABR. |
 | `F6` | Сначала гарантирует `F5`, затем запрашивает native ABR для P1. | Локальная P2 ABR task всё ещё network-only experiment. |
 | `F9` | Печатает read-only каталог всех ещё живых зарегистрированных trigger-точек. | Не вызывает trigger и не создаёт entity. `approved` — только exact ComputerBox; `observed` — уже виденный native event; `guess` — spawn-template; `unknown` — остальное. Координаты и identity наблюдены, но имя/назначение не угадываются. |
-| `F10` | Открывает/скрывает retained GDI-панель поверх client area игры; Enter отправляет строку, Esc скрывает. | Отдельный reliable UTF-8 packet, максимум 64 символа ввода. Входящее сообщение при закрытом чате автоматически показывает полупрозрачное неактивное уведомление на 6 секунд. После штатного D3D9 Present обновляется позиция owned HWND, а отрисовка идёт через его WM_PAINT. Первый WS_CHILD-вариант был полностью скрыт D3D-поверхностью и заменён. D3D state не меняется. Пока панель открыта в foreground-процессе, её клавиши не передаются P2 и не запускают F1–F9 debug-действия. |
+| `ENTER` | Открывает/скрывает retained GDI-панель поверх client area игры; Enter отправляет строку, Esc скрывает. | Отдельный reliable UTF-8 packet, максимум 64 символа ввода. Входящее сообщение при закрытом чате автоматически показывает полупрозрачное неактивное уведомление на 6 секунд. После штатного D3D9 Present обновляется позиция owned HWND, а отрисовка идёт через его WM_PAINT. Первый WS_CHILD-вариант был полностью скрыт D3D-поверхностью и заменён. D3D state не меняется. Пока панель открыта в foreground-процессе, её клавиши не передаются P2 и не затрагивают P2. |
 
 `Fly_Deactivated` (`0x61000075`) — локальный native-переход в `Fly_Respawn`, а не
 сетевой флаг смерти. Его `Enter` разрушает локальное visual/task состояние, поэтому
@@ -734,7 +732,7 @@ not revive a route, packet layout or address merely because it appears below.
   XGamePad-оси (`0..3`): P2 использует `0`/`1`, а локальный `Fly_Active` читает
   все четыре. В пакет также входят sequence/control-поля fly, полный transform
   Мухи (`position` и `rotation`), ABI-reserved `fly_debug_fire_sequence` и
-  дополнительные состояния ввода. F1 также не использует это unreliable поле
+  дополнительные состояния ввода. unreliable поле не используется
   и не отправляет свой локальный debug-выстрел в сеть.
   Первый реальный remote-shot теперь идёт отдельным 44-byte fixed
   `FlyAbilityPacket` по reliable-каналу: пока это только dual laser Мухи; packet
