@@ -24,6 +24,15 @@ namespace coop
 		constexpr uint8_t kExpectedStateMachineSelectState[] = {
 			0x51, 0x53, 0x56, 0x8B, 0xF1
 		};
+		constexpr uintptr_t kLanguageSelect = 0x004596A0u;
+		// Language manager setter (approx-name) receives the manager in ECX and
+		// (language, unknown) on the stack, then notifies text (0x4902D0,
+		// which stores kTextLanguage and rebuilds strings) and re-selects the
+		// audio File_XXX.bin (0x458A40). Its 7-byte prologue has no relative
+		// operands, so the E9 trampoline relocates it verbatim.
+		constexpr uint8_t kExpectedLanguageSelect[] = {
+			0x51, 0x8A, 0x54, 0x24, 0x08, 0x80, 0xFA, 0xFF
+		};
 		constexpr uintptr_t kDefaultModeActiveStores = 0x005BEAD6u;
 
 		constexpr uintptr_t kGPigUpdateVtableSlot = 0x0070C8A4u;

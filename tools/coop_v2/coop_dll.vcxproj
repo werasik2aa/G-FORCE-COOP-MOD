@@ -66,8 +66,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PostBuildEvent>
-      <Command>copy /Y "$(ProjectDir)coop.ini" "$(OutDir)coop.ini"
-copy /Y "$(GnsRuntimeRoot)\GameNetworkingSockets.dll" "$(OutDir)GameNetworkingSockets.dll"
+      <Command>copy /Y "$(GnsRuntimeRoot)\GameNetworkingSockets.dll" "$(OutDir)GameNetworkingSockets.dll"
 copy /Y "$(GnsRuntimeRoot)\steam_api.dll" "$(OutDir)steam_api.dll"
 copy /Y "$(GnsRuntimeRoot)\libprotobuf.dll" "$(OutDir)libprotobuf.dll"
 copy /Y "$(GnsRuntimeRoot)\libcrypto-3.dll" "$(OutDir)libcrypto-3.dll"
@@ -96,8 +95,7 @@ copy /Y "$(GnsRuntimeRoot)\abseil_dll.dll" "$(OutDir)abseil_dll.dll"</Command>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PostBuildEvent>
-      <Command>copy /Y "$(ProjectDir)coop.ini" "$(OutDir)coop.ini"
-copy /Y "$(GnsRuntimeRoot)\GameNetworkingSockets.dll" "$(OutDir)GameNetworkingSockets.dll"
+      <Command>copy /Y "$(GnsRuntimeRoot)\GameNetworkingSockets.dll" "$(OutDir)GameNetworkingSockets.dll"
 copy /Y "$(GnsRuntimeRoot)\steam_api.dll" "$(OutDir)steam_api.dll"
 copy /Y "$(GnsRuntimeRoot)\libprotobuf.dll" "$(OutDir)libprotobuf.dll"
 copy /Y "$(GnsRuntimeRoot)\libcrypto-3.dll" "$(OutDir)libcrypto-3.dll"
@@ -150,7 +148,7 @@ copy /Y "$(GnsRuntimeRoot)\abseil_dll.dll" "$(OutDir)abseil_dll.dll"</Command>
   </ItemGroup>
   <ItemGroup>
     <None Include="coop_dll.def" />
-    <None Include="coop.ini" />
+
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

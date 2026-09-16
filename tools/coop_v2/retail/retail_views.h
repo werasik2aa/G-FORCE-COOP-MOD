@@ -698,6 +698,12 @@ namespace retail
                 gforce::kGPigSpawnContextEntityOffset), out);
         }
 
+        bool SetActiveEntity(EntityRef entity) const
+        {
+            return context_ && entity && TryWrite(AddOffset(context_.value,
+                gforce::kGPigSpawnContextEntityOffset), entity.value);
+        }
+
         SpawnContextRef ref() const { return context_; }
 
     private:
@@ -1776,6 +1782,38 @@ namespace retail
             return Get(slot, out.entity) &&
                 EntityView(out.entity).Handler(out.handler) &&
                 HandlerView(out.handler).Controller(out.controller);
+        }
+
+        // Atomically enough for the single game thread: validate both selectable
+        // slots, write the first, then roll it back if the second write fails.
+        // This is used only for the client role hand-off between two live GPigs.
+        bool SwapSelectable(EntitySlot first, EntitySlot second) const
+        {
+            if (first == second || !IsSelectableGPigSlot(first) ||
+                !IsSelectableGPigSlot(second))
+            {
+                return false;
+            }
+
+            EntityRef first_entity = {};
+            EntityRef second_entity = {};
+            if (!GetSelectable(first, first_entity) || !first_entity ||
+                !GetSelectable(second, second_entity) || !second_entity)
+            {
+                return false;
+            }
+
+            const Address first_address = gforce::kGPigEntityArray +
+                static_cast<std::uint32_t>(first) * sizeof(Address);
+            const Address second_address = gforce::kGPigEntityArray +
+                static_cast<std::uint32_t>(second) * sizeof(Address);
+            if (!TryWrite(first_address, second_entity.value))
+                return false;
+            if (TryWrite(second_address, first_entity.value))
+                return true;
+
+            TryWrite(first_address, first_entity.value);
+            return false;
         }
 
         // Resolves an already-ticking controller to a slot considered by the

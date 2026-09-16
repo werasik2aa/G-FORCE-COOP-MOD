@@ -27,7 +27,7 @@ IDA, `vftable`, x86 calling convention, rel32, field offsets и expected bytes.
 Счётчики только наблюдаем: [world-counter] пишет значение до/после, порог и источник
 native/peer-replay; F9 добавляет [world-counter-catalog].
 Перезагрузить контрольную точку до активации, нажать F9 у ящиков, пройти к триггеру
-и повторить F9, если враги не вышли. Лог остаётся в re_cache/runtime/gforce_coop.log.
+и повторить F9, если враги не вышли. Лог остаётся в gforce_coop.log.
 F2 не нужен: принудительный спавн скроет неисправность сценария.
 
 ## Состав
@@ -55,8 +55,8 @@ F2 не нужен: принудительный спавн скроет неи�
 - `winmm_proxy.h/.cpp/.def` — класс `WinmmProxy`, ABI-прокси системного WinMM и
   загрузка `coop_dll.dll`. Кроме функций самой игры, прокси экспортирует mixer,
   wave-in и wave-out API, которые импортирует Steam `steamclient.dll`.
-- `coop.ini` — устройство P2 и смещение спавна.
-- `[window]` в `coop.ini` — экспериментальное перетягиваемое D3D9-окно 1280x720 для
+- `GForce.ini` — устройство P2 и смещение спавна.
+- `[window]` в `GForce.ini` — экспериментальное перетягиваемое D3D9-окно 1280x720 для
   тестов host/client; `experimental_windowed=0` оставляет stock fullscreen.
   Focus/minimise pause bypass отключён: прежние hooks `GetForegroundWindow`,
   `IsIconic`, WndProc и guessed frame-active flag не сняли pause и могли мешать
@@ -220,7 +220,7 @@ respawn, но из-за этого мог навсегда остаться в h
 4. Проверяются: P2 стоит на полу, камера остаётся за P1, управление P2 работает.
 5. Переключить фокус на второе окно или свернуть первое: сейчас сохраняется stock
    pause behavior. Не считать это ошибкой until a real simulation seam is recovered.
-6. Анализируется только хвост `E:\G-Force\g_force\re_cache\runtime\gforce_coop.log`: при загрузке ожидается
+6. Анализируется только хвост `E:\G-Force\gforce_coop.log`: при загрузке ожидается
    `[window] D3D hook installed ... focus/minimise bypass disabled`.
 
 ### Критичные проверки двух процессов
@@ -333,7 +333,7 @@ Runtime-путь задаётся свойством `GnsRuntimeRoot`. В лин
 `build.bat` вызывает `GForceCoop.sln` через MSBuild, поэтому `.vcxproj` —
 единственный список production `.cpp`; результат лежит в `build\Release`.
 `build.bat` не перезаписывает запущенную игру. Для явной установки двух собранных
-мод-DLL в закрытую копию игры надо передать отдельный target; `coop.ini` при этом
+мод-DLL в закрытую копию игры надо передать отдельный target; `GForce.ini` при этом
 сохраняется как пользовательская настройка:
 
 ```bat
@@ -352,7 +352,7 @@ WinMM-прокси нельзя снова сокращать только до 
 ## Временные debug-клавиши
 
 Это диагностические действия над одним строго проверенным retail EXE. Они не являются
-пользовательским UI и пишут результат в `g_force\re_cache\runtime\gforce_coop.log`.
+пользовательским UI и пишут результат в `gforce_coop.log`.
 
 Отдельно от клавиш каждый реально прошедший через retail `TriggerEventDispatcher`
 event печатается сразу как `[trigger-activation]`. Это работает без соединения:
@@ -482,7 +482,7 @@ Deactivated не оставляет receiver навечно в старом pres
 remote claim или local hand-off очищает pending до dispatcher. Старый live-packet не
 может оживить Муху после принятого выхода.
 
-Для проверки смерти сравни оба `g_force\re_cache\runtime\gforce_coop.log`: у владельца должен быть
+Для проверки смерти сравни оба `gforce_coop.log`: у владельца должен быть
 `[fly-lifecycle ... local Fly_Deactivated ... input_seq=N ... published ordered zero-owner exit]`,
 а у второго процесса — `[fly-packet ... remote ownership 1 -> 0 input_seq=N fly_seq=0]`.
 После неё ожидаются `[fly-lifecycle ... queued ordered remote zero-owner input_seq=N ...]`

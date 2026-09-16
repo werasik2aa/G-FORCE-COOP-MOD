@@ -9,10 +9,13 @@ namespace coop
 {
 	struct CoopConfig
 	{
-		volatile LONG enabled;
 		volatile LONG test_windowed;
 		int window_width;
 		int window_height;
+		// Voice archive language: "AUT" follows the game's own File_XXX.bin
+		// choice, "OFF" keeps the stock hardcoded File_RUS.000, otherwise a
+		// forced 3-letter index (RUS/USA/FRE/...) for testing.
+		char audio_language[4];
 	};
 
 	class CoopRuntime final
@@ -47,7 +50,6 @@ namespace coop
 		bool m_log_lock_ready;
 		wchar_t m_module_directory[MAX_PATH];
 		wchar_t m_log_path[MAX_PATH];
-		wchar_t m_ini_path[MAX_PATH];
 		wchar_t m_game_ini_path[MAX_PATH];
 		CoopConfig m_config;
 	};

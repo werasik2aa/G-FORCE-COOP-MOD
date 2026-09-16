@@ -76,13 +76,35 @@ namespace coop
 
 		bool ApplyPlayer2WeaponSelection(void* player2, std::uint32_t weapon_type, const char* source);
 
-		bool SpawnPlayer2FromSnapshot(const char* trigger,
-			bool allow_when_coop_disabled);
+		bool SpawnPlayer2FromSnapshot(const char* trigger);
+		// Client-only role hand-off: the spawned Black Pig becomes the true local
+		// P1 and the original Darwin becomes the packet-driven remote P2. While ABR
+		// is actually active on either side the hand-off is disabled (the Black Pig
+		// has no stock ABR orientation contract); the roles are restored before
+		// the next local tick. The RDV world flag alone does not block: it stays
+		// set on ordinary levels too.
+		bool PromoteClientBlackPigToPlayer1(void*& player1_controller);
+		bool RestoreClientDarwinForRdv(void*& player1_controller);
+		// Shared single-thread role hand-off plumbing. Both directions swap the
+		// same two selectable slots and rebind the spawn context plus the two
+		// process-global active pointers to the pre-swap RemoteP2 entity, with
+		// rollback when the rebind fails. Entity/mode IDs below are identical
+		// across the FRE/USA/RUS data builds (only audio archives and UI text
+		// differ), so this path has no per-language branch.
+		bool RebindClientLocalPlayerTo(retail::EntityRef new_local_entity);
+		void ResetClientRoleCaches();
+		void RefreshPlayer1ControllerFromSlot(void*& player1_controller);
+		void LogClientRoleGateOnce(const char* gate,
+			std::uint32_t detail_a, std::uint32_t detail_b);
 		bool TryEnsurePlayer2RdvTask(const char* source);
+		bool TryEnsureRdvTaskForEntity(const char* source,
+			retail::EntityRef entity, retail::EntityRef& configured_entity);
 		bool TryEnterPlayer2AbrMode(void* controller);
-		bool ConfigurePlayer2RdvTask(const char* source,
-			retail::EntityRef player2, retail::HandlerRef player2_handler,
-			retail::MotorTaskRef task);
+		bool ConfigureRdvTaskForEntity(const char* source,
+			retail::EntityRef entity, retail::HandlerRef handler,
+			retail::MotorTaskRef task, retail::EntityRef& configured_entity);
+		bool RestoreLocalModeContract(retail::ControllerRef controller,
+			std::uint32_t mode_id);
 		bool SetAbrDriveGate(void* player, bool active);
 		bool SetLocalAbrPropulsion(void* player, float direction);
 
@@ -127,6 +149,13 @@ namespace coop
 		bool m_player2_default_mode_setup_failure_logged;
 		bool m_logged_blocked_active_publish;
 		bool m_debug_player2_enabled;
+		bool m_client_black_pig_promoted;
+		LONG m_last_role_heartbeat_tick;
+		bool m_client_black_pig_blocked_for_rdv_world;
+		bool m_client_black_pig_rdv_block_logged;
+		bool m_client_role_gate_logged;
+		retail::EntityRef m_client_black_pig_entity;
+		retail::EntityRef m_client_original_darwin_entity;
 		bool m_remote_p2_death_mode_observed;
 		std::uint32_t m_remote_p2_death_mode_entry_sequence;
 		SharedCameraCoordinator m_camera;
@@ -138,7 +167,7 @@ namespace coop
 		AttachmentFamily m_remote_p2_attachment_family;
 		retail::StateMachineRef m_remote_p2_attachment_state_machine;
 
-		// This cache is written only after ConfigurePlayer2RdvTask verifies that
+		// This cache is written only after ConfigureRdvTaskForEntity verifies that
 		// the stock configurator enabled the native task.  A merely allocated task
 		// is not ready and must be retried after transient spawn-context failures.
 		retail::EntityRef m_abr_native_task_configured_player2;

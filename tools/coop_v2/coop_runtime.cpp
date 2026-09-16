@@ -31,10 +31,8 @@ namespace coop
 		ZeroMemory(&m_log_lock, sizeof(m_log_lock));
 		ZeroMemory(m_module_directory, sizeof(m_module_directory));
 		ZeroMemory(m_log_path, sizeof(m_log_path));
-		ZeroMemory(m_ini_path, sizeof(m_ini_path));
 		ZeroMemory(m_game_ini_path, sizeof(m_game_ini_path));
 		ZeroMemory(&m_config, sizeof(m_config));
-		m_config.enabled = 1;
 		m_config.test_windowed = 1;
 		m_config.window_width = 1280;
 		m_config.window_height = 720;
@@ -124,49 +122,18 @@ namespace coop
 			return false;
 		lstrcpyW(m_module_directory, path);
 
-		// Runtime output belongs with the reverse-engineering cache, not beside the
-		// game executable.  Create the known project hierarchy lazily so a fresh
-		// checkout still receives diagnostics without polluting the game root.
-		if (lstrlenW(path) + lstrlenW(L"\\g_force\\re_cache\\runtime") >=
-			static_cast<int>(_countof(m_log_path)))
-		{
-			return false;
-		}
-		wchar_t log_directory[MAX_PATH] = {};
-		lstrcpyW(log_directory, path);
-		lstrcatW(log_directory, L"\\g_force");
-		if (!CreateDirectoryW(log_directory, nullptr) &&
-			GetLastError() != ERROR_ALREADY_EXISTS)
-		{
-			return false;
-		}
-		lstrcatW(log_directory, L"\\re_cache");
-		if (!CreateDirectoryW(log_directory, nullptr) &&
-			GetLastError() != ERROR_ALREADY_EXISTS)
-		{
-			return false;
-		}
-		lstrcatW(log_directory, L"\\runtime");
-		if (!CreateDirectoryW(log_directory, nullptr) &&
-			GetLastError() != ERROR_ALREADY_EXISTS)
-		{
-			return false;
-		}
-
+		// Runtime diagnostics live beside the game executable. All mod
+		// configuration lives in the game's own GForce.ini; there is no
+		// separate coop.ini anymore.
 		const wchar_t* const log_file_name = L"gforce_coop.log";
-		if (lstrlenW(log_directory) + 1 + lstrlenW(log_file_name) >=
+		if (lstrlenW(path) + 1 + lstrlenW(log_file_name) >=
 			static_cast<int>(_countof(m_log_path)))
 		{
 			return false;
 		}
-		lstrcpyW(m_log_path, log_directory);
+		lstrcpyW(m_log_path, path);
 		lstrcatW(m_log_path, L"\\");
 		lstrcatW(m_log_path, log_file_name);
-
-		if (lstrlenW(path) + 1 + lstrlenW(L"coop.ini") >= static_cast<int>(_countof(m_ini_path)))
-			return false;
-		lstrcpyW(m_ini_path, path);
-		lstrcatW(m_ini_path, L"\\coop.ini");
 
 		if (lstrlenW(path) + 1 + lstrlenW(L"GForce.ini") >=
 			static_cast<int>(_countof(m_game_ini_path)))
@@ -289,31 +256,70 @@ namespace coop
 
 	void CoopRuntime::LoadConfiguration()
 	{
-		InterlockedExchange(&m_config.enabled,
-			GetPrivateProfileIntW(L"coop", L"enabled", 1, m_ini_path) ? 1 : 0);
+		// All configuration lives in the game's own GForce.ini. The windowed
+		// backbuffer follows the game's RenderMode framebuffer size; there are
+		// no mod-owned width/height keys anymore. Missing mod keys are written
+		// back with defaults so a stock GForce.ini gains them on first boot.
+		wchar_t windowed[16] = {};
+		if (GetPrivateProfileStringW(L"window", L"experimental_windowed", L"",
+			windowed, _countof(windowed), m_game_ini_path) == 0)
+		{
+			WritePrivateProfileStringW(L"window", L"experimental_windowed", L"1",
+				m_game_ini_path);
+			windowed[0] = L'1';
+			windowed[1] = L'\0';
+		}
 		InterlockedExchange(&m_config.test_windowed,
-			GetPrivateProfileIntW(L"window", L"experimental_windowed", 1,
-				m_ini_path) ? 1 : 0);
-		m_config.window_width = GetPrivateProfileIntW(L"window", L"width", 1280,
-			m_ini_path);
-		m_config.window_height = GetPrivateProfileIntW(L"window", L"height", 720,
-			m_ini_path);
+			(windowed[0] != L'0') ? 1 : 0);
+		m_config.window_width = GetPrivateProfileIntW(L"RenderMode", L"FBWidth",
+			1280, m_game_ini_path);
+		m_config.window_height = GetPrivateProfileIntW(L"RenderMode",
+			L"FBHeight", 720, m_game_ini_path);
 		if (m_config.window_width < 640 || m_config.window_width > 7680)
 			m_config.window_width = 1280;
 		if (m_config.window_height < 480 || m_config.window_height > 4320)
 			m_config.window_height = 720;
-		if (m_config.test_windowed)
+		wchar_t audio_language[16] = {};
+		if (GetPrivateProfileStringW(L"language", L"language", L"", audio_language,
+			_countof(audio_language), m_game_ini_path) == 0)
 		{
-			wchar_t width[16] = {};
-			wchar_t height[16] = {};
-			_itow_s(m_config.window_width, width, _countof(width), 10);
-			_itow_s(m_config.window_height, height, _countof(height), 10);
-			WritePrivateProfileStringW(L"RenderMode", L"FBWidth", width,
+			WritePrivateProfileStringW(L"language", L"language", L"auto",
 				m_game_ini_path);
-			WritePrivateProfileStringW(L"RenderMode", L"FBHeight", height,
-				m_game_ini_path);
+			strcpy_s(m_config.audio_language, "AUT");
 		}
-		Log("[config] enabled=%ld\r\n", m_config.enabled);
+		char narrow_language[16] = {};
+		for (int i = 0; i < 15 && audio_language[i]; ++i)
+		{
+			const wchar_t c = audio_language[i];
+			narrow_language[i] = static_cast<char>(
+				c > 127 ? '?' : (c >= 'a' && c <= 'z' ? c - 32 : c));
+		}
+		if (narrow_language[0] == '\0' || _stricmp(narrow_language, "auto") == 0)
+		{
+			strcpy_s(m_config.audio_language, "AUT");
+		}
+		else if (_stricmp(narrow_language, "off") == 0)
+		{
+			strcpy_s(m_config.audio_language, "OFF");
+		}
+		else if (strlen(narrow_language) == 3)
+		{
+			bool valid = true;
+			for (int i = 0; i < 3 && valid; ++i)
+			{
+				const char c = narrow_language[i];
+				valid = (c >= 'A' && c <= 'Z');
+			}
+			if (valid && _stricmp(narrow_language, "COM") != 0)
+				strcpy_s(m_config.audio_language, narrow_language);
+			else
+				strcpy_s(m_config.audio_language, "AUT");
+		}
+		else
+		{
+			strcpy_s(m_config.audio_language, "AUT");
+		}
+		Log("[config-language] language=%s\r\n", m_config.audio_language);
 		Log("[config-window] experimental_windowed=%ld focus_pause=stock client=%dx%d\r\n",
 			m_config.test_windowed,
 			m_config.window_width, m_config.window_height);

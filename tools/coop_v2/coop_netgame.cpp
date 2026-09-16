@@ -673,6 +673,12 @@ namespace coop
 		m_remote_abr_saved_aim_ray(),
 		m_async_key_state_iat_slot(nullptr),
 		m_original_get_async_key_state(nullptr),
+		m_language_select_trampoline(nullptr),
+		m_original_language_select(nullptr),
+		m_language_select_hooked(false),
+		m_logged_lang_override(false),
+		m_input_probe_count(0),
+		m_last_input_probe_tick(0),
 		m_state_machine_select_state_trampoline(nullptr),
 		m_original_state_machine_select_state(nullptr),
 		m_input_action_trampoline(nullptr),
@@ -5078,6 +5084,39 @@ namespace coop
 		return result;
 	}
 
+	void CoopNetGame::ProbeLocalInputManager(void* manager,
+		std::uint32_t device, std::uint32_t axis, float value)
+	{
+		for (int i = 0; i < m_input_probe_count; ++i)
+		{
+			if (m_input_probe_managers[i] == manager &&
+				m_input_probe_devices[i] == device)
+			{
+				if ((value > 0.05f || value < -0.05f))
+				{
+					const LONG now = static_cast<LONG>(GetTickCount());
+					if (now - m_last_input_probe_tick > 1000)
+					{
+						m_last_input_probe_tick = now;
+						CoopRuntime::Instance().Log(
+							"[input-probe] local axis manager=%p device=%u axis=%u value=%.2f\r\n",
+							manager, device, axis, value);
+					}
+				}
+				return;
+			}
+		}
+		if (m_input_probe_count < 6)
+		{
+			m_input_probe_managers[m_input_probe_count] = manager;
+			m_input_probe_devices[m_input_probe_count] = device;
+			++m_input_probe_count;
+			CoopRuntime::Instance().Log(
+				"[input-probe] seen manager=%p device=%u axis=%u\r\n",
+				manager, device, axis);
+		}
+	}
+
 	float CoopNetGame::GetRemoteAnalogAxis(std::uint32_t axis) const
 	{
 		return axis < kCoopInputAnalogAxisCount ?
@@ -5110,6 +5149,8 @@ namespace coop
 
 		const float value = m_original_input_axis_query(input_manager, device,
 			axis, flags);
+		if (!remote_input_active && axis < 2)
+			ProbeLocalInputManager(input_manager, device, axis, value);
 		// Device zero is the normal P1 capture route.  Fly_Active may ask its
 		// registered device instead, so local Fly ownership deliberately captures
 		// all four returned axes regardless of that device selector.
@@ -6230,5 +6271,80 @@ namespace coop
 		m_input_hooked = false;
 		m_async_key_state_iat_slot = nullptr;
 		m_original_get_async_key_state = nullptr;
+	}
+
+
+	int CoopNetGame::MapForcedGameLanguage(int original)
+	{
+		const char* forced = CoopRuntime::Instance().Config().audio_language;
+		if (forced[0] == '\0' || _stricmp(forced, "AUT") == 0 ||
+			_stricmp(forced, "OFF") == 0)
+		{
+			return original;
+		}
+		struct LanguageMapEntry final
+		{
+			const char* code;
+			int value;
+		};
+		static const LanguageMapEntry table[] = {
+			{ "USA", 0x00 }, { "FRE", 0x06 }, { "GER", 0x07 },
+			{ "ITA", 0x08 }, { "SPA", 0x0B }, { "RUS", 0x0F },
+			{ "DUT", 0x04 }, { "CZE", 0x12 }, { "POL", 0x13 },
+			{ "BRA", 0x17 },
+		};
+		for (size_t i = 0; i < _countof(table); ++i)
+		{
+			if (_stricmp(forced, table[i].code) == 0)
+				return table[i].value;
+		}
+		return original;
+	}
+
+	void __fastcall CoopNetGame::HookLanguageSelect(void* manager, void*,
+		std::uint32_t language, std::uint32_t arg)
+	{
+		CoopNetGame& game = CoopNetGame::Instance();
+		const int forced = MapForcedGameLanguage(
+			static_cast<int>(language));
+		if (forced != static_cast<int>(language) &&
+			!game.m_logged_lang_override)
+		{
+			game.m_logged_lang_override = true;
+			CoopRuntime::Instance().Log(
+				"[language] game language overridden: 0x%02X -> 0x%02X\r\n",
+				language, static_cast<unsigned>(forced));
+		}
+		game.m_original_language_select(manager,
+			static_cast<std::uint32_t>(forced), arg);
+	}
+
+	bool CoopNetGame::InstallLanguageSelectHook()
+	{
+		if (m_language_select_hooked)
+			return true;
+		if (!InstallJmpHookRaw(kLanguageSelect, kExpectedLanguageSelect,
+			sizeof(kExpectedLanguageSelect),
+			reinterpret_cast<void*>(&HookLanguageSelect),
+			m_original_language_select_bytes, &m_language_select_trampoline,
+			"game language selector"))
+		{
+			return false;
+		}
+		m_original_language_select =
+			reinterpret_cast<LanguageSelectFn>(m_language_select_trampoline);
+		m_language_select_hooked = true;
+		return true;
+	}
+
+	void CoopNetGame::RemoveLanguageSelectHook()
+	{
+		if (!m_language_select_hooked)
+			return;
+		RemoveJmpHookRaw(kLanguageSelect, m_original_language_select_bytes,
+			sizeof(m_original_language_select_bytes),
+			&m_language_select_trampoline);
+		m_original_language_select = nullptr;
+		m_language_select_hooked = false;
 	}
 }

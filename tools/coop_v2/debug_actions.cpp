@@ -105,7 +105,7 @@ namespace coop
 		}
 
 		m_debug_player2_enabled = true;
-		const bool spawned = SpawnPlayer2FromSnapshot("debug-F5", true);
+		const bool spawned = SpawnPlayer2FromSnapshot("debug-F5");
 		if (!spawned)
 			m_debug_player2_enabled = false;
 		return spawned;

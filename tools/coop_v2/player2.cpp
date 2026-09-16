@@ -131,6 +131,13 @@ namespace coop
 		m_player2_default_mode_setup_failure_logged(false),
 		m_logged_blocked_active_publish(false),
 		m_debug_player2_enabled(false),
+		m_client_black_pig_promoted(false),
+		m_last_role_heartbeat_tick(0),
+		m_client_black_pig_blocked_for_rdv_world(false),
+		m_client_black_pig_rdv_block_logged(false),
+		m_client_role_gate_logged(false),
+		m_client_black_pig_entity(),
+		m_client_original_darwin_entity(),
 		m_remote_p2_death_mode_observed(false),
 		m_remote_p2_death_mode_entry_sequence(0),
 
@@ -409,24 +416,16 @@ namespace coop
 			retail::ToPointer(player1.controller.value));
 		if (player1_mode != kDefaultModeId && player1_mode != kAbrModeId)
 			return false;
-		return SpawnPlayer2FromSnapshot("network", false) &&
+		return SpawnPlayer2FromSnapshot("network") &&
 			InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
 	}
 
-	bool Player2Module::SpawnPlayer2FromSnapshot(const char* trigger,
-		bool allow_when_coop_disabled)
+	bool Player2Module::SpawnPlayer2FromSnapshot(const char* trigger)
 	{
 		if (!trigger)
 			trigger = "unknown";
 		if (InterlockedCompareExchange(&m_spawn_in_progress, 1, 0) != 0)
 			return false;
-		if (!allow_when_coop_disabled && !CoopRuntime::Instance().Config().enabled)
-		{
-			CoopRuntime::Instance().Log("[spawn-%s] co-op is disabled in coop.ini\r\n",
-				trigger);
-			InterlockedExchange(&m_spawn_in_progress, 0);
-			return false;
-		}
 		retail::EntitySlotRepository players;
 		const retail::EntityRef existing_player2_ref = players.GetSelectable(
 			retail::EntitySlot::RemoteP2);
@@ -511,16 +510,356 @@ namespace coop
 		return player2 && player2_controller;
 	}
 
+	void Player2Module::RefreshPlayer1ControllerFromSlot(
+		void*& player1_controller)
+	{
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding binding = {};
+		if (players.GetBinding(retail::EntitySlot::LocalP1, binding) &&
+			binding.controller)
+		{
+			player1_controller = retail::ToPointer(binding.controller.value);
+		}
+	}
+
+	void Player2Module::LogClientRoleGateOnce(const char* gate,
+		std::uint32_t detail_a, std::uint32_t detail_b)
+	{
+		if (!gate || m_client_role_gate_logged)
+			return;
+		m_client_role_gate_logged = true;
+		CoopRuntime::Instance().Log(
+			"[client-role] waiting: gate=%s detail_a=0x%08X detail_b=0x%08X\r\n",
+			gate, detail_a, detail_b);
+	}
+
+	void Player2Module::ResetClientRoleCaches()
+	{
+		m_client_black_pig_promoted = false;
+		m_client_black_pig_entity = {};
+		m_client_original_darwin_entity = {};
+		m_abr_native_task_configured_player2 = {};
+		m_player2_default_mode_initialized = false;
+		m_player2_default_mode_setup_failure_logged = false;
+		m_player2_abr_mode_setup_failure_logged = false;
+		m_remote_p2_death_mode_observed = false;
+		m_remote_p2_death_mode_entry_sequence = 0;
+		m_remote_p2_attachment_active = false;
+		m_remote_p2_attachment_family = AttachmentFamily::None;
+		m_remote_p2_attachment_state_machine = {};
+		m_last_weapon_type = 0xFFFFFFFFu;
+		m_last_player1_mode = 0;
+		InterlockedExchange(&m_player2_ready, 1);
+	}
+
+	bool Player2Module::RebindClientLocalPlayerTo(
+		retail::EntityRef new_local_entity)
+	{
+		// Proven minimal hand-off (b64543c): swap the two selectable slots and
+		// rebind the process-global active entity. The spawn context is
+		// deliberately untouched: rebinding it froze the promoted Black Pig.
+		if (!new_local_entity)
+			return false;
+		retail::EntityRef active_a = {};
+		retail::EntityRef active_b = {};
+		if (!retail::ActiveEntityStore().Read(active_a, active_b))
+		{
+			return false;
+		}
+		retail::EntitySlotRepository players;
+		if (!players.SwapSelectable(retail::EntitySlot::LocalP1,
+			retail::EntitySlot::RemoteP2))
+		{
+			return false;
+		}
+		if (!retail::ActiveEntityStore().Set(new_local_entity))
+		{
+			retail::ActiveEntityStore().Restore(active_a, active_b);
+			players.SwapSelectable(retail::EntitySlot::LocalP1,
+				retail::EntitySlot::RemoteP2);
+			return false;
+		}
+		return true;
+	}
+
+	bool Player2Module::PromoteClientBlackPigToPlayer1(
+		void*& player1_controller)
+	{
+		CoopNetGame& netgame = CoopNetGame::Instance();
+		if (!netgame.IsClient())
+			return false;
+
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding local = {};
+		retail::EntitySlotBinding remote = {};
+		if (!netgame.HasRemotePeer())
+		{
+			LogClientRoleGateOnce("no-remote-peer", 0, 0);
+			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return false;
+		}
+		if (InterlockedCompareExchange(&m_spawn_snapshot_ready, 0, 0) == 0 ||
+			!m_spawn_context)
+		{
+			// The stock P1 factory has not run since the last world load, so the
+			// network P2 cannot be created either. This is the late-join/save-load
+			// seam: a native load that deserializes P1 without the factory leaves
+			// no spawn context to reuse.
+			LogClientRoleGateOnce("no-spawn-snapshot", 0, 0);
+			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return false;
+		}
+		if (!players.GetBinding(retail::EntitySlot::LocalP1, local) ||
+			!players.GetBinding(retail::EntitySlot::RemoteP2, remote))
+		{
+			LogClientRoleGateOnce("no-role-bindings",
+				local.entity.value, remote.entity.value);
+			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return false;
+		}
+
+		if (m_client_black_pig_promoted)
+		{
+			if (local.entity == m_client_black_pig_entity &&
+				remote.entity == m_client_original_darwin_entity)
+			{
+				player1_controller = retail::ToPointer(local.controller.value);
+				return true;
+			}
+			// A world rebuild replaced one side without the normal reset seam.
+			// Drop the role cache and the previous world block, then evaluate
+			// the fresh entities below instead of the stale locals.
+			ResetClientRoleCaches();
+			m_client_black_pig_blocked_for_rdv_world = false;
+			m_client_black_pig_rdv_block_logged = false;
+			m_client_role_gate_logged = false;
+			if (!players.GetBinding(retail::EntitySlot::LocalP1, local) ||
+				!players.GetBinding(retail::EntitySlot::RemoteP2, remote))
+			{
+				RefreshPlayer1ControllerFromSlot(player1_controller);
+				return false;
+			}
+		}
+
+		std::uint32_t context_flags = 0;
+		if (!retail::SpawnContextView(m_spawn_context).Flags(context_flags))
+		{
+			LogClientRoleGateOnce("context-flags-unreadable", 0, 0);
+			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return false;
+		}
+
+		const std::uint32_t local_mode = GetModeId(
+			retail::ToPointer(local.controller.value));
+		const std::uint32_t remote_mode = GetModeId(
+			retail::ToPointer(remote.controller.value));
+		std::uint32_t peer_sequence = 0;
+		std::uint32_t peer_mode = 0;
+		const bool peer_is_abr =
+			netgame.GetRemotePlayerModeSnapshot(peer_sequence, peer_mode) &&
+			peer_sequence != 0 && peer_mode == kAbrModeId;
+		// NOTE: the RDV world flag (0x20000000) stays set on ordinary levels
+		// too (observed on DATA4), so it cannot gate the hand-off. Block only
+		// while ABR is actually active on either side: the Black Pig lacks the
+		// stock ABR orientation contract and faces the wrong way on track turns.
+		(void)context_flags;
+		if (local_mode == kAbrModeId || remote_mode == kAbrModeId || peer_is_abr)
+		{
+			// While either side drives, keep the stock Darwin as the local owner.
+			// The restore below runs before the next local tick.
+			m_client_black_pig_blocked_for_rdv_world = true;
+		}
+		if (m_client_black_pig_blocked_for_rdv_world)
+		{
+			if (m_client_black_pig_promoted)
+				RestoreClientDarwinForRdv(player1_controller);
+			if (!m_client_black_pig_rdv_block_logged)
+			{
+				CoopRuntime::Instance().Log(
+					"[client-role] Black Pig local role disabled for RDV world flags=0x%08X local_mode=0x%08X remote_mode=0x%08X peer_mode=0x%08X\r\n",
+					context_flags, local_mode, remote_mode,
+					peer_is_abr ? peer_mode : 0u);
+				m_client_black_pig_rdv_block_logged = true;
+			}
+			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return m_client_black_pig_promoted;
+		}
+
+		const std::uint32_t black_mode = GetModeId(
+			retail::ToPointer(remote.controller.value));
+		if (local_mode != kDefaultModeId)
+		{
+			LogClientRoleGateOnce("local-not-default", local_mode, black_mode);
+			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return false;
+		}
+		if (black_mode != kInactiveModeId && black_mode != kDefaultModeId)
+		{
+			LogClientRoleGateOnce("black-pig-not-idle", local_mode, black_mode);
+			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return false;
+		}
+
+		// The network factory already spawns the Black Pig at the live P1
+		// position (see [spawn-network] log), so no transform copy is needed.
+		if (!RebindClientLocalPlayerTo(remote.entity))
+		{
+			LogClientRoleGateOnce("role-rebind-failed",
+				local.entity.value, remote.entity.value);
+			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return false;
+		}
+
+		player1_controller = retail::ToPointer(remote.controller.value);
+		if (GetModeId(player1_controller) == kInactiveModeId)
+		{
+			retail::ControllerView(remote.controller).SelectMode(kDefaultModeId);
+		}
+		// The Black Pig served as packet-driven P2 before the hand-off, so its
+		// Default conflict mask was stripped of the P1-owner bit. Without the
+		// restore the native arbiter drops the promoted controller to Inactive
+		// and the client freezes (no move/attack/Mooch) with live input.
+		{
+			retail::ModeRef mode = {};
+			std::uint32_t mask_before = 0;
+			std::uint32_t mask_after = 0;
+			const bool read_before =
+				retail::ControllerView(remote.controller).RegisteredMode(
+					kDefaultModeId, mode) &&
+				retail::ModeView(mode).ConflictMask(mask_before);
+			const bool restored = RestoreLocalModeContract(remote.controller,
+				kDefaultModeId);
+			const bool read_after = read_before &&
+				retail::ModeView(mode).ConflictMask(mask_after);
+			CoopRuntime::Instance().Log(
+				"[client-role] Default mask restore controller=%p before=0x%08X after=0x%08X restored=%d read=%d/%d\r\n",
+				player1_controller, mask_before, mask_after,
+				restored ? 1 : 0, read_before ? 1 : 0,
+				read_after ? 1 : 0);
+		}
+
+		ResetClientRoleCaches();
+		m_client_black_pig_promoted = true;
+		m_client_black_pig_entity = remote.entity;
+		m_client_original_darwin_entity = local.entity;
+		m_client_role_gate_logged = false;
+
+		CoopRuntime::Instance().Log(
+			"[client-role] Black Pig promoted to local P1=%p mode=0x%08X; Darwin moved to remote P2=%p\r\n",
+			retail::ToPointer(remote.entity.value), GetModeId(player1_controller),
+			retail::ToPointer(local.entity.value));
+		return true;
+	}
+
+	bool Player2Module::RestoreClientDarwinForRdv(
+		void*& player1_controller)
+	{
+		if (!m_client_black_pig_promoted)
+			return true;
+
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding local = {};
+		retail::EntitySlotBinding remote = {};
+		if (!players.GetBinding(retail::EntitySlot::LocalP1, local) ||
+			local.entity != m_client_black_pig_entity ||
+			!players.GetBinding(retail::EntitySlot::RemoteP2, remote) ||
+			remote.entity != m_client_original_darwin_entity)
+		{
+			// The world was rebuilt under the promotion. Forget the role cache
+			// and let the next ticks evaluate the fresh entities instead of
+			// ticking a stale controller.
+			ResetClientRoleCaches();
+			m_client_black_pig_blocked_for_rdv_world = false;
+			m_client_black_pig_rdv_block_logged = false;
+			m_client_role_gate_logged = false;
+			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return false;
+		}
+
+		// Preserve the client's current root while returning ownership to Darwin.
+		// The offset used for initial Black Pig placement is intentionally omitted.
+		retail::Transform local_transform = {};
+		if (!retail::EntityView(local.entity).ReadTransform(local_transform) ||
+			!retail::EntityView(remote.entity).WriteTransform(local_transform))
+		{
+			return false;
+		}
+		if (!RebindClientLocalPlayerTo(remote.entity))
+		{
+			return false;
+		}
+
+		player1_controller = retail::ToPointer(remote.controller.value);
+		std::uint32_t darwin_mode = GetModeId(player1_controller);
+		if (darwin_mode == kInactiveModeId)
+		{
+			retail::ControllerView(remote.controller).SelectMode(kDefaultModeId);
+			darwin_mode = GetModeId(player1_controller);
+		}
+		if (darwin_mode == kDefaultModeId || darwin_mode == kAbrModeId)
+			RestoreLocalModeContract(remote.controller, darwin_mode);
+
+		// Black Pig is a remote presentation again. If it had already entered ABR,
+		// restore the reduced P2 conflict mask that its next network tick expects.
+		const std::uint32_t black_mode = GetModeId(
+			retail::ToPointer(local.controller.value));
+		if (black_mode == kAbrModeId)
+		{
+			retail::ModeRef abr_mode = {};
+			std::uint32_t conflict_mask = 0;
+			const retail::ControllerView black_controller(local.controller);
+			if (black_controller.RegisteredMode(kAbrModeId, abr_mode) &&
+				retail::ModeView(abr_mode).ConflictMask(conflict_mask) &&
+				conflict_mask == kAbrModeConflictMask)
+			{
+				retail::ModeView(abr_mode).SetConflictMask(
+					kAbrModeConflictMask & ~kP2DefaultExclusiveMask);
+			}
+		}
+
+		const bool keep_rdv_block = m_client_black_pig_blocked_for_rdv_world;
+		const bool keep_rdv_log = m_client_black_pig_rdv_block_logged;
+		ResetClientRoleCaches();
+		m_client_black_pig_blocked_for_rdv_world = keep_rdv_block;
+		m_client_black_pig_rdv_block_logged = keep_rdv_log;
+
+		CoopRuntime::Instance().Log(
+			"[client-role] RDV world restored Darwin to local P1=%p mode=0x%08X; Black Pig returned to remote P2=%p mode=0x%08X\r\n",
+			retail::ToPointer(remote.entity.value), darwin_mode,
+			retail::ToPointer(local.entity.value), black_mode);
+		return true;
+	}
+
+	bool Player2Module::RestoreLocalModeContract(
+		retail::ControllerRef controller, std::uint32_t mode_id)
+	{
+		if (!controller || (mode_id != kDefaultModeId && mode_id != kAbrModeId))
+			return false;
+		retail::ModeRef mode = {};
+		std::uint32_t conflict_mask = 0;
+		const std::uint32_t expected_mask = mode_id == kAbrModeId ?
+			kAbrModeConflictMask : kDefaultModeConflictMask;
+		if (!retail::ControllerView(controller).RegisteredMode(mode_id, mode) ||
+			!retail::ModeView(mode).ConflictMask(conflict_mask))
+		{
+			return false;
+		}
+		if (conflict_mask == expected_mask)
+			return true;
+		if (conflict_mask != (expected_mask & ~kP2DefaultExclusiveMask))
+			return false;
+		return retail::ModeView(mode).SetConflictMask(expected_mask);
+	}
+
 	bool Player2Module::TryEnsurePlayer2RdvTask(const char* source)
 	{
 		if (!source)
 			source = "unknown";
 
-		CoopNetGame& netgame = CoopNetGame::Instance();
-		if (!netgame.HasRemotePeer())
+		if (!CoopNetGame::Instance().HasRemotePeer())
 		{
 			CoopRuntime::Instance().Log(
-				"[abr-task] source=%s ignored: this native task experiment is network-only\r\n",
+				"[abr-task] source=%s ignored: native task setup is network-only\r\n",
 				source);
 			return false;
 		}
@@ -533,14 +872,46 @@ namespace coop
 		if (!player1 || !player2 ||
 			GetModeId(GetController(retail::ToPointer(player1.value))) != kAbrModeId)
 			return false;
+		return TryEnsureRdvTaskForEntity(source, player2,
+			m_abr_native_task_configured_player2);
+	}
+
+	bool Player2Module::TryEnsureRdvTaskForEntity(const char* source,
+		retail::EntityRef entity, retail::EntityRef& configured_entity)
+	{
+		if (!source)
+			source = "unknown";
+		if (!entity || !m_spawn_context)
+			return false;
+
+		// The stock configurator is valid only while the spawn context and both
+		// process-global active pointers name the current local P1. Keep the target
+		// entity explicit so a Black Pig returned from local ownership can safely
+		// reuse its already-created native task as the remote presentation.
+		retail::EntitySlotRepository players;
+		const retail::EntityRef local_player = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		retail::EntityRef context_entity = {};
+		retail::EntityRef active_a = {};
+		retail::EntityRef active_b = {};
+		std::uint32_t context_flags = 0;
+		const bool context_ready = local_player &&
+			retail::SpawnContextView(m_spawn_context).Flags(context_flags) &&
+			retail::SpawnContextView(m_spawn_context).ActiveEntity(context_entity) &&
+			retail::ActiveEntityStore().Read(active_a, active_b) &&
+			(context_flags & kGPigSpawnContextRdvFlag) != 0 &&
+			context_entity == local_player && active_a == local_player &&
+			active_b == local_player;
+		if (!context_ready)
+			return false;
 
 		// The factory may succeed before the native spawn-context configurator is
 		// ready.  Only its postcondition (`task+0x30 == 1`) is a valid cache hit;
 		// otherwise the next controller tick must retry the stock configurator.
-		if (m_abr_native_task_configured_player2 == player2)
+		if (configured_entity == entity)
 			return true;
 
-		retail::HandlerRef player2_handler = {};
+		retail::HandlerRef handler = {};
 		retail::MotorSystemRef motor_system = {};
 		retail::Address state_table = 0;
 		retail::Address resource_table = 0;
@@ -550,8 +921,8 @@ namespace coop
 		std::uint32_t state_index = 0;
 		retail::Address resource_vtable = 0;
 		retail::Address task_vtable = 0;
-		bool contract_valid = retail::EntityView(player2).Handler(player2_handler) &&
-			retail::HandlerView(player2_handler).MotorSystem(motor_system);
+		bool contract_valid = retail::EntityView(entity).Handler(handler) &&
+			retail::HandlerView(handler).MotorSystem(motor_system);
 		if (contract_valid)
 		{
 			retail::MotorSystemView motor_system_view(motor_system);
@@ -575,9 +946,9 @@ namespace coop
 		if (!contract_valid)
 		{
 			CoopRuntime::Instance().Log(
-				"[abr-task] source=%s rejected: task factory contract unavailable P2=%p handler=%p state=%p index=%u resources=%p count=%u existing=%p\r\n",
-				source, retail::ToPointer(player2.value),
-				retail::ToPointer(player2_handler.value),
+				"[abr-task] source=%s rejected: task factory contract unavailable entity=%p handler=%p state=%p index=%u resources=%p count=%u existing=%p\r\n",
+				source, retail::ToPointer(entity.value),
+				retail::ToPointer(handler.value),
 				retail::ToPointer(state_table), state_index,
 				retail::ToPointer(resource_table), resource_count,
 				retail::ToPointer(existing_task.value));
@@ -585,12 +956,23 @@ namespace coop
 		}
 		if (existing_task)
 		{
+			std::uint8_t enabled = 0;
+			if (retail::MotorTaskView(existing_task).RdvEnabled(enabled) &&
+				enabled == kGPigRdvTaskEnabledValue)
+			{
+				configured_entity = entity;
+				CoopRuntime::Instance().Log(
+					"[abr-task] source=%s entity=%p reused configured XMotorTask_RDV=%p\r\n",
+					source, retail::ToPointer(entity.value),
+					retail::ToPointer(existing_task.value));
+				return true;
+			}
 			CoopRuntime::Instance().Log(
-				"[abr-task] source=%s P2=%p already has native XMotorTask_RDV=%p; no factory call made\r\n",
-				source, retail::ToPointer(player2.value),
+				"[abr-task] source=%s entity=%p already has native XMotorTask_RDV=%p; no factory call made\r\n",
+				source, retail::ToPointer(entity.value),
 				retail::ToPointer(existing_task.value));
-			return ConfigurePlayer2RdvTask(source, player2, player2_handler,
-				existing_task);
+			return ConfigureRdvTaskForEntity(source, entity, handler,
+				existing_task, configured_entity);
 		}
 
 		// This is the engine's own lazy factory: it allocates, constructs and inserts
@@ -598,9 +980,9 @@ namespace coop
 		// mode and does not configure task fields; it only proves whether this missing
 		// stock object is sufficient for the next controller-mode experiment.
 		CoopRuntime::Instance().Log(
-			"[abr-task] source=%s native factory begin P2=%p handler=%p motor=%p state=%p index=%u\r\n",
-			source, retail::ToPointer(player2.value),
-			retail::ToPointer(player2_handler.value),
+			"[abr-task] source=%s native factory begin entity=%p handler=%p motor=%p state=%p index=%u\r\n",
+			source, retail::ToPointer(entity.value),
+			retail::ToPointer(handler.value),
 			retail::ToPointer(motor_system.value),
 			retail::ToPointer(state_table), state_index);
 		retail::MotorTaskRef created_task = {};
@@ -622,21 +1004,21 @@ namespace coop
 		if (!creation_valid)
 		{
 			CoopRuntime::Instance().Log(
-				"[abr-task] source=%s native factory postcondition failed P2=%p task=%p vtbl=%p\r\n",
-				source, retail::ToPointer(player2.value),
+				"[abr-task] source=%s native factory postcondition failed entity=%p task=%p vtbl=%p\r\n",
+				source, retail::ToPointer(entity.value),
 				retail::ToPointer(created_task.value),
 				retail::ToPointer(task_vtable));
 			return false;
 		}
 
 		CoopRuntime::Instance().Log(
-			"[abr-task] source=%s native factory complete P2=%p XMotorTask_RDV=%p vtbl=%p\r\n",
-			source, retail::ToPointer(player2.value),
+			"[abr-task] source=%s native factory complete entity=%p XMotorTask_RDV=%p vtbl=%p\r\n",
+			source, retail::ToPointer(entity.value),
 			retail::ToPointer(created_task.value),
 			retail::ToPointer(task_vtable));
 
-		return ConfigurePlayer2RdvTask(source, player2, player2_handler,
-			created_task);
+		return ConfigureRdvTaskForEntity(source, entity, handler,
+			created_task, configured_entity);
 	}
 
 	bool Player2Module::TryEnterPlayer2AbrMode(void* controller)
@@ -701,13 +1083,13 @@ namespace coop
 		return entered;
 	}
 
-	bool Player2Module::ConfigurePlayer2RdvTask(const char* source,
-		retail::EntityRef player2, retail::HandlerRef player2_handler,
-		retail::MotorTaskRef task)
+	bool Player2Module::ConfigureRdvTaskForEntity(const char* source,
+		retail::EntityRef entity, retail::HandlerRef handler,
+		retail::MotorTaskRef task, retail::EntityRef& configured_entity)
 	{
 		if (!source)
 			source = "unknown";
-		if (m_abr_native_task_configured_player2 == player2)
+		if (configured_entity == entity)
 			return true;
 
 		const retail::SpawnContextRef context = m_spawn_context;
@@ -719,8 +1101,8 @@ namespace coop
 		retail::EntityRef active_b = {};
 		std::uint32_t context_flags = 0;
 		retail::Address task_vtable = 0;
-		const bool contract_valid = context && player1 && player2 &&
-			player2_handler && task &&
+		const bool contract_valid = context && player1 && entity &&
+			handler && task &&
 			retail::SpawnContextView(context).Flags(context_flags) &&
 			retail::SpawnContextView(context).ActiveEntity(context_entity) &&
 			retail::ActiveEntityStore().Read(active_a, active_b) &&
@@ -731,10 +1113,10 @@ namespace coop
 		if (!contract_valid)
 		{
 			CoopRuntime::Instance().Log(
-				"[abr-task-config] source=%s rejected P1=%p P2=%p handler=%p task=%p context=%p flags=0x%08X context_entity=%p active=(%p,%p)\r\n",
+				"[abr-task-config] source=%s rejected local_P1=%p entity=%p handler=%p task=%p context=%p flags=0x%08X context_entity=%p active=(%p,%p)\r\n",
 				source, retail::ToPointer(player1.value),
-				retail::ToPointer(player2.value),
-				retail::ToPointer(player2_handler.value),
+				retail::ToPointer(entity.value),
+				retail::ToPointer(handler.value),
 				retail::ToPointer(task.value), retail::ToPointer(context.value),
 				context_flags, retail::ToPointer(context_entity.value),
 				retail::ToPointer(active_a.value), retail::ToPointer(active_b.value));
@@ -742,12 +1124,12 @@ namespace coop
 		}
 
 		CoopRuntime::Instance().Log(
-			"[abr-task-config] source=%s native begin P2=%p task=%p context=%p flags=0x%08X\r\n",
-			source, retail::ToPointer(player2.value),
+			"[abr-task-config] source=%s native begin entity=%p task=%p context=%p flags=0x%08X\r\n",
+			source, retail::ToPointer(entity.value),
 			retail::ToPointer(task.value), retail::ToPointer(context.value),
 			context_flags);
 		if (!retail::NativeGameApi::ConfigureGPigRdvTask(context,
-			player2_handler))
+			handler))
 		{
 			CoopRuntime::Instance().Log(
 				"[abr-task-config] source=%s native configurator fault\r\n", source);
@@ -763,16 +1145,16 @@ namespace coop
 		if (!configured)
 		{
 			CoopRuntime::Instance().Log(
-				"[abr-task-config] source=%s postcondition failed P2=%p task=%p enabled=%u\r\n",
-				source, retail::ToPointer(player2.value),
+				"[abr-task-config] source=%s postcondition failed entity=%p task=%p enabled=%u\r\n",
+				source, retail::ToPointer(entity.value),
 				retail::ToPointer(task.value), static_cast<unsigned>(enabled));
 			return false;
 		}
 
-		m_abr_native_task_configured_player2 = player2;
+		configured_entity = entity;
 		CoopRuntime::Instance().Log(
-			"[abr-task-config] source=%s native configured P2=%p task=%p enabled=%u\r\n",
-			source, retail::ToPointer(player2.value),
+			"[abr-task-config] source=%s native configured entity=%p task=%p enabled=%u\r\n",
+			source, retail::ToPointer(entity.value),
 			retail::ToPointer(task.value), static_cast<unsigned>(enabled));
 		return true;
 	}
@@ -896,12 +1278,44 @@ namespace coop
 		WorldSync::Instance().NotifyLocalWorldReady();
 		if (SteamManager)
 			SteamManager->NotifyGameWorldReady();
+		CoopNetGame& netgame = CoopNetGame::Instance();
+
+		// On a client the stock Darwin first reaches this hook as LocalP1. Once the
+		// network Black Pig exists, swap the two complete entities and continue this
+		// same guaranteed local tick with the promoted Black Pig controller.
+		PromoteClientBlackPigToPlayer1(player1_controller);
+		if (m_client_black_pig_promoted && player1_controller &&
+			GetModeId(player1_controller) == kInactiveModeId)
+		{
+			// The native arbiter can still deactivate the promoted controller
+			// later (cutscene edges). Re-enter Default exactly like b64543c.
+			const retail::ControllerRef controller_ref = {
+				retail::ToAddress(player1_controller)
+			};
+			if (retail::ControllerView(controller_ref).SelectMode(
+				kDefaultModeId))
+			{
+				CoopRuntime::Instance().Log(
+					"[client-role] re-entered Default from Inactive local=%p\r\n",
+					player1_controller);
+			}
+		}
+		if (m_client_black_pig_promoted)
+		{
+			const LONG now = static_cast<LONG>(GetTickCount());
+			if (now - m_last_role_heartbeat_tick > 5000)
+			{
+				m_last_role_heartbeat_tick = now;
+				CoopRuntime::Instance().Log(
+					"[client-role] tick alive local=%p mode=0x%08X\r\n",
+					player1_controller, GetModeId(player1_controller));
+			}
+		}
 
 		// The single shared GPig camera belongs to whoever the player is actually
 		// driving.  Its mode goes back to Default immediately after the native Mooch
 		// hand-off, so use the confirmed network owner state rather than a mode or
 		// process-global pointer that lasts only for that transition frame.
-		CoopNetGame& netgame = CoopNetGame::Instance();
 		retail::EntitySlotRepository players;
 		const retail::EntityRef player1 = players.GetSelectable(
 			retail::EntitySlot::LocalP1);
@@ -1006,24 +1420,17 @@ namespace coop
 		// Clearing these flags prevents UpdateController from dereferencing
 		// stale pointers to freed GPig/Fly entities, which caused crashes
 		// after cutscenes and location transitions.
+		ResetClientRoleCaches();
 		InterlockedExchange(&m_player2_ready, 0);
 		InterlockedExchange(&m_spawn_snapshot_ready, 0);
 		InterlockedExchange(&m_spawn_in_progress, 0);
-		m_player2_default_mode_initialized = false;
-		m_player2_default_mode_setup_failure_logged = false;
 		m_debug_player2_enabled = false;
-		m_remote_p2_death_mode_observed = false;
-		m_remote_p2_death_mode_entry_sequence = 0;
-		m_last_player1_mode = 0;
+		m_client_black_pig_blocked_for_rdv_world = false;
+		m_client_black_pig_rdv_block_logged = false;
+		m_client_role_gate_logged = false;
 		m_remote_p2_attachment_active_tick = 0;
 		m_remote_p2_attachment_release_divergence_begin_tick = 0;
-		m_remote_p2_attachment_active = false;
-		m_remote_p2_attachment_family = AttachmentFamily::None;
-		m_remote_p2_attachment_state_machine = {};
-		m_last_weapon_type = 0xFFFFFFFFu;
 		m_spawn_context = {};
-		m_abr_native_task_configured_player2 = {};
-		m_player2_abr_mode_setup_failure_logged = false;
 		m_local_abr_propulsion_locked = false;
 		m_local_abr_saved_target_speed = 1.0f;
 		m_local_abr_propulsion_direction = 1;
@@ -1418,7 +1825,6 @@ namespace coop
 
 		const bool is_ready_player2 =
 			slot == retail::EntitySlot::RemoteP2 &&
-			(CoopRuntime::Instance().Config().enabled || m_debug_player2_enabled) &&
 			InterlockedCompareExchange(&m_player2_ready, 0, 0) != 0;
 		if (!is_ready_player2)
 		{

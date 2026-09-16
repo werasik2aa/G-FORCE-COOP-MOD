@@ -36,6 +36,20 @@ namespace coop
 
 		bool InstallInputHook();
 		void RemoveInputHook();
+		// Mirrors the retail audio language choice onto the hardcoded voice blob.
+		// The EXE selects File_XXX.bin by its own language mechanic (0x458A40)
+		// but always asks for \data\File_RUS.000 (0x6F858C). Whichever language
+		// index the game actually opened is reused for the blob, so every player
+		// hears their own language (FRE/USA/RUS/...) with zero configuration.
+		// Forces the game's own language selector (0x4596A0) to the coop.ini
+		// [language] language when a 3-letter code is configured. Text, audio
+		// requests and the File_XXX.bin choice then follow natively.
+		bool InstallLanguageSelectHook();
+		void RemoveLanguageSelectHook();
+		// Temporary movement diagnostics: which input manager/device the local
+		// tick polls and whether physical axes arrive nonzero.
+		void ProbeLocalInputManager(void* manager, std::uint32_t device,
+			std::uint32_t axis, float value);
 		void BeginRemoteInput();
 		void EndRemoteInput();
 		// ABR keeps its own vehicle motor. This scope exposes only the replicated
@@ -225,6 +239,8 @@ namespace coop
 		// the stack. The former stdcall declaration accidentally relied on ECX
 		// surviving the hook; preserve the actual __thiscall ABI instead.
 		typedef int(__thiscall* ObjectEventForwarderFn)(void*, void*, int);
+		typedef void(__thiscall* LanguageSelectFn)(void*, std::uint32_t,
+			std::uint32_t);
 		typedef void(__thiscall* HealthComponentSetFn)(void*, float, std::uint32_t, bool);
 		typedef void(__thiscall* HealthComponentAddFn)(void*, float, std::uint32_t);
 		typedef void(__thiscall* HealthComponentSubtractFn)(void*, float, std::uint32_t);
@@ -439,6 +455,13 @@ namespace coop
 		static void __fastcall HookTriggerSpawnFromDefinition(void* trigger, void*);
 		static bool __fastcall HookNativeSaveLoad(void* manager, void*, std::uint32_t slot);
 
+		static void __fastcall HookLanguageSelect(void* manager, void*,
+			std::uint32_t language, std::uint32_t arg);
+		// Maps a forced 3-letter code to the game language byte (USA 0, FRE 6,
+		// GER 7, ITA 8, SPA 0xB, RUS 0xF, DUT 4, CZE 0x12, POL 0x13, BRA 0x17).
+		// Returns the original byte to keep the game's own choice.
+		static int MapForcedGameLanguage(int original);
+
 		static void* __cdecl HookTriggerFactory(std::uint32_t family, std::uint32_t subtype, void* output);
 		static int __fastcall HookTriggerEvent(void* trigger, void*, int event_code);
 		static int __fastcall HookGlobalEventForwarder(void* receiver, void*,
@@ -538,6 +561,15 @@ namespace coop
 		void* m_remote_gamepad;
 		ULONG_PTR* m_async_key_state_iat_slot;
 		GetAsyncKeyStateFn m_original_get_async_key_state;
+		void* m_input_probe_managers[6];
+		std::uint32_t m_input_probe_devices[6];
+		int m_input_probe_count;
+		LONG m_last_input_probe_tick;
+		BYTE m_original_language_select_bytes[8];
+		BYTE* m_language_select_trampoline;
+		LanguageSelectFn m_original_language_select;
+		bool m_language_select_hooked;
+		bool m_logged_lang_override;
 		BYTE m_original_state_machine_select_state_bytes[5];
 		BYTE* m_state_machine_select_state_trampoline;
 		StateMachineSelectStateFn m_original_state_machine_select_state;

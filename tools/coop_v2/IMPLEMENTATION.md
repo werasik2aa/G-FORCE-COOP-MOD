@@ -504,7 +504,7 @@ counter value or activation event is written. See RE_CATALOG for field evidence.
 
 Test from a checkpoint before the activation (an already changed counter is not
 repaired retroactively): F9 near the boxes, approach the trigger, F9 again if no
-spawn. Keep the resulting re_cache/runtime/gforce_coop.log. No F2 forced spawn is
+spawn. Keep the resulting gforce_coop.log next to the game executable. No F2 forced spawn is
 needed, since it would bypass the scenario being diagnosed.
 
 ## Open gameplay work ledger — 2026-09-13
@@ -572,6 +572,24 @@ success criterion. This override is **not-tested**. The former fixed-point ABR
 crash was not reproduced after
 root-transform correction; the old trace had P2 health `50 -> 0` just before
 local trigger events `0x410800E2/E3`, without a recovered semantic for E2/E3.
+
+## Game language override
+
+The retail EXE picks `File_XXX.bin` by its own language mechanic (`0x458A40`,
+single call site `0x459716`) but always asks for `\data\File_RUS.000`
+(`0x6F858C` via `0x458402`); no `File_USA.000` string exists. On a non-RUS
+language the index and the blob disagree (10 shared hashes of ~1760), so voices
+go silent. A CreateFileA/W mirror was tried first and then removed: the live
+log proved the engine resolves the blob itself once the language is selected
+natively (no `File_RUS.000` request appears in a USA boot), so intercepting
+every file open was pure overhead.
+
+`GForce.ini [language] language` with a 3-letter code drives the game's own
+language selector (`0x4596A0`) through an E9 hook, so text (via `0x4902D0`,
+which stores `kTextLanguage` and rebuilds strings), audio requests and the
+`File_XXX.bin` choice switch together natively. `auto`/`off` never override.
+Verified live 2026-09-16: `game language overridden: 0x0F -> 0x00` with
+audible English voices.
 
 ## Build and deploy
 

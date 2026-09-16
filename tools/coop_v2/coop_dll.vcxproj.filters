@@ -147,8 +147,5 @@
     <None Include="coop_dll.def">
       <Filter>Configuration</Filter>
     </None>
-    <None Include="coop.ini">
-      <Filter>Configuration</Filter>
-    </None>
   </ItemGroup>
 </Project>

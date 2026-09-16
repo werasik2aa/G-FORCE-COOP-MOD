@@ -59,6 +59,8 @@ namespace coop
 			runtime.Log("[network-warning] network manager is unavailable; local P2 debug route remains available\r\n");
 		if (!CoopNetGame::Instance().InstallInputHook())
 			runtime.Log("[network-warning] remote XInput injection is unavailable\r\n");
+		if (!CoopNetGame::Instance().InstallLanguageSelectHook())
+			runtime.Log("[language-warning] game language override is unavailable; GForce.ini [language] language is ignored\r\n");
 
 		InterlockedExchange(&m_init_state, 2);
 		runtime.Log("[ready] F1=local Mooch dual-laser probe F2=spawn trigger F3=replay event F4=known interactive F5=P2 F6=ABR F8=IP connect F9=trigger catalog F10=chat\r\n");
@@ -73,6 +75,7 @@ namespace coop
 		MenuConnectHook::Instance().Remove();
 		ChatOverlay::Instance().Shutdown();
 		SteamManager->Destroy();
+		CoopNetGame::Instance().RemoveLanguageSelectHook();
 		CoopNetGame::Instance().RemoveInputHook();
 		Player2Module::Instance().Remove();
 		WindowHook::Instance().Remove();

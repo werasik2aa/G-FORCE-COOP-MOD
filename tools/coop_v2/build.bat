@@ -69,7 +69,7 @@ if defined GFORCE_DEPLOY_ROOT (
 		if errorlevel 1 exit /b 1
 	)
 	echo DEPLOY_OK: coop_dll.dll and winmm.dll copied to "%GFORCE_DEPLOY_ROOT%"
-	echo NOTE: coop.ini is deliberately left untouched; it is user configuration.
+	echo NOTE: GForce.ini is deliberately left untouched; mod settings live in its [window]/[language] sections.
 ) else (
 	echo DEPLOY_SKIPPED: set GFORCE_DEPLOY_ROOT to copy the two built mod DLLs to a closed game directory.
 )
