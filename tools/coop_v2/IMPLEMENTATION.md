@@ -206,12 +206,12 @@ observer can miss. A family label is cleared when that same machine selects
 `0x1000000D`. During the normal remote-P2 controller tick, co-op offers that
 logical edge to the existing `0x00488CE0` input query only if P2 and the peer
 snapshot are both in outer `Default`, no local/remote Mooch or ABR path is active,
-a finite P2/peer transform divergence stays above 0.2 m for at least 250 ms, and no
+a finite P2/peer transform divergence stays above 0.5 m for at least 250 ms, and no
 real peer edge exists for the same action. The Ledge/Climb observer is diagnostic
 only: a stale attachment can itself stop native updates, so it must not veto the
 only stock release action known to repair it. The scoped edge is cleared after its
 stock tick. There is deliberately no one-shot latch: if P2 remains farther than
-0.2 m, a fresh persistence window can offer another release edge every 250 ms.
+0.5 m, a fresh persistence window can offer another release edge every 250 ms.
 Stock input decides whether a current state consumes each release; normal transform
 smoothing follows as before. The physical binding remains intentionally unknown.
 

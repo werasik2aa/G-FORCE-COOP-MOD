@@ -3804,6 +3804,10 @@ namespace coop
 					static_cast<unsigned>(event_code), result);
 			}
 		}
+		// RE aid: capture who drives the TableLamp activation chain (saberizer
+		// shot path). Rare event, safe to trace every time.
+		if (static_cast<std::uint32_t>(event_code) == 0x410800DBu)
+			CoopRuntime::Instance().LogCallStack("lamp-db");
 		if (result != 0 && object_snapshot_available &&
 			!IsRemoteObjectEventReplayActive() &&
 			is_outermost_route &&

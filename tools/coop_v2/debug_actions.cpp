@@ -78,7 +78,6 @@ namespace coop
 		retail::EntitySlotBinding player2 = {};
 		if (players.GetBinding(retail::EntitySlot::RemoteP2, player2))
 		{
-			m_debug_player2_enabled = true;
 			InterlockedExchange(&m_player2_ready, 1);
 			CoopRuntime::Instance().Log(
 				"[debug-F5] P2 already exists entity=%p controller=%p\r\n",
@@ -104,11 +103,7 @@ namespace coop
 			return false;
 		}
 
-		m_debug_player2_enabled = true;
-		const bool spawned = SpawnPlayer2FromSnapshot("debug-F5");
-		if (!spawned)
-			m_debug_player2_enabled = false;
-		return spawned;
+		return SpawnPlayer2FromSnapshot("debug-F5");
 	}
 
 	bool Player2Module::EnableLocalAbrForDebug()

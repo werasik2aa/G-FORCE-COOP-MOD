@@ -183,18 +183,18 @@ controller tick. Старый hook `0x0043C9E0` удалён: это метод
 создаёт захват. Но это теперь только
 диагностика: зависшая привязка способна остановить сами Ledge/Climb updates, и
 не должна запрещать восстановление. Если P2 и peer находятся в `Default`,
-Mooch/ABR не активны, дистанция между finite P2 и peer target больше 0.2 м
+Mooch/ABR не активны, дистанция между finite P2 и peer target больше 0.5 м
 непрерывно 250 ms, а настоящий edge ещё не пришёл, штатный P2 tick получает
 логический pressed-edge
 `0x1000000D` по существующему маршруту
 `0x4008000A → 0x1000000D → 0x488CE0`. Это не физический Shift/Space, не вызов
 Ledge/Climb-машины и не пакет. После native tick edge сразу очищается. Защёлки
-нет: пока расхождение больше 0.2 м, после каждого нового окна 250 ms отправляется
+нет: пока расхождение больше 0.5 м, после каждого нового окна 250 ms отправляется
 следующий штатный edge. Физика, normal attachment states и обычная
 transform-коррекция остаются включёнными.
 
 Это **not-tested** в игре. Нужны `[p2-attachment-release] queued ...` и
-`result consumed=1`; P2 должен штатно отцепиться. Пока он остаётся дальше 0.2 м,
+`result consumed=1`; P2 должен штатно отцепиться. Пока он остаётся дальше 0.5 м,
 повторный импульс через 250 ms ожидаем. `[p2-attachment-observer]
 family=ledge|climb attachment=1 ...` различает семейства, но больше не является
 условием recovery.
@@ -231,7 +231,7 @@ respawn, но из-за этого мог навсегда остаться в h
 
 | Проверка | Действие | Подтверждение в логах / игре |
 | --- | --- | --- |
-| P2 Ledge/Climb | Дать P1 зацепиться за стол/уступ, дождаться, что P2 держит старую привязку, и увести P1 более чем на 0.2 м минимум на 0.25 s. | Ожидаются `[p2-attachment-release] queued ...` и `result consumed=1`; пока P2 остаётся далеко, пара может повторяться раз в 0.25 s. P2 должен выйти через stock input, после чего плавно догоняет P1. Если `consumed=0`, сохранить лог. В ABR/Mooch/cutscene/death строк быть не должно. |
+| P2 Ledge/Climb | Дать P1 зацепиться за стол/уступ, дождаться, что P2 держит старую привязку, и увести P1 более чем на 0.5 м минимум на 0.25 s. | Ожидаются `[p2-attachment-release] queued ...` и `result consumed=1`; пока P2 остаётся далеко, пара может повторяться раз в 0.25 s. P2 должен выйти через stock input, после чего плавно догоняет P1. Если `consumed=0`, сохранить лог. В ABR/Mooch/cutscene/death строк быть не должно. |
 | P2 пропал / DeathMode | Дать удалённому P2 попасть в outer DeathMode, пока peer P1 уже снова в `Default`. | После одного более нового packet: `[p2-death-recovery] ... seq=N entry_seq=M`; P2 выходит из hide/death pose. Пока peer не в `Default`, `[p2-death-guard]` ожидаем и не означает crash. |
 | Main-menu Connect by IP | В exact retail EXE открыть главное меню и нажать строку сразу после `Credits`. | Пока **not-tested**: сначала ожидаются `[menu-init] ... installed`, затем по одному `[menu] BuildMainMenu observed`, `Credits AddChild seam observed`, `native Connect by IP row added` и `Connect by IP label resolved`. Клик должен дать тот же IP-диалог, что `F8`, и `F8 request queued`. Если ABI не совпал, лог называет конкретный адрес, строки не будет, но `F8` должен остаться. |
 | F1 local Mooch laser | В одном foreground-процессе, без клиента и без входа в Q, поставить Муху в кадр и один раз нажать F1. | Ожидается `[debug-F1] native Mooch dual-laser raw button fired target=(...)`. F1 подаёт тот же exact raw edge в shadow `Fly_Active::Update`, но временно ставит origin XGamePad в центр Мухи. После прохода возвращаются камера, включая Fly request/apply window `+0x91C..+0x9B7`, HUD/ownership и сеть не меняются; не должно быть рывка P1-камеры. При несовпадении профиля логируется direct visual fallback. Боевой live-result всё ещё **not-tested**. |

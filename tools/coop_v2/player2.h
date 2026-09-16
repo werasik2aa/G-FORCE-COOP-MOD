@@ -146,10 +146,11 @@ namespace coop
 		bool m_player2_default_mode_initialized;
 		bool m_player2_default_mode_setup_failure_logged;
 		bool m_logged_blocked_active_publish;
-		bool m_debug_player2_enabled;
+
 		bool m_client_black_pig_promoted;
 		LONG m_last_role_heartbeat_tick;
 		LONG m_last_attachment_release_log_tick;
+		std::uint32_t m_last_local_p1_weapon_type;
 		bool m_client_role_gate_logged;
 		retail::EntityRef m_client_black_pig_entity;
 		retail::EntityRef m_client_original_darwin_entity;

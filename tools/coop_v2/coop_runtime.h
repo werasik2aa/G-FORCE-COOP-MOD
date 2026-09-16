@@ -30,6 +30,10 @@ namespace coop
 		bool VerifyExecutable();
 		void LoadConfiguration();
 		void Log(const char* format, ...);
+		// Live call-chain capture for RE: logs raw absolute return addresses
+		// (resolve in IDA as addr - 0x400000). x86 FPO frames may truncate the
+		// chain; the first 2-3 frames are usually exact. Call sparingly.
+		void LogCallStack(const char* tag);
 		LONG LogException(EXCEPTION_POINTERS* exception, const char* stage);
 
 		const CoopConfig& Config() const;

@@ -95,6 +95,29 @@ namespace coop
 		LeaveCriticalSection(&m_log_lock);
 	}
 
+	void CoopRuntime::LogCallStack(const char* tag)
+	{
+		if (!tag)
+			tag = "?";
+		void* frames[10] = {};
+		const USHORT captured = RtlCaptureStackBackTrace(1, 10, frames, nullptr);
+		char line[512] = {};
+		int offset = _snprintf_s(line, sizeof(line), _TRUNCATE,
+			"[callstack] %s depth=%u", tag, captured);
+		for (USHORT i = 0; i < captured && offset > 0 &&
+			offset < static_cast<int>(sizeof(line)) - 12; ++i)
+		{
+			const int written = _snprintf_s(line + offset,
+				sizeof(line) - offset, _TRUNCATE, " %p",
+				frames[i]);
+			if (written <= 0)
+				break;
+			offset += written;
+		}
+		if (offset > 0)
+			Log("%s\r\n", line);
+	}
+
 	LONG CoopRuntime::LogException(EXCEPTION_POINTERS* exception, const char* stage)
 	{
 		const DWORD code = exception && exception->ExceptionRecord ?

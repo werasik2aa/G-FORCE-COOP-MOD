@@ -98,7 +98,10 @@ namespace coop
 				static_cast<std::int32_t>(candidate - baseline) > 0);
 		}
 
-		constexpr float kP2AttachmentReleaseDistance = 0.2f;
+		// Release edge fires only above this P2/peer divergence. Raised from
+		// 0.2: swinging attachments (saberized lamp on its cord) already give
+		// ~0.5 m of noise. Manual shift-release is unaffected (separate edge).
+		constexpr float kP2AttachmentReleaseDistance = 0.5f;
 		constexpr DWORD kP2AttachmentReleaseRepeatWindowMs = 250u;
 
 		bool IsFiniteProgressionTransform(const retail::Transform& transform)
@@ -130,10 +133,11 @@ namespace coop
 		m_player2_default_mode_initialized(false),
 		m_player2_default_mode_setup_failure_logged(false),
 		m_logged_blocked_active_publish(false),
-		m_debug_player2_enabled(false),
+
 		m_client_black_pig_promoted(false),
 		m_last_role_heartbeat_tick(0),
 		m_last_attachment_release_log_tick(0),
+		m_last_local_p1_weapon_type(0xFFFFFFFFu),
 		m_client_role_gate_logged(false),
 		m_client_black_pig_entity(),
 		m_client_original_darwin_entity(),
@@ -1195,6 +1199,24 @@ namespace coop
 					player1_controller, GetModeId(player1_controller));
 			}
 		}
+		{
+			// Local P1 weapon transitions are natively silent; log them so HUD
+			// ownership (saberizer scan overlay) can be correlated exactly.
+			retail::EntitySlotRepository monitor_players;
+			retail::EntitySlotBinding monitor_local = {};
+			std::uint32_t local_weapon = 0xFFFFFFFFu;
+			if (monitor_players.GetBinding(retail::EntitySlot::LocalP1,
+				monitor_local) && monitor_local.handler &&
+				retail::HandlerView(monitor_local.handler).SelectedWeaponType(
+					local_weapon) &&
+				local_weapon != m_last_local_p1_weapon_type)
+			{
+				m_last_local_p1_weapon_type = local_weapon;
+				CoopRuntime::Instance().Log(
+					"[p1-weapon] local P1 holds weapon=0x%08X\r\n",
+					local_weapon);
+			}
+		}
 
 
 		// The single shared GPig camera belongs to whoever the player is actually
@@ -1309,7 +1331,6 @@ namespace coop
 		InterlockedExchange(&m_player2_ready, 0);
 		InterlockedExchange(&m_spawn_snapshot_ready, 0);
 		InterlockedExchange(&m_spawn_in_progress, 0);
-		m_debug_player2_enabled = false;
 		m_client_role_gate_logged = false;
 		m_remote_p2_attachment_active_tick = 0;
 		m_remote_p2_attachment_release_divergence_begin_tick = 0;
@@ -1626,7 +1647,7 @@ namespace coop
 
 		// No one-shot latch: if stock input does not detach a stale attachment,
 		// record a fresh divergence window and offer the same native release edge
-		// again after 250 ms while P2 remains more than one metre away.
+		// again after 250 ms while P2 remains more than 0.5 m away.
 		m_remote_p2_attachment_release_divergence_begin_tick = 0;
 		const LONG now_tick = static_cast<LONG>(GetTickCount());
 		if (now_tick - m_last_attachment_release_log_tick > 5000)
