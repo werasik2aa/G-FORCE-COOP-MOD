@@ -193,6 +193,7 @@ void CSteamOfflineSocketServer::OnRemotePacket(
 	case coop::protocol::PacketKind::WorldDamage:
 	case coop::protocol::PacketKind::WorldDespawn:
 	case coop::protocol::PacketKind::WorldObjectEvent:
+	case coop::protocol::PacketKind::WorldMode:
 	case coop::protocol::PacketKind::ProgressionRally:
 
 		if (coop::WorldSync::Instance().OnRemotePacket(data, size))

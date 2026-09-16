@@ -114,6 +114,7 @@ namespace coop
 		using ProgressionRallyPacket = protocol::ProgressionRallyPacket;
 		using WorldDamagePacket = protocol::WorldDamagePacket;
 		using WorldDespawnPacket = protocol::WorldDespawnPacket;
+		using WorldModePacket = protocol::WorldModePacket;
 
 		struct TriggerCounter
 		{
@@ -152,6 +153,7 @@ namespace coop
 			bool announced;
 			bool have_transform;
 			bool have_health;
+			std::uint32_t last_sent_mode;
 		};
 
 		struct ClientEntity
@@ -222,6 +224,10 @@ namespace coop
 		void* FindObjectEventTrigger(const WorldObjectEventPacket& packet,
 			const char*& match_kind) const;
 		void ReplayRemoteObjectEvent(const WorldObjectEventPacket& packet);
+		void DetectNpcModeChanges();
+		static bool SelectNpcMode(void* controller, std::uint32_t mode);
+		void ApplyIncomingModes();
+		bool HandleWorldModePacket(const protocol::PacketView& view);
 		void QueueHostSpawn(HostEntity& entity);
 		void QueueHostSnapshot(HostEntity& entity, const float position[4], const float rotation[4]);
 		std::uint32_t NextOccurrence(std::vector<TriggerCounter>& counters, void* trigger);
@@ -266,6 +272,8 @@ namespace coop
 		std::vector<WorldDespawnPacket> m_incoming_despawns;
 		std::vector<WorldSpawnPacket> m_outgoing_spawns;
 		std::vector<WorldSnapshotPacket> m_outgoing_snapshots;
+		std::vector<WorldModePacket> m_outgoing_modes;
+		std::vector<WorldModePacket> m_incoming_modes;
 		std::vector<WorldTriggerEventPacket> m_outgoing_trigger_events;
 		std::vector<WorldObjectEventPacket> m_outgoing_object_events;
 		std::vector<ProgressionRallyPacket> m_outgoing_rallies;

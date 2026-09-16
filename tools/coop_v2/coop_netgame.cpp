@@ -677,8 +677,6 @@ namespace coop
 		m_original_language_select(nullptr),
 		m_language_select_hooked(false),
 		m_logged_lang_override(false),
-		m_input_probe_count(0),
-		m_last_input_probe_tick(0),
 		m_state_machine_select_state_trampoline(nullptr),
 		m_original_state_machine_select_state(nullptr),
 		m_input_action_trampoline(nullptr),
@@ -1611,6 +1609,33 @@ namespace coop
 			m_local_input.action_down[word] |= 1u << bit;
 		}
 		ReleaseSRWLockExclusive(&m_input_lock);
+		// Correlation marker for saberizer activation sync: a local fire press
+		// while P1 holds the saberizer. Whatever the beam hits (or wakes)
+		// must be traceable in the log right after this line.
+		if (action == kFireActionId)
+		{
+			retail::EntitySlotRepository players;
+			retail::EntitySlotBinding local = {};
+			std::uint32_t selected_weapon = 0xFFFFFFFFu;
+			if (players.GetBinding(retail::EntitySlot::LocalP1, local) &&
+				local.handler &&
+				retail::HandlerView(local.handler).SelectedWeaponType(
+					selected_weapon) &&
+				selected_weapon == gforce::kSaberizerWeaponType)
+			{
+				retail::Transform player_transform = {};
+				const bool have_pos =
+					retail::EntityView(local.entity).ReadTransform(
+						player_transform) &&
+					IsFiniteRetailTransform(player_transform);
+				CoopRuntime::Instance().Log(
+					have_pos ?
+					"[saberizer] local P1 fired p1_pos=(%.2f,%.2f,%.2f)\r\n" :
+					"[saberizer] local P1 fired p1_pos=unavailable\r\n",
+					player_transform.position.x, player_transform.position.y,
+					player_transform.position.z);
+			}
+		}
 	}
 
 	void CoopNetGame::CaptureLocalRelease(std::uint32_t action)
@@ -5084,39 +5109,6 @@ namespace coop
 		return result;
 	}
 
-	void CoopNetGame::ProbeLocalInputManager(void* manager,
-		std::uint32_t device, std::uint32_t axis, float value)
-	{
-		for (int i = 0; i < m_input_probe_count; ++i)
-		{
-			if (m_input_probe_managers[i] == manager &&
-				m_input_probe_devices[i] == device)
-			{
-				if ((value > 0.05f || value < -0.05f))
-				{
-					const LONG now = static_cast<LONG>(GetTickCount());
-					if (now - m_last_input_probe_tick > 1000)
-					{
-						m_last_input_probe_tick = now;
-						CoopRuntime::Instance().Log(
-							"[input-probe] local axis manager=%p device=%u axis=%u value=%.2f\r\n",
-							manager, device, axis, value);
-					}
-				}
-				return;
-			}
-		}
-		if (m_input_probe_count < 6)
-		{
-			m_input_probe_managers[m_input_probe_count] = manager;
-			m_input_probe_devices[m_input_probe_count] = device;
-			++m_input_probe_count;
-			CoopRuntime::Instance().Log(
-				"[input-probe] seen manager=%p device=%u axis=%u\r\n",
-				manager, device, axis);
-		}
-	}
-
 	float CoopNetGame::GetRemoteAnalogAxis(std::uint32_t axis) const
 	{
 		return axis < kCoopInputAnalogAxisCount ?
@@ -5149,8 +5141,6 @@ namespace coop
 
 		const float value = m_original_input_axis_query(input_manager, device,
 			axis, flags);
-		if (!remote_input_active && axis < 2)
-			ProbeLocalInputManager(input_manager, device, axis, value);
 		// Device zero is the normal P1 capture route.  Fly_Active may ask its
 		// registered device instead, so local Fly ownership deliberately captures
 		// all four returned axes regardless of that device selector.
@@ -6347,4 +6337,5 @@ namespace coop
 		m_original_language_select = nullptr;
 		m_language_select_hooked = false;
 	}
+
 }

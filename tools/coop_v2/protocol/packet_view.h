@@ -23,6 +23,7 @@ namespace protocol
 		WorldTriggerEvent = kCoopPacketWorldTriggerEvent,
 		WorldDamage = kCoopPacketWorldDamage,
 		WorldDespawn = kCoopPacketWorldDespawn,
+		WorldMode = kCoopPacketWorldMode,
 		WorldObjectEvent = kCoopPacketWorldObjectEvent,
 		FlyAbility = kCoopPacketFlyAbility,
 		ProgressionRally = kCoopPacketProgressionRally,

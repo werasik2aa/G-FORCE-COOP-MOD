@@ -87,12 +87,20 @@ namespace protocol
         std::uint32_t world_id;
     };
 
+    struct WorldModePacket final : PacketHeader
+    {
+        std::uint32_t world_id;
+        std::uint32_t mode;
+    };
+
     static_assert(sizeof(WorldTriggerKey) == 16,
         "world trigger identity must stay process-neutral and wire-stable");
     static_assert(sizeof(WorldDamagePacket) == 32,
         "damage packets must keep their fixed x86 wire layout");
     static_assert(sizeof(WorldDespawnPacket) == 24,
         "despawn packets must keep their fixed x86 wire layout");
+    static_assert(sizeof(WorldModePacket) == 28,
+        "mode packets must keep their fixed x86 wire layout");
     static_assert(sizeof(WorldSpawnPacket) == 76,
         "world spawn packets must keep their fixed x86 wire layout");
     static_assert(sizeof(WorldSnapshotPacket) == 60,

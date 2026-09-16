@@ -133,6 +133,7 @@ namespace coop
 		m_debug_player2_enabled(false),
 		m_client_black_pig_promoted(false),
 		m_last_role_heartbeat_tick(0),
+		m_last_attachment_release_log_tick(0),
 		m_client_role_gate_logged(false),
 		m_client_black_pig_entity(),
 		m_client_original_darwin_entity(),
@@ -152,6 +153,7 @@ namespace coop
 		m_local_abr_propulsion_direction(1),
 
 		m_last_weapon_type(0xFFFFFFFFu),
+		m_last_remote_p2_mode(0),
 		m_spawn_context(),
 		m_default_mode_active_stores_patched(false),
 		m_ledge_observer_hooks_installed(false),
@@ -547,6 +549,7 @@ namespace coop
 		m_remote_p2_attachment_state_machine = {};
 		m_last_weapon_type = 0xFFFFFFFFu;
 		m_last_player1_mode = 0;
+		m_last_remote_p2_mode = 0;
 		InterlockedExchange(&m_player2_ready, 1);
 	}
 
@@ -1193,6 +1196,7 @@ namespace coop
 			}
 		}
 
+
 		// The single shared GPig camera belongs to whoever the player is actually
 		// driving.  Its mode goes back to Default immediately after the native Mooch
 		// hand-off, so use the confirmed network owner state rather than a mode or
@@ -1624,12 +1628,17 @@ namespace coop
 		// record a fresh divergence window and offer the same native release edge
 		// again after 250 ms while P2 remains more than one metre away.
 		m_remote_p2_attachment_release_divergence_begin_tick = 0;
-		CoopRuntime::Instance().Log(
-			"[p2-attachment-release] queued distance=%.2f observer=%s target_seq=%u\r\n",
-			distance, m_remote_p2_attachment_family == AttachmentFamily::Ledge ?
-				"ledge" : (m_remote_p2_attachment_family == AttachmentFamily::Climb ?
-					"climb" : "none"),
-			target_sequence);
+		const LONG now_tick = static_cast<LONG>(GetTickCount());
+		if (now_tick - m_last_attachment_release_log_tick > 5000)
+		{
+			m_last_attachment_release_log_tick = now_tick;
+			CoopRuntime::Instance().Log(
+				"[p2-attachment-release] queued distance=%.2f observer=%s target_seq=%u\r\n",
+				distance, m_remote_p2_attachment_family == AttachmentFamily::Ledge ?
+					"ledge" : (m_remote_p2_attachment_family == AttachmentFamily::Climb ?
+						"climb" : "none"),
+				target_sequence);
+		}
 		return true;
 	}
 
@@ -1805,6 +1814,15 @@ namespace coop
 		void* const player1 = retail::ToPointer(player1_ref.value);
 		void* const player2 = retail::ToPointer(player2_ref.value);
 
+		const std::uint32_t remote_mode_now = GetModeId(controller);
+		if (remote_mode_now != m_last_remote_p2_mode)
+		{
+			CoopRuntime::Instance().Log(
+				"[p2-mode] remote P2 controller=%p mode=0x%08X -> 0x%08X\r\n",
+				controller, m_last_remote_p2_mode, remote_mode_now);
+			m_last_remote_p2_mode = remote_mode_now;
+		}
+
 		const bool local_player_is_abr =
 			GetModeId(GetController(player1)) == kAbrModeId;
 		std::uint32_t remote_transform_sequence = 0;
@@ -1929,10 +1947,15 @@ namespace coop
 		{
 			bool attachment_release_consumed = false;
 			netgame.FinishRemoteLedgeReleaseEdge(attachment_release_consumed);
-			CoopRuntime::Instance().Log(
-				"[p2-attachment-release] result consumed=%u distance=%.2f\r\n",
-				attachment_release_consumed ? 1u : 0u,
-				attachment_release_distance);
+			const LONG now_tick = static_cast<LONG>(GetTickCount());
+			if (now_tick - m_last_attachment_release_log_tick > 5000)
+			{
+				m_last_attachment_release_log_tick = now_tick;
+				CoopRuntime::Instance().Log(
+					"[p2-attachment-release] result consumed=%u distance=%.2f\r\n",
+					attachment_release_consumed ? 1u : 0u,
+					attachment_release_distance);
+			}
 		}
 		netgame.ReapplyRemotePlayerFrameTransform(player2);
 		if (!stock_update_completed)

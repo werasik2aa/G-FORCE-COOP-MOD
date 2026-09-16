@@ -45,6 +45,9 @@ enum CoopPacketId : std::uint32_t
 	kCoopPacketWorldDamage = 34,
 	// Host -> client: entity has been despawned/died.  Client removes it.
 	kCoopPacketWorldDespawn = 35,
+	// Host -> client: tracked NPC controller mode change (activation states
+	// never ride in snapshots). Client applies it through the native dispatcher.
+	kCoopPacketWorldMode = 37,
 	// Reliable root object-relay event for a validated map XTrigger. It carries
 	// a process-neutral source fingerprint, never a process pointer.
 	kCoopPacketWorldObjectEvent = 36,

@@ -5,6 +5,16 @@ boundaries. For every retail address, field or inferred function name, use
 `../../re_cache/RE_CATALOG.md` instead; it records evidence and whether a fact
 is `approved`, a `guess`, or `not-tested`.
 
+## NPC mode sync
+
+Snapshots carry position/rotation/HP but no controller mode, so trigger-less
+activation states (saberized lamp dormant `0x4B` → flying `0x20`) never crossed
+processes. `WorldMode` (`id + mode`, reliable) broadcasts genuine mode
+transitions of host-tracked NPCs on change; the client applies them through
+the native dispatcher under SEH. Verified live 2026-09-17: saberized lamp
+flies on both screens. AI chatter modes (`0x56`/`0x5A`) also cross; if the peer
+AI visibly fights forced modes, add stickiness (apply once per change).
+
 ## Scope and executable boundary
 
 - This is a Win32 injected co-op experiment for one fingerprinted retail
@@ -520,7 +530,7 @@ is explicitly not an implementation instruction.
 | Cutscene deaths | **Observation:** some cutscene exits kill one or both peers. | The narrow progression rally can reunite players when the exact cutscene trigger succeeds, but it is not a death fix. Capture both process logs across the transition; do not reuse P2 attachment release or force Default as a generic cure. |
 | Join after prior trigger/event activity | **Priority observation:** a late-joining peer needs durable consequences of prior progression: doors/shutters, counters, spawned/despawned objects and relevant progress state. | Recover a catalog of persistent root-object/cell state and an explicit snapshot/replay policy. Never blindly replay all historic events: transient hits, cutscenes and non-idempotent spawns can duplicate entities or repeat presentation. |
 | Progression doors/shutters | **Observation:** some objects block only the client from reachable level regions. | Treat each root object identity and its complete relay/forwarder chain as distinct. A known card-door route is evidence for that object only; `0x41080010` is not a semantic open-door opcode. |
-| Saberization and Saberizer HUD | **Observation:** Saberization lacks peer synchronization and a peer can retain an inappropriate laser-gun HUD. | Recover gameplay state/owner separately from presentation/HUD selection. The removed scanner experiment is negative evidence: do not reinstate a broad scanner/HUD suppression hook. |
+| Saberization and Saberizer HUD | **Solved for activation:** the saberized lamp flies on both screens via NPC mode sync (below). Saberizer is `type=0x40050007`/`item=0x50000003`; fire input replicates and P2 shoots visibly. The green scan overlay driver is still unknown (`0x5B8C20` never runs in steady state, P2 never enters Scan `0x6100000C`); the removed hook is negative evidence. | Recover gameplay state/owner separately from presentation/HUD selection. |
 | Whip world hits | **Observation:** particles appear, while boxes/grilles do not react. | Recover one stock hit receiver or object event for each target family before networking it. Visual particle emission is non-authoritative and cannot prove a hit. |
 | Mooch versus laser mines | **Hypothesis:** tripwire/mines react through an ordinary target hit or trigger receiver, not a direct mine-disable call. | Test local F1 and normal Mooch attack against one identified mine; log source Fly, target identity, hit/event route and native result before choosing replication. |
 | Dynamic physics / key-card | **Observation:** card insertion can replicate without making the card itself a shared physical object. | Design only after discovering stable identity and native ownership/lifetime: pickup, carry, transform, drop, destruction and late link must have explicit authority. Never network raw addresses. |

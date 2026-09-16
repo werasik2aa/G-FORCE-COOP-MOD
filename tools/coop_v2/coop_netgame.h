@@ -46,10 +46,7 @@ namespace coop
 		// requests and the File_XXX.bin choice then follow natively.
 		bool InstallLanguageSelectHook();
 		void RemoveLanguageSelectHook();
-		// Temporary movement diagnostics: which input manager/device the local
-		// tick polls and whether physical axes arrive nonzero.
-		void ProbeLocalInputManager(void* manager, std::uint32_t device,
-			std::uint32_t axis, float value);
+
 		void BeginRemoteInput();
 		void EndRemoteInput();
 		// ABR keeps its own vehicle motor. This scope exposes only the replicated
@@ -561,10 +558,6 @@ namespace coop
 		void* m_remote_gamepad;
 		ULONG_PTR* m_async_key_state_iat_slot;
 		GetAsyncKeyStateFn m_original_get_async_key_state;
-		void* m_input_probe_managers[6];
-		std::uint32_t m_input_probe_devices[6];
-		int m_input_probe_count;
-		LONG m_last_input_probe_tick;
 		BYTE m_original_language_select_bytes[8];
 		BYTE* m_language_select_trampoline;
 		LanguageSelectFn m_original_language_select;

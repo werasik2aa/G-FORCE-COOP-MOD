@@ -21,6 +21,7 @@ namespace coop
 	constexpr DWORD kWorldSnapshotIntervalMs = 350;
 	constexpr DWORD kMissingSpawnRetryMs = 1000;
 	constexpr DWORD kForcedClientSpawnRegistrationTimeoutMs = 3000;
+
 	constexpr size_t kMaxPendingWorldPackets = 1024;
 
 	namespace
@@ -281,12 +282,14 @@ namespace coop
 		m_outgoing_object_events.clear();
 		m_outgoing_rallies.clear();
 		m_outgoing_despawns.clear();
+		m_outgoing_modes.clear();
 
 		m_incoming_spawns.clear();
 		m_incoming_snapshots.clear();
 		m_incoming_trigger_events.clear();
 		m_incoming_object_events.clear();
 		m_incoming_rallies.clear();
+		m_incoming_modes.clear();
 		m_pending_rallies.clear();
 		m_object_event_sequence = 0;
 		m_last_received_object_event_sequence = 0;
@@ -345,7 +348,9 @@ namespace coop
 		m_outgoing_trigger_events.clear();
 		m_outgoing_object_events.clear();
 		m_outgoing_rallies.clear();
+		m_outgoing_modes.clear();
 		m_incoming_spawns.clear();
+		m_incoming_modes.clear();
 
 		m_incoming_snapshots.clear();
 		m_incoming_trigger_events.clear();
@@ -2104,6 +2109,7 @@ namespace coop
 
 		ResolvePendingSpawns();
 		ApplyPendingSnapshots();
+		ApplyIncomingModes();
 	}
 
 	void WorldSync::ApplyPendingProgressionRallies()
@@ -2142,6 +2148,124 @@ namespace coop
 		// receive path refreshes this baseline, so remote HP never bounces back.
 		DetectLocalHealthChanges();
 		ApplyIncomingDamage();
+		DetectNpcModeChanges();
+	}
+
+	void WorldSync::DetectNpcModeChanges()
+	{
+		// Host authority for trigger-less activation states (saberized lamp):
+		// snapshots carry no mode, so broadcast genuine controller-mode
+		// transitions of tracked NPCs. Only changes go on the wire.
+		if (!CoopNetGame::Instance().IsHost() ||
+			!CoopNetGame::Instance().HasRemotePeer())
+		{
+			return;
+		}
+		for (HostEntity& tracked : m_host_entities)
+		{
+			if (tracked.world_id == 0 || !tracked.entity)
+				continue;
+			retail::HandlerRef handler = {};
+			retail::ControllerRef controller = {};
+			retail::ModeId mode_id = 0;
+			const retail::EntityRef entity_ref = {
+				retail::ToAddress(tracked.entity)
+			};
+			if (!retail::EntityView(entity_ref).Handler(handler) ||
+				!retail::HandlerView(handler).Controller(controller) ||
+				!retail::ControllerView(controller).CurrentMode(mode_id) ||
+				mode_id == 0)
+			{
+				continue;
+			}
+			if (mode_id == tracked.last_sent_mode)
+				continue;
+			tracked.last_sent_mode = mode_id;
+			WorldModePacket packet = {};
+			protocol::InitializeFixedPacket(packet,
+				protocol::PacketKind::WorldMode);
+			packet.world_id = tracked.world_id;
+			packet.mode = mode_id;
+			AcquireSRWLockExclusive(&m_packet_lock);
+			if (m_outgoing_modes.size() < kMaxPendingWorldPackets)
+				m_outgoing_modes.push_back(packet);
+			ReleaseSRWLockExclusive(&m_packet_lock);
+			CoopRuntime::Instance().Log(
+				"[npc-mode] host id=%u mode=0x%08X def=%d sig=%08X\r\n",
+				tracked.world_id, mode_id, tracked.key.definition_id,
+				tracked.trigger_signature);
+		}
+	}
+
+	void WorldSync::ApplyIncomingModes()
+	{
+		if (!CoopNetGame::Instance().IsClient())
+		{
+			AcquireSRWLockExclusive(&m_packet_lock);
+			m_incoming_modes.clear();
+			ReleaseSRWLockExclusive(&m_packet_lock);
+			return;
+		}
+		std::vector<WorldModePacket> modes;
+		AcquireSRWLockExclusive(&m_packet_lock);
+		modes.swap(m_incoming_modes);
+		ReleaseSRWLockExclusive(&m_packet_lock);
+		for (const WorldModePacket& packet : modes)
+		{
+			ClientEntity* const tracked = FindClientEntityById(packet.world_id);
+			if (!tracked || !tracked->entity || !IsLiveEntity(tracked->entity))
+				continue;
+			retail::HandlerRef handler = {};
+			retail::ControllerRef controller = {};
+			retail::ModeId current_mode = 0;
+			const retail::EntityRef entity_ref = {
+				retail::ToAddress(tracked->entity)
+			};
+			if (!retail::EntityView(entity_ref).Handler(handler) ||
+				!retail::HandlerView(handler).Controller(controller) ||
+				!retail::ControllerView(controller).CurrentMode(current_mode) ||
+				current_mode == packet.mode)
+			{
+				continue;
+			}
+			const bool selected = SelectNpcMode(
+				retail::ToPointer(controller.value), packet.mode);
+			CoopRuntime::Instance().Log(
+				"[npc-mode] client id=%u mode=0x%08X -> 0x%08X selected=%d\r\n",
+				packet.world_id, current_mode, packet.mode,
+				selected ? 1 : 0);
+		}
+	}
+
+	bool WorldSync::SelectNpcMode(void* controller, std::uint32_t mode)
+	{
+		// No object locals: __try forbids destructible owners in this scope.
+		const retail::ControllerRef controller_ref = {
+			retail::ToAddress(controller)
+		};
+		__try
+		{
+			return retail::ControllerView(controller_ref).SelectMode(mode) ?
+				true : false;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+	}
+
+	bool WorldSync::HandleWorldModePacket(const protocol::PacketView& view)
+	{
+		WorldModePacket packet = {};
+		if (!view.CopyUncompressedExact(packet))
+			return false;
+		if (!packet.world_id || !packet.mode)
+			return true;
+		AcquireSRWLockExclusive(&m_packet_lock);
+		if (m_incoming_modes.size() < kMaxPendingWorldPackets)
+			m_incoming_modes.push_back(packet);
+		ReleaseSRWLockExclusive(&m_packet_lock);
+		return true;
 	}
 
 	void WorldSync::SetTrackedHealth(void* entity, float health)
@@ -2612,6 +2736,8 @@ namespace coop
 			return HandleProgressionRallyPacket(view);
 		case protocol::PacketKind::WorldDamage:
 			return HandleWorldDamagePacket(view);
+		case protocol::PacketKind::WorldMode:
+			return HandleWorldModePacket(view);
 		case protocol::PacketKind::WorldDespawn:
 			// Legacy despawn has no verified native destruction entry point.  Keep
 			// consuming it for wire compatibility, but do not drop a live local object.
@@ -2661,12 +2787,14 @@ namespace coop
 		}
 		std::vector<WorldSpawnPacket> spawns;
 		std::vector<WorldSnapshotPacket> snapshots;
+		std::vector<WorldModePacket> modes;
 		std::vector<WorldTriggerEventPacket> trigger_events;
 		std::vector<WorldObjectEventPacket> object_events;
 		std::vector<ProgressionRallyPacket> rallies;
 		AcquireSRWLockExclusive(&m_packet_lock);
 		spawns.swap(m_outgoing_spawns);
 		snapshots.swap(m_outgoing_snapshots);
+		modes.swap(m_outgoing_modes);
 		trigger_events.swap(m_outgoing_trigger_events);
 		object_events.swap(m_outgoing_object_events);
 		rallies.swap(m_outgoing_rallies);
@@ -2677,6 +2805,8 @@ namespace coop
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 		for (const WorldSnapshotPacket& packet : snapshots)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Unreliable);
+		for (const WorldModePacket& packet : modes)
+			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 		for (const WorldTriggerEventPacket& packet : trigger_events)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 		for (const WorldObjectEventPacket& packet : object_events)

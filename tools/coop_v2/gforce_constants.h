@@ -33,6 +33,7 @@ namespace coop
 		constexpr uint8_t kExpectedLanguageSelect[] = {
 			0x51, 0x8A, 0x54, 0x24, 0x08, 0x80, 0xFA, 0xFF
 		};
+		constexpr uint32_t kSaberizerWeaponType = 0x40050007u;
 		constexpr uintptr_t kDefaultModeActiveStores = 0x005BEAD6u;
 
 		constexpr uintptr_t kGPigUpdateVtableSlot = 0x0070C8A4u;

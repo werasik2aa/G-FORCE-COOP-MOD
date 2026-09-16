@@ -149,6 +149,7 @@ namespace coop
 		bool m_debug_player2_enabled;
 		bool m_client_black_pig_promoted;
 		LONG m_last_role_heartbeat_tick;
+		LONG m_last_attachment_release_log_tick;
 		bool m_client_role_gate_logged;
 		retail::EntityRef m_client_black_pig_entity;
 		retail::EntityRef m_client_original_darwin_entity;
@@ -175,6 +176,7 @@ namespace coop
 		int m_local_abr_propulsion_direction;
 
 		std::uint32_t m_last_weapon_type;
+		std::uint32_t m_last_remote_p2_mode;
 		Vec4 m_spawn_position;
 		Vec4 m_spawn_rotation;
 		retail::SpawnContextRef m_spawn_context;
