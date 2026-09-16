@@ -27,6 +27,11 @@ namespace coop
 
 		void OnPeerConnected();
 		void OnPeerDisconnected();
+		// Quit-to-main-menu teardown, called from the main-menu builder. Ends
+		// the session only when no local P1 exists (pause menus keep P1) and
+		// the peer is not freshly connected (a load may still be incoming).
+		// Safe to call on every menu build; no-ops without an active session.
+		void QuitSessionToMainMenu();
 		void OnRemotePacket(const void* data, std::uint32_t size);
 		// Socket-thread ingress validates and queues this reliable event. Native
 		// Fly code is reached later on the exact game-thread tick.

@@ -927,6 +927,47 @@ namespace coop
 			"[netgame] peer connected; P2 spawn queued for game thread\r\n");
 	}
 
+	void CoopNetGame::QuitSessionToMainMenu()
+	{
+		if (!HasRemotePeer())
+			return;
+		// A live local P1 means we are still in the world (pause/overlay
+		// menu), not quitting: never tear down a running session from here.
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding player1 = {};
+		if (players.GetBinding(retail::EntitySlot::LocalP1, player1))
+			return;
+		// A freshly connected peer may still be loading the host save while
+		// menu builds happen; give the load a minute before concluding quit.
+		const LONG peer_tick = InterlockedCompareExchange(
+			&m_peer_connected_tick, 0, 0);
+		if (peer_tick == 0 || static_cast<DWORD>(GetTickCount() -
+			static_cast<DWORD>(peer_tick)) < 60000)
+		{
+			return;
+		}
+		if (IsClient())
+		{
+			CoopRuntime::Instance().Log(
+				"[netgame] quit to menu: client disconnecting\r\n");
+			if (SteamOClient)
+				SteamOClient->Disconnect();
+			return;
+		}
+		if (IsHost())
+		{
+			CoopRuntime::Instance().Log(
+				"[netgame] quit to menu: host stopping servers\r\n");
+			if (SteamOServer)
+				SteamOServer->CloseServer();
+			if (SteamSServer)
+				SteamSServer->CloseServer();
+			if (SteamManager)
+				SteamManager->DisarmAutomaticHost();
+			OnPeerDisconnected();
+		}
+	}
+
 	void CoopNetGame::OnPeerDisconnected()
 	{
 		InterlockedExchange(&m_remote_connected, 0);

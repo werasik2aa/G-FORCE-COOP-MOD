@@ -15,6 +15,18 @@ the native dispatcher under SEH. Verified live 2026-09-17: saberized lamp
 flies on both screens. AI chatter modes (`0x56`/`0x5A`) also cross; if the peer
 AI visibly fights forced modes, add stickiness (apply once per change).
 
+## Session lifecycle (quit/reconnect)
+
+Quitting to the main menu tears the session down: `MenuConnectHook` calls
+`CoopNetGame::QuitSessionToMainMenu` on every main-menu build, which
+disconnects only when no local P1 exists (pause menus keep P1) and the peer
+is older than 60 s (a load may still be incoming). Host closes both
+listeners (clients get a clean close) and disarms the automatic host so the
+next loaded save reopens it; client disconnects free the server slot.
+Reconnect uses the same menu row: the already-a-client block now applies
+only while connected. A disconnected host-side P2 presentation is kept
+frozen (no verified native destroy) and resyncs on reconnect.
+
 ## Scope and executable boundary
 
 - This is a Win32 injected co-op experiment for one fingerprinted retail

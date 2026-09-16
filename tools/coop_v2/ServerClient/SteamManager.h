@@ -29,6 +29,9 @@ public:
 	// Called from P1's native controller tick, never from the menu.  It merely
 	// queues the host listeners for the network worker.
 	void NotifyGameWorldReady();
+	// Called when our own servers were stopped for quit-to-menu, so the next
+	// world load re-arms the automatic host listener instead of staying deaf.
+	void DisarmAutomaticHost();
 	// May be called from the game UI thread.  The dialog itself remains on the
 	// network worker, which owns all socket role transitions.
 	void RequestIpConnectionPrompt();

@@ -226,6 +226,12 @@ void CSteamManager::NotifyGameWorldReady()
 	InterlockedExchange(&m_game_world_ready, 1);
 }
 
+void CSteamManager::DisarmAutomaticHost()
+{
+	InterlockedExchange(&m_automatic_host_attempted, 0);
+	InterlockedExchange(&m_game_world_ready, 0);
+}
+
 void CSteamManager::RequestIpConnectionPrompt()
 {
 	InterlockedExchange(&m_ip_prompt_requested, 1);
@@ -326,9 +332,10 @@ void CSteamManager::PromptForIpConnection()
 {
 	if (!SteamLClient)
 		return;
-	if (coop::CoopNetGame::Instance().IsClient())
+	if (coop::CoopNetGame::Instance().IsClient() &&
+		coop::CoopNetGame::Instance().HasRemotePeer())
 	{
-		Msg("[network-client] F8 ignored; this process is already a client");
+		Msg("[network-client] F8 ignored; already connected to a peer");
 		return;
 	}
 
