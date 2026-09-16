@@ -6,6 +6,7 @@
 
 #include "coop_netgame.h"
 #include "coop_runtime.h"
+#include "chat_overlay.h"
 #include "gforce_constants.h"
 #include "player2.h"
 #include "retail/retail_views.h"
@@ -27,11 +28,12 @@ namespace coop
 			DebugAbr,
 			DebugUnusedF7,
 			DebugInteractiveCatalog,
+			DebugChat,
 			DebugKeyCount = static_cast<int>(kDebugActionCount)
 		};
 
 		const std::array<int, kDebugActionCount> kDebugVirtualKeys = {
-			VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F9
+			VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F9, VK_F10
 		};
 		static_assert(static_cast<std::size_t>(DebugKeyCount) ==
 			kDebugActionCount, "debug key table and state storage must match");
@@ -157,6 +159,19 @@ namespace coop
 			}
 			return;
 		}
+		if (ChatOverlay::Instance().IsInputActive())
+		{
+			// The in-client GDI panel owns text keys while it is visible. It has no
+			// child HWND and no WndProc hook, so the active game process polls it
+			// at this normal post-P1 seam.
+			ChatOverlay::Instance().TickInput();
+			for (std::size_t index = 0; index < m_key_was_down.size(); ++index)
+			{
+				m_key_was_down[index] =
+					(::GetAsyncKeyState(kDebugVirtualKeys[index]) & 0x8000) != 0;
+			}
+			return;
+		}
 
 		if (ConsumePressed(VK_F1, m_key_was_down[DebugFlyDualLaser]))
 			CoopNetGame::Instance().RequestDebugFlyDualLaser();
@@ -172,5 +187,7 @@ namespace coop
 			Player2Module::Instance().EnableLocalAbrForDebug();
 		if (ConsumePressed(VK_F9, m_key_was_down[DebugInteractiveCatalog]))
 			WorldSync::Instance().DebugLogInteractiveCandidates();
+		if (ConsumePressed(VK_F10, m_key_was_down[DebugChat]))
+			ChatOverlay::Instance().Toggle();
 	}
 }

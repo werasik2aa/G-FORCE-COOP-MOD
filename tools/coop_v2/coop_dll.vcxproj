@@ -106,6 +106,7 @@ copy /Y "$(GnsRuntimeRoot)\abseil_dll.dll" "$(OutDir)abseil_dll.dll"</Command>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="coop_application.cpp" />
+    <ClCompile Include="chat_overlay.cpp" />
     <ClCompile Include="coop_dll.cpp" />
     <ClCompile Include="coop_netgame.cpp" />
 	<ClCompile Include="coop_runtime.cpp" />
@@ -127,6 +128,7 @@ copy /Y "$(GnsRuntimeRoot)\abseil_dll.dll" "$(OutDir)abseil_dll.dll"</Command>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="coop_application.h" />
+    <ClInclude Include="chat_overlay.h" />
     <ClInclude Include="coop_netgame.h" />
     <ClInclude Include="coop_runtime.h" />
 	<ClInclude Include="debug_actions.h" />

@@ -115,6 +115,36 @@ namespace coop
 		return route == protocol::kWorldObjectEventRouteEntityTriggerActivation ||
 			route == protocol::kWorldObjectEventRouteEntityTriggerRequest;
 	}
+
+	bool TryGetProgressionRallyReason(std::uint32_t source_vtable,
+		protocol::ProgressionRallyReason& reason)
+	{
+		reason = protocol::ProgressionRallyReason::Invalid;
+		if (source_vtable == gforce::kTriggerObCutsceneVtable)
+		{
+			reason = protocol::ProgressionRallyReason::Cutscene;
+			return true;
+		}
+		if (source_vtable == gforce::kTriggerPlCheckpointVtable)
+		{
+			reason = protocol::ProgressionRallyReason::Checkpoint;
+			return true;
+		}
+		return false;
+	}
+
+	const char* ProgressionRallyReasonName(protocol::ProgressionRallyReason reason)
+	{
+		switch (reason)
+		{
+		case protocol::ProgressionRallyReason::Cutscene:
+			return "cutscene";
+		case protocol::ProgressionRallyReason::Checkpoint:
+			return "checkpoint";
+		default:
+			return "invalid";
+		}
+	}
 	}
 
 	bool SameTriggerKey(const WorldSync::TriggerKey& left, const WorldSync::TriggerKey& right)
@@ -158,6 +188,11 @@ namespace coop
 		m_snapshot_sequence(0),
 		m_object_event_sequence(0),
 		m_last_received_object_event_sequence(0),
+		m_rally_sequence(0),
+		m_last_received_rally_sequence(0),
+		m_last_local_rally_source(nullptr),
+		m_last_local_rally_event(0),
+		m_last_local_rally_tick(0),
 		m_last_snapshot_tick(0),
 		m_host_resync_requested(1),
 		m_client_ready_pending(0),
@@ -244,14 +279,22 @@ namespace coop
 		m_outgoing_snapshots.clear();
 		m_outgoing_trigger_events.clear();
 		m_outgoing_object_events.clear();
+		m_outgoing_rallies.clear();
 		m_outgoing_despawns.clear();
 
 		m_incoming_spawns.clear();
 		m_incoming_snapshots.clear();
 		m_incoming_trigger_events.clear();
 		m_incoming_object_events.clear();
+		m_incoming_rallies.clear();
+		m_pending_rallies.clear();
 		m_object_event_sequence = 0;
 		m_last_received_object_event_sequence = 0;
+		m_rally_sequence = 0;
+		m_last_received_rally_sequence = 0;
+		m_last_local_rally_source = nullptr;
+		m_last_local_rally_event = 0;
+		m_last_local_rally_tick = 0;
 		m_incoming_despawns.clear();
 
 		ReleaseSRWLockExclusive(&m_packet_lock);
@@ -272,6 +315,11 @@ namespace coop
 		m_snapshot_sequence = 0;
 		m_object_event_sequence = 0;
 		m_last_received_object_event_sequence = 0;
+		m_rally_sequence = 0;
+		m_last_received_rally_sequence = 0;
+		m_last_local_rally_source = nullptr;
+		m_last_local_rally_event = 0;
+		m_last_local_rally_tick = 0;
 		m_last_snapshot_tick = 0;
 		m_client_ready_sequence = 0;
 		InterlockedExchange(&m_client_ready_pending, 0);
@@ -296,13 +344,21 @@ namespace coop
 		m_outgoing_snapshots.clear();
 		m_outgoing_trigger_events.clear();
 		m_outgoing_object_events.clear();
+		m_outgoing_rallies.clear();
 		m_incoming_spawns.clear();
 
 		m_incoming_snapshots.clear();
 		m_incoming_trigger_events.clear();
 		m_incoming_object_events.clear();
+		m_incoming_rallies.clear();
+		m_pending_rallies.clear();
 		m_object_event_sequence = 0;
 		m_last_received_object_event_sequence = 0;
+		m_rally_sequence = 0;
+		m_last_received_rally_sequence = 0;
+		m_last_local_rally_source = nullptr;
+		m_last_local_rally_event = 0;
+		m_last_local_rally_tick = 0;
 		ReleaseSRWLockExclusive(&m_packet_lock);
 
 		AcquireSRWLockExclusive(&m_damage_lock);
@@ -1093,6 +1149,72 @@ namespace coop
 				static_cast<unsigned>(packet.event_code));
 		}
 		return queued;
+	}
+
+	bool WorldSync::QueueProgressionRally(void* source,
+		std::uint32_t source_vtable, int event_code)
+	{
+		if (!source || !CoopNetGame::Instance().HasRemotePeer())
+			return false;
+
+		protocol::ProgressionRallyReason reason =
+			protocol::ProgressionRallyReason::Invalid;
+		if (!TryGetProgressionRallyReason(source_vtable, reason))
+			return false;
+
+		const DWORD now = GetTickCount();
+		if (source == m_last_local_rally_source &&
+			event_code == m_last_local_rally_event &&
+			static_cast<DWORD>(now - m_last_local_rally_tick) < 750)
+		{
+			return false;
+		}
+
+		retail::EntitySlotRepository players;
+		const retail::EntityRef player1 = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		retail::Transform transform = {};
+		if (!player1 || !retail::EntityView(player1).ReadTransform(transform) ||
+			!IsFiniteRetailTransform(transform))
+		{
+			CoopRuntime::Instance().Log(
+				"[progression-rally] skipped %s: local P1 transform unavailable\r\n",
+				ProgressionRallyReasonName(reason));
+			return false;
+		}
+
+		ProgressionRallyPacket packet = {};
+		protocol::InitializeFixedPacket(packet,
+			protocol::PacketKind::ProgressionRally);
+		packet.reason = reason;
+		memcpy(packet.position, &transform.position, sizeof(packet.position));
+		memcpy(packet.rotation, &transform.rotation, sizeof(packet.rotation));
+
+		bool queued = false;
+		AcquireSRWLockExclusive(&m_packet_lock);
+		if (m_outgoing_rallies.size() < kMaxPendingWorldPackets)
+		{
+			packet.sequence = ++m_rally_sequence;
+			if (packet.sequence == 0)
+				packet.sequence = ++m_rally_sequence;
+			m_outgoing_rallies.push_back(packet);
+			queued = true;
+		}
+		ReleaseSRWLockExclusive(&m_packet_lock);
+		if (!queued)
+			return false;
+
+		m_last_local_rally_source = source;
+		m_last_local_rally_event = event_code;
+		m_last_local_rally_tick = now;
+		Player2Module::Instance().ApplyProgressionRallyToRemoteP2(transform,
+			reason, packet.sequence);
+		CoopRuntime::Instance().Log(
+			"[progression-rally] queued %s seq=%u source=%p event=%08X target=(%.2f,%.2f,%.2f)\r\n",
+			ProgressionRallyReasonName(reason), packet.sequence, source,
+			static_cast<unsigned>(event_code), transform.position.x,
+			transform.position.y, transform.position.z);
+		return true;
 	}
 
 	void* WorldSync::FindObjectEventTrigger(
@@ -1910,11 +2032,13 @@ namespace coop
 		std::vector<WorldSnapshotPacket> snapshots;
 		std::vector<WorldTriggerEventPacket> trigger_events;
 		std::vector<WorldObjectEventPacket> object_events;
+		std::vector<ProgressionRallyPacket> rallies;
 		AcquireSRWLockExclusive(&m_packet_lock);
 		spawns.swap(m_incoming_spawns);
 		snapshots.swap(m_incoming_snapshots);
 		trigger_events.swap(m_incoming_trigger_events);
 		object_events.swap(m_incoming_object_events);
+		rallies.swap(m_incoming_rallies);
 		ReleaseSRWLockExclusive(&m_packet_lock);
 
 		for (const WorldSpawnPacket& packet : spawns)
@@ -1964,6 +2088,12 @@ namespace coop
 		}
 		for (const WorldObjectEventPacket& packet : object_events)
 			ReplayRemoteObjectEvent(packet);
+		for (const ProgressionRallyPacket& packet : rallies)
+		{
+			if (m_pending_rallies.size() < kMaxPendingWorldPackets)
+				m_pending_rallies.push_back(packet);
+		}
+		ApplyPendingProgressionRallies();
 
 		std::vector<WorldDespawnPacket> despawns;
 		AcquireSRWLockExclusive(&m_packet_lock);
@@ -1974,6 +2104,27 @@ namespace coop
 
 		ResolvePendingSpawns();
 		ApplyPendingSnapshots();
+	}
+
+	void WorldSync::ApplyPendingProgressionRallies()
+	{
+		for (std::vector<ProgressionRallyPacket>::iterator it =
+			m_pending_rallies.begin(); it != m_pending_rallies.end();)
+		{
+			retail::Transform transform = {};
+			memcpy(&transform.position, it->position, sizeof(transform.position));
+			memcpy(&transform.rotation, it->rotation, sizeof(transform.rotation));
+			if (!Player2Module::Instance().ApplyProgressionRallyToLocalP1(transform,
+				it->reason, it->sequence))
+			{
+				++it;
+				continue;
+			}
+			CoopRuntime::Instance().Log(
+				"[progression-rally] applied %s seq=%u to local P1\r\n",
+				ProgressionRallyReasonName(it->reason), it->sequence);
+			it = m_pending_rallies.erase(it);
+		}
 	}
 
 	void WorldSync::GameTick()
@@ -2380,6 +2531,39 @@ namespace coop
 		return true;
 	}
 
+	bool WorldSync::HandleProgressionRallyPacket(
+		const protocol::PacketView& view)
+	{
+		ProgressionRallyPacket packet = {};
+		if (!view.CopyUncompressedExact(packet) || packet.sequence == 0 ||
+			(packet.reason != protocol::ProgressionRallyReason::Cutscene &&
+				packet.reason != protocol::ProgressionRallyReason::Checkpoint) ||
+			!IsFiniteWireTransform(packet.position, packet.rotation))
+		{
+			return true;
+		}
+
+		bool accepted = false;
+		AcquireSRWLockExclusive(&m_packet_lock);
+		if (IsStrictlyNewerSequence(packet.sequence,
+			m_last_received_rally_sequence) &&
+			m_incoming_rallies.size() < kMaxPendingWorldPackets)
+		{
+			m_incoming_rallies.push_back(packet);
+			m_last_received_rally_sequence = packet.sequence;
+			accepted = true;
+		}
+		ReleaseSRWLockExclusive(&m_packet_lock);
+		if (accepted)
+		{
+			CoopRuntime::Instance().Log(
+				"[progression-rally] peer received %s seq=%u target=(%.2f,%.2f,%.2f)\r\n",
+				ProgressionRallyReasonName(packet.reason), packet.sequence,
+				packet.position[0], packet.position[1], packet.position[2]);
+		}
+		return true;
+	}
+
 	bool WorldSync::HandleWorldSnapshotPacket(const protocol::PacketView& view)
 	{
 		WorldSnapshotPacket packet = {};
@@ -2424,6 +2608,8 @@ namespace coop
 			return HandleWorldTriggerEventPacket(view);
 		case protocol::PacketKind::WorldObjectEvent:
 			return HandleWorldObjectEventPacket(view);
+		case protocol::PacketKind::ProgressionRally:
+			return HandleProgressionRallyPacket(view);
 		case protocol::PacketKind::WorldDamage:
 			return HandleWorldDamagePacket(view);
 		case protocol::PacketKind::WorldDespawn:
@@ -2477,11 +2663,13 @@ namespace coop
 		std::vector<WorldSnapshotPacket> snapshots;
 		std::vector<WorldTriggerEventPacket> trigger_events;
 		std::vector<WorldObjectEventPacket> object_events;
+		std::vector<ProgressionRallyPacket> rallies;
 		AcquireSRWLockExclusive(&m_packet_lock);
 		spawns.swap(m_outgoing_spawns);
 		snapshots.swap(m_outgoing_snapshots);
 		trigger_events.swap(m_outgoing_trigger_events);
 		object_events.swap(m_outgoing_object_events);
+		rallies.swap(m_outgoing_rallies);
 
 		ReleaseSRWLockExclusive(&m_packet_lock);
 
@@ -2492,6 +2680,8 @@ namespace coop
 		for (const WorldTriggerEventPacket& packet : trigger_events)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 		for (const WorldObjectEventPacket& packet : object_events)
+			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
+		for (const ProgressionRallyPacket& packet : rallies)
 			SendToRemote(&packet, sizeof(packet), k_nSteamNetworkingSend_Reliable);
 
 		std::vector<WorldDamagePacket> damage;

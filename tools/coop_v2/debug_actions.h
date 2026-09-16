@@ -5,9 +5,9 @@
 
 namespace coop
 {
-	// Keep the key-state storage and the F1-F7/F9 dispatch table bound to one
+	// Keep the key-state storage and the F1-F7/F9/F10 dispatch table bound to one
 	// explicit count instead of maintaining a second anonymous array length.
-	constexpr std::size_t kDebugActionCount = 8;
+	constexpr std::size_t kDebugActionCount = 9;
 
 	// P1's post-update hook is the only scheduling point used by these actions.
 	// Network workers never execute a debug key directly against a retail object.

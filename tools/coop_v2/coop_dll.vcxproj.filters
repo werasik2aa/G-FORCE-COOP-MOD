@@ -23,6 +23,9 @@
     <ClCompile Include="coop_application.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="chat_overlay.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="coop_dll.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -80,6 +83,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="coop_application.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="chat_overlay.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="coop_netgame.h">

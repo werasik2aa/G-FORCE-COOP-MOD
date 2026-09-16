@@ -24,7 +24,9 @@ namespace protocol
 		WorldDamage = kCoopPacketWorldDamage,
 		WorldDespawn = kCoopPacketWorldDespawn,
 		WorldObjectEvent = kCoopPacketWorldObjectEvent,
-		FlyAbility = kCoopPacketFlyAbility
+		FlyAbility = kCoopPacketFlyAbility,
+		ProgressionRally = kCoopPacketProgressionRally,
+		Chat = kCoopPacketChat
 
     };
 

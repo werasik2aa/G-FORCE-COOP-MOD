@@ -120,6 +120,20 @@ namespace retail
         }
     };
 
+    // The RDV controller does not read the device index from a GPig entity. It
+    // loads the process-global input owner at 0x00912784 and then reads +0x674,
+    // exactly as the retail mode update does at 0x005BDD7C.
+    class GamePointerStore final
+    {
+    public:
+        bool InputDevice(std::uint32_t& out) const
+        {
+            Address game = 0;
+            return TryReadAddress(gforce::kGamePointer, game) && game != 0 &&
+                TryRead(AddOffset(game, gforce::kGameInputDeviceOffset), out);
+        }
+    };
+
     // Owns the only raw access to the two DirectInput byte arrays used during a
     // scoped remote-P2 controller tick.  It is deliberately a buffer API, not
     // a guessed representation of the surrounding retail input-owner object.
@@ -626,6 +640,39 @@ namespace retail
         {
             return TryRead(AddOffset(task_.value,
                 gforce::kGPigRdvTaskEnabledOffset), out);
+        }
+
+		bool RdvSpeed(float& current, float& target) const
+		{
+			return TryRead(AddOffset(task_.value,
+				gforce::kGPigRdvTaskCurrentSpeedOffset), current) &&
+				TryRead(AddOffset(task_.value,
+					gforce::kGPigRdvTaskTargetSpeedOffset), target);
+		}
+
+		bool SetRdvSpeed(float current, float target) const
+		{
+			return TryWrite(AddOffset(task_.value,
+				gforce::kGPigRdvTaskCurrentSpeedOffset), current) &&
+				TryWrite(AddOffset(task_.value,
+					gforce::kGPigRdvTaskTargetSpeedOffset), target);
+		}
+
+        bool SetRdvDriveGate(bool active) const
+        {
+            if (!task_)
+                return false;
+            const std::uint8_t active_value = active ? 1u : 0u;
+            if (!TryWrite(AddOffset(task_.value,
+                gforce::kGPigRdvDriveTaskActiveOffset), active_value))
+            {
+                return false;
+            }
+            if (active)
+                return true;
+            const float stopped = 0.0f;
+            return TryWrite(AddOffset(task_.value,
+                gforce::kGPigRdvDriveTaskDirectionOffset), stopped);
         }
 
         MotorTaskRef ref() const { return task_; }
@@ -1503,6 +1550,70 @@ namespace retail
             __try
             {
                 configure(ToPointer(context.value), ToPointer(handler.value));
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+        }
+
+        // XControllerMode_GPig_RDV obtains its separate drive task through
+        // this exact lazy getter at 0x0040CA70. Reuse that native path instead
+        // of assuming the task table has already been materialized this tick.
+        static bool GetGPigRdvDriveTask(HandlerRef handler, MotorTaskRef& out)
+        {
+            out = {};
+            if (!handler)
+                return false;
+            using GetGPigRdvDriveTaskFn = void* (__thiscall*)(void*, bool);
+            const GetGPigRdvDriveTaskFn get =
+                reinterpret_cast<GetGPigRdvDriveTaskFn>(
+                    gforce::kGetGPigRdvDriveTask);
+            __try
+            {
+				out.value = ToAddress(get(ToPointer(AddOffset(handler.value,
+					gforce::kHandlerMotorSystemOffset)), true));
+                return static_cast<bool>(out);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                out = {};
+                return false;
+            }
+        }
+
+        // Run the exact registered outer RDV mode update. This is used only as
+        // a presentation fallback when the P2 controller dispatcher skipped its
+        // current ABR mode despite a fresh remote Fire edge.
+        static bool RunGPigRdvModeUpdate(ModeRef mode)
+        {
+            if (!mode ||
+                !CodePrefixMatches(gforce::kAbrModeUpdate,
+                    gforce::kExpectedAbrModeUpdate,
+                    sizeof(gforce::kExpectedAbrModeUpdate)))
+            {
+                return false;
+            }
+
+            ModeId mode_id = 0;
+            Address vtable = 0;
+            Address update = 0;
+            const ModeView mode_view(mode);
+            if (!mode_view.Id(mode_id) || mode_id != gforce::kAbrModeId ||
+                !mode_view.VTable(vtable) ||
+                vtable != gforce::kAbrModeVtable ||
+                !mode_view.Update(update) || update != gforce::kAbrModeUpdate)
+            {
+                return false;
+            }
+
+            using GPigRdvModeUpdateFn = void(__thiscall*)(void*);
+            const GPigRdvModeUpdateFn run =
+                reinterpret_cast<GPigRdvModeUpdateFn>(gforce::kAbrModeUpdate);
+            __try
+            {
+                run(ToPointer(mode.value));
                 return true;
             }
             __except (EXCEPTION_EXECUTE_HANDLER)

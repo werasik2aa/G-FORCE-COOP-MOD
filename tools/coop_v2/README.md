@@ -42,6 +42,9 @@ F2 не нужен: принудительный спавн скроет неи�
 - `shared_camera.h/.cpp` — единственный shared retail camera handler: native
   refresh, безопасный snapshot/restore aim state и local yaw. Он не знает про
   P2 или transport, поэтому будущий P3 не должен дублировать camera-код.
+- `chat_overlay.h/.cpp` — GDI-панель чата внутри client area игры: bounded
+  UTF-8, reliable transport и UI только на game thread. Она не добавляет биты
+  в `CoopInput`.
 - `ServerClient/` — самостоятельный сетевой слой без зависимостей от X-Ray:
   standalone GNS, Steam P2P, клиент, сервер и `CSteamManager`.
 - `menu_connect_hook.h/.cpp` — native-добавка к `XHudMenuMain`: после
@@ -63,7 +66,7 @@ F2 не нужен: принудительный спавн скроет неи�
   `winmm_proxy`, только целевая платформа Win32. `proxy_smoke` в текущем
   исходном дереве и solution отсутствует; упоминания о нём относятся к старому
   smoke-test эксперименту.
-- `debug_actions.h/.cpp` — единственная точка временных F1–F7 и F9 действий. Она
+- `debug_actions.h/.cpp` — единственная точка временных F1–F7/F9/F10 действий. Она
   исполняется только после штатного тика P1 на game thread, а не из сетевого worker.
 - `build.bat` — сборка x86 и подготовка runtime DLL.
 - `dump_info.cpp` — вспомогательный исходник для анализа. Старый
@@ -117,8 +120,10 @@ SEH и native function calls — `retail/`, где адреса и частич�
 нужен live test двух процессов.
 
 Проверка ABR стоит раньше `RemoteSnapshotInputScope` в P2 controller hook: если
-в ABR находится P1 или P2, выполняется только native vehicle tick. Обычный
-P2-путь не получает input, camera, weapon или root-transform ownership машины.
+в ABR находится P1 или P2, обычный P2-путь не получает input, camera, weapon или
+сглаженную on-foot transform-коррекцию. После успешного native vehicle tick
+receiver может записать только полный finite settled root snapshot peer-а; motor
+input, camera/HUD и ownership машины не подменяются.
 
 Обход live NPC/monster registry также больше не раскрывает узлы `BYTE*` в
 `world_sync.cpp` или сети: `EntityRegistryView` читает только подтверждённые
@@ -233,7 +238,7 @@ respawn, но из-за этого мог навсегда остаться в h
 | Лазер и поворот Мухи | Local owner Мухи резко поворачивает её и нажимает штатную атаку, пока receiver остаётся за обычным P1 или в Q. | Owner: `[fly-laser] queued ... post_tick_fly_seq=N`; owner публикует transform `N` сразу после native Fly tick. Receiver ждёт epoch `N`, пишет **полный** `fly_rotation` без splice `camera_yaw`, затем `EntityView` очищает retail cache-valid byte `entity+0x7E`: следующий native reader пересчитывает cached matrix `+0x88` из root rotation `+0xC8` и position `+0xE8`. Режим, камера и HUD receiver не выбираются; direct pulse остаётся fallback. Визуальный/боевой live-result ещё **not-tested**. |
 | P2/P3 scanner / HUD | Дать оружие со сканированием remote P2 (или существующему P3), затем проверить P1. | Открытая проблема. Экспериментальный P2/P3 scanner guard удалён: он не исправил общий зелёный HUD. Не считать scanner синхронизированным или изолированным, пока не найден и не проверен настоящий presentation route. |
 | Смерть Мухи | Убить/respawn Mooch, пока peer подключён. | Owner публикует `local Fly_Deactivated ... zero-owner exit`; peer получает `remote ownership 1 -> 0`. Если receiver локально пытается войти в `Fly_Deactivated`, пока peer ещё присылает живую Муху, ожидается `[fly-lifecycle ... suppressed receiver Fly_Deactivated ...]`; после zero-owner packet этот guard больше не действует и stock respawn разрешён. Это пока **not-tested** вживую. |
-| ABR/RDV | Войти в ABR через F6 при P2, затем подвигаться/повернуть машину. | Нет обычной P2 camera/weapon/root-transform коррекции в ABR. Реальный vehicle turn остаётся отдельным **not-tested** маршрутом. |
+| ABR/RDV | Войти в ABR через F6 при P2, затем проехать crash-prone участок трассы. | Generic P2 input, camera, weapon и сглаженная on-foot transform-коррекция в ABR не работают. После stock RDV tick receiver применяет лишь полный finite settled root peer-а; `[abr-transform] peer ABR root transform active for P2/RDV` подтверждает путь. `WorldSpawn`, trigger и object-event не подавляются. **Observed live:** прежняя fixed-point crash-точка была пройдена без вылета; это не делает всю трассу или каждое событие синхронизированным. |
 | F2/F3/F4 | На sandbox-level нажать кнопки у подходящих trigger. | Только соответствующие `[debug-F2]`, `[debug-F3]`, `[debug-F4]`; F3 не должен придумывать event code, F4 работает лишь для verified ComputerBox. |
 | Реальная активация trigger | Игроком или Мухой реально активировать объект/кнопку, в том числе в одиночной игре. | Сразу после native dispatcher ожидается `[trigger-activation] source=game|fly-local|fly-shadow ... family=... subtype=... definition=... pos=(...)`. Это факт вызова retail event, а не угадывание назначения; `result` — возврат dispatcher. |
 | Дверь/панель через карту | На двух процессах с одной свежей DLL игроком или Мухой активировать уже наблюдённую зелёную/зелёно-красную дверь. | Source: один или несколько `[world-object] queued seq=... route=1|2` в порядке native chain. Peer: те же `peer received`, затем `native route result route=...` и `applied`; дверь действительно меняет состояние. Это уже **observed live** для проверенной двери. `direct forwarder skipped noncanonical` не маскировать — приложить строку. `0x41080010` сам по себе не «open door». |
@@ -281,6 +286,25 @@ respawn, но из-за этого мог навсегда остаться в h
 сцены, кто был host, точное действие и видимый результат. `approved` в
 каталогах ставится только после повторяемого live-теста; `guess` и примерные
 имена остаются гипотезами.
+
+### Текущий ABR state: тест root-transform RDV
+
+Глобальная блокировка `WorldObjectEvent` была проверена и отменена: fixed-point
+ABR crash сохранился, а двери/карты от неё регрессировали. Object-event снова
+очередится и replay-ится в обычном режиме. Более раннее описание suppression
+world-трафика — историческая неудачная гипотеза, не текущая политика.
+
+После каждого native ABR tick P1 уже публикует свой settled `position` и
+`rotation` в обычном `CoopInput`, но прежний receiver отбрасывал их по
+`IsVehicleMotorActiveForRemoteP2`; поэтому удалённая RDV оставалась на старом
+месте. Теперь отдельный ABR path пишет полный P2/RDV root только после его
+stock tick. Он не подставляет motor input, не меняет камеру/HUD и не трогает
+world-event. Runtime proof: `[abr-transform] peer ABR root transform active for P2/RDV`.
+**Observed live:** после этой правки crash-prone фиксированная точка трассы была
+пройдена без прежнего вылета. Старый лог указывал, что перед крашем обе P2-копии
+получали native health set `50 -> 0`, а затем шли local `XTrigger_OB_Static`
+`0x410800E2/E3`; это согласуется с исправлением устаревшей P2/RDV позиции, но
+точное значение событий `E2/E3` ещё не recovered.
 
 ## Visual Studio
 
@@ -401,6 +425,23 @@ Host остаётся authority для `world_id`, transform и HP; client пр�
 одной ревизии: старый peer получит `[world-sync] rejected WorldSpawn wire size=...;
 peer DLL mismatch`, а не тихо создаст неполную реплику.
 
+## Rally при катсцене и checkpoint
+
+После успешного native event у exact XTrigger_OB_Cutscene либо
+XTrigger_PL_CheckPoint DLL создаёт отдельный 60-byte reliable
+ProgressionRallyPacket: причина, sequence и finite root transform P1.
+Это не generic object-event и не packet с указателем объекта. Инициирующий
+процесс сразу ставит к P1 свою remote P2-копию; peer применяет тот же transform
+к своему P1 на ближайшем game tick. ABR не перезаписывается — такой packet ждёт
+завершения ABR. Native object-event replay не создаёт обратный rally, а
+source/event подавляется на 750 ms.
+
+Проверка в двух окнах: дать host или client запустить катсцену, затем отдельно
+перейти checkpoint за закрывающейся дверью. В обоих случаях ожидаются строки
+[progression-rally] queued, moved remote P2, received и applied to local P1.
+Это build-verified, пока not-tested в живой игре; смерть после катсцены и world
+streaming остаются отдельными задачами.
+
 | Клавиша | Действие | Граница безопасности |
 | --- | --- | --- |
 | `F1` | Локальная одноразовая проверка dual laser Мухи: берёт transform Мухи и текущий P1 aim, временно центрирует native XGamePad ray и запускает shadow `Fly_Active` с synthetic raw edge. | Не выбирает controller mode и не меняет ownership, scanner/HUD/camera; не использует сеть. Не требует входа в Q или клиента. При peer-owned Мухе это локальный native-проход для проверки receiver-side реакции; direct item pulse используется только при несовпадении runtime-профиля. |
@@ -410,6 +451,7 @@ peer DLL mismatch`, а не тихо создаст неполную репли�
 | `F5` | Создаёт local P2 в этом процессе из сохранённого native P1 spawn context. | Не нужен второй процесс; допустимы только P1 Default/ABR. |
 | `F6` | Сначала гарантирует `F5`, затем запрашивает native ABR для P1. | Локальная P2 ABR task всё ещё network-only experiment. |
 | `F9` | Печатает read-only каталог всех ещё живых зарегистрированных trigger-точек. | Не вызывает trigger и не создаёт entity. `approved` — только exact ComputerBox; `observed` — уже виденный native event; `guess` — spawn-template; `unknown` — остальное. Координаты и identity наблюдены, но имя/назначение не угадываются. |
+| `F10` | Открывает/скрывает retained GDI-панель поверх client area игры; Enter отправляет строку, Esc скрывает. | Отдельный reliable UTF-8 packet, максимум 64 символа ввода. Входящее сообщение при закрытом чате автоматически показывает полупрозрачное неактивное уведомление на 6 секунд. После штатного D3D9 Present обновляется позиция owned HWND, а отрисовка идёт через его WM_PAINT. Первый WS_CHILD-вариант был полностью скрыт D3D-поверхностью и заменён. D3D state не меняется. Пока панель открыта в foreground-процессе, её клавиши не передаются P2 и не запускают F1–F9 debug-действия. |
 
 `Fly_Deactivated` (`0x61000075`) — локальный native-переход в `Fly_Respawn`, а не
 сетевой флаг смерти. Его `Enter` разрушает локальное visual/task состояние, поэтому
@@ -480,6 +522,11 @@ not revive a route, packet layout or address merely because it appears below.
   `DATA4`.
 - После соединения клиент и сервер обмениваются `GFCOOP_HELLO_v1` / 
   `GFCOOP_WELCOME_v1`; строки лога содержат PID процесса.
+- Если уже подключённый host повторно выбирает Load Game, общий native-вход
+  `0x005F1920` отправляет выбранный `DATA<n>` клиенту до разрушения текущего
+  мира. Клиент заменяет тот же слот и вызывает штатную загрузку на game thread.
+  Это покрывает оба известных retail caller, а не только экранный call
+  `0x005EDC5D`.
 - После соединения P2 автоматически создаётся на host и client. Спавн выполняется
   на игровом потоке из штатного snapshot/context P1, а не из GNS worker. Автоспавн
   ждёт `Default`-режим P1, одну секунду после соединения и завершённый штатный тик P1,
@@ -502,8 +549,9 @@ not revive a route, packet layout or address merely because it appears below.
   общего camera handler, отбирая вращение у P1 до первого RMB P2.
   `GetAsyncKeyState` остаётся узким перехватом для прямых VK-проверок EXE. Для сетевого P2
   action profile временно равен `0` (keyboard), потому что profile `1` читает отдельный кэш.
-- После штатного тика P2 transform удалённого P1 служит только мягкой целью коррекции
-  позиции и root rotation — мотор не должен терять собственные run/turn/jump transitions.
+- Для P2 один мягко интерполированный transform вычисляется перед штатным тиком,
+  применяется до него и тем же значением повторно после. Мотор сохраняет собственные
+  run/turn/jump transitions, а физика одного тика не утягивает модель обратно под карту.
   Это эксперимент client prediction/reconciliation и ещё требует теста на двух окнах.
   Выбранный weapon type передаётся штатному setter P2 только при смене типа. Ранняя запись
   `direction()` перед P2 update была откатана: она регрессировала подтверждённый remote fire.

@@ -43,6 +43,26 @@ namespace coop
 			CoopNetGame& netgame_;
 		};
 
+		class RemoteAbrFireInputScope final
+		{
+		public:
+			explicit RemoteAbrFireInputScope(CoopNetGame& netgame) :
+				netgame_(netgame)
+			{
+				netgame_.BeginRemoteAbrFireInput();
+			}
+
+			~RemoteAbrFireInputScope()
+			{
+				netgame_.EndRemoteInput();
+			}
+
+		private:
+			RemoteAbrFireInputScope(const RemoteAbrFireInputScope&);
+			RemoteAbrFireInputScope& operator=(const RemoteAbrFireInputScope&);
+			CoopNetGame& netgame_;
+		};
+
 		class PrimaryGamePadScope final
 		{
 
@@ -81,6 +101,20 @@ namespace coop
 		constexpr float kP2AttachmentReleaseDistance = 0.2f;
 		constexpr DWORD kP2AttachmentReleaseRepeatWindowMs = 250u;
 
+		bool IsFiniteProgressionTransform(const retail::Transform& transform)
+		{
+			const float values[] = {
+				transform.position.x, transform.position.y, transform.position.z,
+				transform.position.w, transform.rotation.x, transform.rotation.y,
+				transform.rotation.z, transform.rotation.w
+			};
+			for (const float value : values)
+			{
+				if (value < -FLT_MAX || value > FLT_MAX)
+					return false;
+			}
+			return true;
+		}
 	}
 
 	Player2Module& Player2Module::Instance()
@@ -107,6 +141,10 @@ namespace coop
 		m_remote_p2_attachment_family(AttachmentFamily::None),
 		m_remote_p2_attachment_state_machine(),
 		m_abr_native_task_configured_player2(),
+		m_player2_abr_mode_setup_failure_logged(false),
+		m_local_abr_propulsion_locked(false),
+		m_local_abr_saved_target_speed(1.0f),
+		m_local_abr_propulsion_direction(1),
 
 		m_last_weapon_type(0xFFFFFFFFu),
 		m_spawn_context(),
@@ -458,6 +496,7 @@ namespace coop
 			m_player2_default_mode_initialized = false;
 			m_player2_default_mode_setup_failure_logged = false;
 			m_abr_native_task_configured_player2 = {};
+			m_player2_abr_mode_setup_failure_logged = false;
 
 			m_logged_blocked_active_publish = false;
 
@@ -600,6 +639,68 @@ namespace coop
 			created_task);
 	}
 
+	bool Player2Module::TryEnterPlayer2AbrMode(void* controller)
+	{
+		if (!controller)
+			return false;
+		const std::uint32_t current_mode = GetModeId(controller);
+		if (current_mode == kAbrModeId)
+			return true;
+		// Never override Death, Ledge, cutscene or other native transitions.
+		if (current_mode != kDefaultModeId)
+			return false;
+
+		const retail::ControllerRef controller_ref = {
+			retail::ToAddress(controller)
+		};
+		const retail::ControllerView controller_view(controller_ref);
+		retail::ModeRef abr_mode = {};
+		std::uint32_t conflict_mask = 0;
+		const bool contract_valid =
+			controller_view.RegisteredMode(kAbrModeId, abr_mode) &&
+			retail::ModeView(abr_mode).ConflictMask(conflict_mask) &&
+			(conflict_mask == kAbrModeConflictMask ||
+				conflict_mask == (kAbrModeConflictMask &
+					~kP2DefaultExclusiveMask));
+		if (!contract_valid ||
+			(conflict_mask == kAbrModeConflictMask &&
+				!retail::ModeView(abr_mode).SetConflictMask(
+					kAbrModeConflictMask & ~kP2DefaultExclusiveMask)))
+		{
+			if (!m_player2_abr_mode_setup_failure_logged)
+			{
+				CoopRuntime::Instance().Log(
+					"[abr-mode] P2 registered ABR contract rejected mode=%p mask=0x%08X\r\n",
+					retail::ToPointer(abr_mode.value), conflict_mask);
+				m_player2_abr_mode_setup_failure_logged = true;
+			}
+			return false;
+		}
+
+		const bool accepted = controller_view.SelectMode(kAbrModeId);
+		const std::uint32_t selected_mode = GetModeId(controller);
+		const bool entered = selected_mode == kAbrModeId;
+		if (entered || !m_player2_abr_mode_setup_failure_logged)
+		{
+			CoopRuntime::Instance().Log(
+				"[abr-mode] P2 native enter requested current=0x%08X selected=0x%08X accepted=%u mode=%p mask=0x%08X\r\n",
+				current_mode, selected_mode, accepted ? 1u : 0u,
+				retail::ToPointer(abr_mode.value),
+				kAbrModeConflictMask & ~kP2DefaultExclusiveMask);
+		}
+		if (entered)
+			m_player2_abr_mode_setup_failure_logged = false;
+		else
+		{
+			// A rejected transition must leave the unused registered mode in its
+			// stock configuration; retry only on a later authoritative ABR tick.
+			if (conflict_mask == kAbrModeConflictMask)
+				retail::ModeView(abr_mode).SetConflictMask(conflict_mask);
+			m_player2_abr_mode_setup_failure_logged = true;
+		}
+		return entered;
+	}
+
 	bool Player2Module::ConfigurePlayer2RdvTask(const char* source,
 		retail::EntityRef player2, retail::HandlerRef player2_handler,
 		retail::MotorTaskRef task)
@@ -676,6 +777,103 @@ namespace coop
 		return true;
 	}
 
+	bool Player2Module::SetAbrDriveGate(void* player, bool active)
+	{
+		if (!player)
+			return false;
+		const retail::EntityRef player_ref = { retail::ToAddress(player) };
+		retail::HandlerRef handler = {};
+		retail::MotorTaskRef drive_task = {};
+		retail::Address vtable = 0;
+		return retail::EntityView(player_ref).Handler(handler) &&
+			retail::NativeGameApi::GetGPigRdvDriveTask(handler,
+				drive_task) && drive_task &&
+			retail::MotorTaskView(drive_task).VTable(vtable) &&
+			vtable == kGPigRdvDriveTaskVtable &&
+			retail::MotorTaskView(drive_task).SetRdvDriveGate(active);
+	}
+
+	bool Player2Module::SetLocalAbrPropulsion(void* player, float direction)
+	{
+		if (!player)
+			return false;
+		const retail::EntityRef player_ref = { retail::ToAddress(player) };
+		retail::HandlerRef handler = {};
+		retail::MotorSystemRef motor_system = {};
+		retail::MotorTaskRef rdv_task = {};
+		retail::Address vtable = 0;
+		std::uint32_t state_index = 0;
+		if (!retail::EntityView(player_ref).Handler(handler) ||
+			!retail::HandlerView(handler).MotorSystem(motor_system) ||
+			!retail::ReadGPigRdvTaskStateIndex(state_index) ||
+			state_index >= kMotorSystemTaskStateSafetyLimit ||
+			!retail::MotorSystemView(motor_system).TaskAt(state_index, rdv_task) ||
+			!rdv_task || !retail::MotorTaskView(rdv_task).VTable(vtable) ||
+			vtable != kGPigRdvTaskVtable)
+		{
+			return false;
+		}
+
+		retail::MotorTaskView task(rdv_task);
+		float current_speed = 0.0f;
+		float target_speed = 0.0f;
+		if (!task.RdvSpeed(current_speed, target_speed))
+			return false;
+
+		const int requested_direction = direction > 0.05f ? 1 :
+			(direction < -0.05f ? -1 : 0);
+		const float target_magnitude = fabsf(target_speed);
+		const float current_magnitude = fabsf(current_speed);
+		if (!m_local_abr_propulsion_locked)
+		{
+			if (_finite(target_magnitude) && target_magnitude > 0.001f)
+				m_local_abr_saved_target_speed = target_magnitude;
+			else if (_finite(current_magnitude) && current_magnitude > 0.001f)
+				m_local_abr_saved_target_speed = current_magnitude;
+		}
+		if (!_finite(m_local_abr_saved_target_speed) ||
+			m_local_abr_saved_target_speed <= 0.001f)
+		{
+			m_local_abr_saved_target_speed = 1.0f;
+		}
+
+		const bool direction_changed =
+			m_local_abr_propulsion_direction != requested_direction;
+		if (requested_direction == 0)
+		{
+			if (!task.SetRdvSpeed(0.0f, 0.0f))
+				return false;
+			m_local_abr_propulsion_locked = true;
+			m_local_abr_propulsion_direction = 0;
+			if (direction_changed)
+			{
+				CoopRuntime::Instance().Log(
+					"[abr-drive] propulsion stopped saved_target=%.3f\r\n",
+					m_local_abr_saved_target_speed);
+			}
+			return true;
+		}
+
+		const float signed_speed = m_local_abr_saved_target_speed *
+			static_cast<float>(requested_direction);
+		if (m_local_abr_propulsion_locked || direction_changed)
+		{
+			// Set current and target together on a direction edge. This avoids making
+			// the retail acceleration integrator cross zero with a stale sign.
+			if (!task.SetRdvSpeed(signed_speed, signed_speed))
+				return false;
+		}
+		m_local_abr_propulsion_locked = false;
+		m_local_abr_propulsion_direction = requested_direction;
+		if (direction_changed)
+		{
+			CoopRuntime::Instance().Log(
+				"[abr-drive] propulsion direction=%d target=%.3f\r\n",
+				requested_direction, signed_speed);
+		}
+		return true;
+	}
+
 	void __fastcall Player2Module::HookControllerUpdate(
 		void* controller, void*)
 	{
@@ -704,17 +902,55 @@ namespace coop
 		// hand-off, so use the confirmed network owner state rather than a mode or
 		// process-global pointer that lasts only for that transition frame.
 		CoopNetGame& netgame = CoopNetGame::Instance();
-		if (!netgame.IsLocalFlyControlled() &&
-			GetModeId(player1_controller) == kDefaultModeId)
-			m_camera.RefreshForController(player1_controller);
-		netgame.BeginLocalInputCapture();
-		if (!RunStockControllerUpdate(player1_controller, "local-player1"))
-			return;
-		netgame.PublishLocalPlayerMode(
-			GetModeId(player1_controller));
 		retail::EntitySlotRepository players;
 		const retail::EntityRef player1 = players.GetSelectable(
 			retail::EntitySlot::LocalP1);
+		const std::uint32_t mode_before = GetModeId(player1_controller);
+		if (!netgame.IsLocalFlyControlled() &&
+			mode_before == kDefaultModeId)
+			m_camera.RefreshForController(player1_controller);
+		netgame.BeginLocalInputCapture();
+		// ABR is auto-propelled by XMotorTask_RDV. Axes 0/1 are only the native
+		// direction input; use their bound values as a propulsion gate without
+		// inventing a Jump/action or rewriting the entity transform.
+		bool abr_movement_known = false;
+		float abr_propulsion_direction = 0.0f;
+		if (mode_before == kAbrModeId)
+		{
+			abr_movement_known = netgame.PollLocalAbrPropulsionDirection(
+				abr_propulsion_direction);
+			if (player1 && abr_movement_known)
+				SetLocalAbrPropulsion(retail::ToPointer(player1.value),
+					abr_propulsion_direction);
+		}
+		if (!RunStockControllerUpdate(player1_controller, "local-player1"))
+			return;
+		const std::uint32_t mode_after = GetModeId(player1_controller);
+		if (mode_after == kAbrModeId)
+		{
+			// Re-read after the native RDV tick because its own axis queries have now
+			// refreshed XGamePad. Reapply the gate after the native speed ramp.
+			float post_propulsion_direction = 0.0f;
+			const bool post_movement_known =
+				netgame.PollLocalAbrPropulsionDirection(
+					post_propulsion_direction);
+			if (post_movement_known)
+			{
+				abr_movement_known = true;
+				abr_propulsion_direction = post_propulsion_direction;
+			}
+			if (player1 && abr_movement_known)
+				SetLocalAbrPropulsion(retail::ToPointer(player1.value),
+					abr_propulsion_direction);
+			netgame.PublishLocalAbrAimRay();
+		}
+		else if (mode_before == kAbrModeId && player1)
+		{
+			// Restore the game's target speed before the task leaves ABR mode.
+			SetLocalAbrPropulsion(retail::ToPointer(player1.value), 1.0f);
+		}
+		netgame.PublishLocalPlayerMode(
+			mode_after);
 		netgame.PublishLocalPlayerTransform(retail::ToPointer(player1.value));
 		// During local Mooch control P1's Default update runs before Mooch's own
 		// controller, so its shared-camera value is stale.  Leave the last yaw in
@@ -787,8 +1023,63 @@ namespace coop
 		m_last_weapon_type = 0xFFFFFFFFu;
 		m_spawn_context = {};
 		m_abr_native_task_configured_player2 = {};
+		m_player2_abr_mode_setup_failure_logged = false;
+		m_local_abr_propulsion_locked = false;
+		m_local_abr_saved_target_speed = 1.0f;
+		m_local_abr_propulsion_direction = 1;
 		DebugActions::Instance().ResetForWorldLoad();
 		CoopRuntime::Instance().Log("[reset] P2 state cleared for world load\r\n");
+	}
+
+	bool Player2Module::ApplyProgressionRallyToRemoteP2(
+		const retail::Transform& transform,
+		protocol::ProgressionRallyReason reason, std::uint32_t sequence)
+	{
+		return ApplyProgressionRally(retail::EntitySlot::RemoteP2, transform,
+			reason, sequence, "remote P2");
+	}
+
+	bool Player2Module::ApplyProgressionRallyToLocalP1(
+		const retail::Transform& transform,
+		protocol::ProgressionRallyReason reason, std::uint32_t sequence)
+	{
+		return ApplyProgressionRally(retail::EntitySlot::LocalP1, transform,
+			reason, sequence, "local P1");
+	}
+
+	bool Player2Module::ApplyProgressionRally(retail::EntitySlot slot,
+		const retail::Transform& transform,
+		protocol::ProgressionRallyReason reason, std::uint32_t sequence,
+		const char* recipient)
+	{
+		if (sequence == 0 ||
+			(reason != protocol::ProgressionRallyReason::Cutscene &&
+				reason != protocol::ProgressionRallyReason::Checkpoint) ||
+			!IsFiniteProgressionTransform(transform))
+		{
+			return false;
+		}
+
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding binding = {};
+		if (!players.GetBinding(slot, binding) || !binding.entity)
+			return false;
+
+		void* const controller = retail::ToPointer(binding.controller.value);
+		// A vehicle owns its own root and attached presentation.  Keep the rally
+		// pending rather than writing an on-foot correction into ABR.
+		if (controller && GetModeId(controller) == kAbrModeId)
+			return false;
+
+		const retail::EntityView entity(binding.entity);
+		if (!entity.WriteTransform(transform))
+			return false;
+
+		CoopRuntime::Instance().Log(
+			"[progression-rally] moved %s seq=%u target=(%.2f,%.2f,%.2f)\r\n",
+			recipient ? recipient : "player", sequence,
+			transform.position.x, transform.position.y, transform.position.z);
+		return true;
 	}
 
 	bool Player2Module::ConfigurePlayer2DefaultMode(void* controller)
@@ -1231,6 +1522,31 @@ namespace coop
 
 		const bool local_player_is_abr =
 			GetModeId(GetController(player1)) == kAbrModeId;
+		std::uint32_t remote_transform_sequence = 0;
+		std::uint32_t remote_peer_mode = 0;
+		const bool remote_mode_known = netgame.GetRemotePlayerModeSnapshot(
+			remote_transform_sequence, remote_peer_mode) &&
+			remote_transform_sequence != 0;
+		if (!local_player_is_abr && remote_mode_known &&
+			remote_peer_mode == kDefaultModeId &&
+			GetModeId(controller) == kAbrModeId &&
+			!netgame.IsLocalFlyControlled())
+		{
+			// Both owners have left the vehicle. Use the stock dispatcher to
+			// return P2 to its registered on-foot mode before generic P2 input.
+			const retail::ControllerRef controller_ref = {
+				retail::ToAddress(controller)
+			};
+			const bool accepted = retail::ControllerView(controller_ref).
+				SelectMode(kDefaultModeId);
+			const std::uint32_t mode_after = GetModeId(controller);
+			CoopRuntime::Instance().Log(
+				"[abr-mode] P2 native exit requested selected=0x%08X accepted=%u peer_seq=%u\r\n",
+				mode_after, accepted ? 1u : 0u,
+				remote_transform_sequence);
+			if (accepted && mode_after == kDefaultModeId)
+				m_player2_default_mode_initialized = false;
+		}
 		const bool remote_player_is_abr = GetModeId(controller) == kAbrModeId;
 		if (local_player_is_abr || remote_player_is_abr)
 		{
@@ -1239,10 +1555,45 @@ namespace coop
 			// those paths belong to ordinary Darwin locomotion, not the RDV vehicle.
 			// The native task setup needs the local P1 ABR spawn-context contract; an
 			// isolated remote-P2 ABR transition is still kept out of generic P2 code.
-			if (local_player_is_abr && netgame.HasRemotePeer())
+			const bool abr_task_ready = (local_player_is_abr || remote_player_is_abr) &&
+				remote_mode_known && remote_peer_mode == kAbrModeId &&
+				netgame.HasRemotePeer() &&
 				TryEnsurePlayer2RdvTask("network-ABR");
-			RunStockControllerUpdate(controller, local_player_is_abr ?
-				"remote-player2-ABR-shared" : "remote-player2-ABR-only");
+			SharedCameraCoordinator::AimState saved_abr_camera_state = {};
+			const bool restore_abr_camera =
+				m_camera.SaveAimState(saved_abr_camera_state);
+			retail::EntityRef active_a = {};
+			retail::EntityRef active_b = {};
+			const bool restore_local_active =
+				retail::ActiveEntityStore().Read(active_a, active_b);
+			if (abr_task_ready && !remote_player_is_abr)
+				TryEnterPlayer2AbrMode(controller);
+			// P2 never owns the local physical movement input. Explicitly clear
+			// the retail drive latch every tick, including after the one-shot
+			// remote Fire fallback below.
+			SetAbrDriveGate(player2, false);
+			// The native RDV task positions attached vehicle parts from the owner
+			// root it reads at the start of this tick. Seed it from the peer's
+			// settled transform, then restore that root after the stock motor step.
+			netgame.ApplyRemoteAbrTransform(player2);
+			bool stock_update_completed = false;
+			{
+				RemoteAbrFireInputScope remote_fire_input(netgame);
+				stock_update_completed = RunStockControllerUpdate(controller,
+					local_player_is_abr ? "remote-player2-ABR-shared" :
+						"remote-player2-ABR-only");
+				netgame.RunRemoteAbrFireFallback(controller);
+			}
+			// P1 has already published its post-vehicle-tick root into CoopInput.
+			// Apply only that settled root to the remote ABR copy: the native RDV
+			// task keeps its own motor and attached-part state.
+			if (stock_update_completed)
+				netgame.ApplyRemoteAbrTransform(player2);
+			SetAbrDriveGate(player2, false);
+			if (restore_abr_camera)
+				m_camera.RestoreAimState(saved_abr_camera_state);
+			if (restore_local_active)
+				retail::ActiveEntityStore().Restore(active_a, active_b);
 
 			return;
 		}
@@ -1280,6 +1631,11 @@ namespace coop
 		float attachment_release_distance = 0.0f;
 		const bool attachment_release_queued = TryQueueRemoteAttachmentRelease(player2,
 			controller, netgame, attachment_release_distance);
+		// Compute one interpolated root for this frame before the native update.
+		// Reusing this same root after the update keeps interpolation smooth while
+		// preventing local physics/attachments from pulling the model back below
+		// the map between packet corrections.
+		netgame.ApplyRemotePlayerTransform(player2);
 		const bool stock_update_completed =
 			RunStockControllerUpdate(controller, "remote-player2");
 		if (restore_fly_camera)
@@ -1293,12 +1649,12 @@ namespace coop
 				attachment_release_consumed ? 1u : 0u,
 				attachment_release_distance);
 		}
+		netgame.ReapplyRemotePlayerFrameTransform(player2);
 		if (!stock_update_completed)
 			return;
 
 		if (netgame.HasRemotePeer())
 			TryEnsurePlayer2RdvTask("network-post-P2-tick");
-		netgame.ApplyRemotePlayerTransform(player2);
 	}
 
 	void* __cdecl Player2Module::HookSpawnGPig(const Vec4* position, const Vec4* rotation, std::uint32_t gpig_id, void* context)

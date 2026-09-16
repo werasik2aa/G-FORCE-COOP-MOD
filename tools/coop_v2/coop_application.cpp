@@ -1,6 +1,7 @@
 #include "coop_application.h"
 
 #include "coop_runtime.h"
+#include "chat_overlay.h"
 #include "coop_netgame.h"
 #include "menu_connect_hook.h"
 #include "player2.h"
@@ -60,7 +61,7 @@ namespace coop
 			runtime.Log("[network-warning] remote XInput injection is unavailable\r\n");
 
 		InterlockedExchange(&m_init_state, 2);
-		runtime.Log("[ready] F1=local Mooch dual-laser probe F2=spawn trigger F3=replay event F4=known interactive F5=P2 F6=ABR F8=IP connect F9=trigger catalog\r\n");
+		runtime.Log("[ready] F1=local Mooch dual-laser probe F2=spawn trigger F3=replay event F4=known interactive F5=P2 F6=ABR F8=IP connect F9=trigger catalog F10=chat\r\n");
 		return TRUE;
 	}
 
@@ -70,6 +71,7 @@ namespace coop
 			return;
 
 		MenuConnectHook::Instance().Remove();
+		ChatOverlay::Instance().Shutdown();
 		SteamManager->Destroy();
 		CoopNetGame::Instance().RemoveInputHook();
 		Player2Module::Instance().Remove();

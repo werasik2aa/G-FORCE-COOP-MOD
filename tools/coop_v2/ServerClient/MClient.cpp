@@ -1,5 +1,6 @@
 #include "MClient.h"
 #include "MStandalone.h"
+#include "../chat_overlay.h"
 #include "../coop_netgame.h"
 #include "../protocol/packet_view.h"
 #include "../save_sync.h"
@@ -164,8 +165,14 @@ void CSteamOfflineSocketClient::OnRemotePacket(
 	case coop::protocol::PacketKind::WorldDamage:
 	case coop::protocol::PacketKind::WorldDespawn:
 	case coop::protocol::PacketKind::WorldObjectEvent:
+	case coop::protocol::PacketKind::ProgressionRally:
 
 		if (coop::WorldSync::Instance().OnRemotePacket(data, size))
+			return;
+		break;
+
+	case coop::protocol::PacketKind::Chat:
+		if (coop::ChatOverlay::Instance().OnRemotePacket(data, size))
 			return;
 		break;
 

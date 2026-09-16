@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "retail/retail_types.h"
+#include "protocol/rally_packets.h"
 #include "shared_camera.h"
 
 namespace coop
@@ -34,6 +35,13 @@ namespace coop
 		// Called during native save load / transition to clear P2 state
 		// and prevent crashes from stale entity pointers.
 		void ResetForWorldLoad();
+		// Applies a one-shot progression rally to the local representation. The
+		// source process moves its remote P2 copy; the receiving process moves its
+		// local P1. Both use the same finite root snapshot and cache invalidation.
+		bool ApplyProgressionRallyToRemoteP2(const retail::Transform& transform,
+			protocol::ProgressionRallyReason reason, std::uint32_t sequence);
+		bool ApplyProgressionRallyToLocalP1(const retail::Transform& transform,
+			protocol::ProgressionRallyReason reason, std::uint32_t sequence);
 
 	private:
 		// The stock factory ABI is the same four-float value already used by the
@@ -71,9 +79,12 @@ namespace coop
 		bool SpawnPlayer2FromSnapshot(const char* trigger,
 			bool allow_when_coop_disabled);
 		bool TryEnsurePlayer2RdvTask(const char* source);
+		bool TryEnterPlayer2AbrMode(void* controller);
 		bool ConfigurePlayer2RdvTask(const char* source,
 			retail::EntityRef player2, retail::HandlerRef player2_handler,
 			retail::MotorTaskRef task);
+		bool SetAbrDriveGate(void* player, bool active);
+		bool SetLocalAbrPropulsion(void* player, float direction);
 
 		void TickPlayer1(void* player1_controller);
 		void HandlePlayer1ModeTransition(void* player1_controller);
@@ -82,6 +93,10 @@ namespace coop
 		// The caller retries on later game frames rather than treating a transient
 		// read/write failure as a completed initialization.
 		bool ConfigurePlayer2DefaultMode(void* controller);
+		bool ApplyProgressionRally(retail::EntitySlot slot,
+			const retail::Transform& transform,
+			protocol::ProgressionRallyReason reason, std::uint32_t sequence,
+			const char* recipient);
 		void UpdateController(void* controller);
 		// Returns true only when controller is the single native Mooch controller.
 		// Keeping this route separate prevents the shared Fly lifecycle from being
@@ -127,6 +142,12 @@ namespace coop
 		// the stock configurator enabled the native task.  A merely allocated task
 		// is not ready and must be retried after transient spawn-context failures.
 		retail::EntityRef m_abr_native_task_configured_player2;
+		bool m_player2_abr_mode_setup_failure_logged;
+		// The retail ABR target-speed is preserved while co-op gates propulsion.
+		// No entity transform or logical Jump/action is synthesized.
+		bool m_local_abr_propulsion_locked;
+		float m_local_abr_saved_target_speed;
+		int m_local_abr_propulsion_direction;
 
 		std::uint32_t m_last_weapon_type;
 		Vec4 m_spawn_position;

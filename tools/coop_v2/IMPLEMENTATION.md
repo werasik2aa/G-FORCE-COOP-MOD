@@ -38,6 +38,54 @@ winmm.dll proxy
 VS2022 `v143` toolset and C++17 language mode. Build only `Release | Win32`.
 Do not add experimental dumps or standalone probes to that solution.
 
+## Connected host save reload
+
+SaveSync hooks the checked entry of `LoadSaveManager_BeginNativeLoad` at
+`0x005F1920`, which is shared by both known retail Load Game callers. When an
+already connected host selects DATA<n>, the host sends that file reliably before
+its own native load starts. The client replaces the same slot and enters the
+stock loader from its game thread. The earlier hook at the single menu call
+`0x005EDC5D` missed the second retail caller and therefore did not guarantee a
+reload in an established session. World pointers are reset immediately before
+each native loader runs.
+
+## Progression rally and chat
+
+XTrigger_OB_Cutscene and XTrigger_PL_CheckPoint are the only current
+progression-rally candidates. Their exact retail vtables are catalogued; the
+cutscene class was also seen on the successful object-event route. After the
+original relay, forwarder or trigger dispatcher reports a nonzero result, the
+game thread may queue one 60-byte reliable ProgressionRallyPacket. It contains
+only a sequence, a reason and the finite P1 root transform—never a retail
+pointer, a generic event opcode or a raw trigger identity. The source process
+uses that same snapshot to move its P2 presentation; the peer moves local P1
+on its next game tick. Duplicate source/event observations are suppressed for
+750 ms. Remote object-event replay cannot generate a rally back to its sender.
+
+The rally writer uses retail::EntityView::WriteTransform, including normal
+transform-cache invalidation. It does not change controller mode, invent input,
+disable physics or write an ABR vehicle root: while either target is in ABR the
+packet stays pending. This is narrowly intended to keep a peer with a closing
+door/checkpoint or an already-started cutscene from being stranded; it is not a
+world-streaming, checkpoint-respawn or universal event-replay solution. Live
+two-process proof remains required.
+
+ChatOverlay is a retained non-activating GDI window owned by the game and opened
+by F10. Present maintains its position over the client area, while WM_PAINT owns
+rendering. The first WS_CHILD replacement was completely hidden by the D3D
+surface in live testing. It changes no game D3D render state and needs no Reset
+font/resource recovery. Its 216-byte
+reliable ChatPacket carries bounded UTF-8 text independently of CoopInput, Fly
+abilities and world events. The socket worker only validates and queues text;
+P1's game-thread tick collects foreground keyboard characters. While the panel
+is visible, local key capture and F1–F9 debug actions are suppressed, so typed
+text cannot control remote P2. Esc or F10 hides it. Peer disconnect drops
+unsent/incoming chat packets. A received line opens a six-second, non-input,
+semi-transparent notification while F10 chat is closed. The retained UI is
+build-verified; its behaviour
+in both experimental windowed and exclusive-display configurations needs a live
+check.
+
 ## Native main-menu Connect by IP
 
 `MenuConnectHook` belongs to neither P2, Fly nor ABR/RDV state ownership. After
@@ -83,9 +131,9 @@ native lifecycles before a new server limit is considered.
 
 | Domain | Owner and data | Must not be mixed with |
 | --- | --- | --- |
-| Ordinary P2 on foot | Native Darwin controller consumes a scoped remote input snapshot; root transform is replicated. | Fly and ABR vehicle-motor fields. |
+| Ordinary P2 on foot | Native Darwin controller consumes a scoped remote input snapshot. One interpolated root is written before its native update and the identical result is reapplied afterwards, so local physics cannot undo the correction in the same frame. | Fly and ABR vehicle-motor fields. |
 | Mooch / Fly | Только owner запускает native Fly state с физическим input и публикует transform и текущий XGamePad aim-ray. Receiver оставляет P1/камеру в обычном состоянии, очищает remote Fly-control flag, применяет root transform, записывает FlyFly target/current yaw+pitch и вызывает его terminal LookAt submitter. | Remote Fly input/controller/camera takeover, Darwin weapon fire, Fly movement axes и обычный P2 controller input. |
-| ABR / RDV vehicle | Native `XMotorFunction_GPigRDV` vehicle task/motor owns heading and attached parts. At either ABR boundary, only its stock vehicle tick runs; generic P2 input, camera, weapon and root-transform code are skipped. | Generic P2 transform recovery or partial root-rotation writes. |
+| ABR / RDV vehicle | Native `XMotorFunction_GPigRDV` vehicle task/motor owns heading and attached parts. At either ABR boundary, its stock vehicle tick runs; generic P2 input, camera, weapon and smoothed on-foot transform correction stay skipped. The receiver may then write only the finite settled peer root snapshot. | Generic P2 transform recovery, motor-heading guesses or partial root-rotation writes. |
 
 If a packet crosses a mode boundary, prefer skipping one generic correction to
 writing a field owned by another domain. In particular, the P2 recovery checks
@@ -469,7 +517,7 @@ is explicitly not an implementation instruction.
 | Area | Evidence | Safe next RE boundary |
 | --- | --- | --- |
 | Death / checkpoint rollback | **Observation:** a death can place a player at the beginning of a level after world progress has closed doors, forcing a load. | Trace native death, checkpoint selection, save/load and level-transition routes separately. The existing outer-DeathMode presentation guard must not be presented as a checkpoint fix. |
-| Cutscene deaths | **Observation:** some cutscene exits kill one or both peers. | Capture exact cutscene identity and both process logs across `cutscene exit → mode change → damage/death`. Do not reuse P2 attachment release or force Default as a generic cure. |
+| Cutscene deaths | **Observation:** some cutscene exits kill one or both peers. | The narrow progression rally can reunite players when the exact cutscene trigger succeeds, but it is not a death fix. Capture both process logs across the transition; do not reuse P2 attachment release or force Default as a generic cure. |
 | Join after prior trigger/event activity | **Priority observation:** a late-joining peer needs durable consequences of prior progression: doors/shutters, counters, spawned/despawned objects and relevant progress state. | Recover a catalog of persistent root-object/cell state and an explicit snapshot/replay policy. Never blindly replay all historic events: transient hits, cutscenes and non-idempotent spawns can duplicate entities or repeat presentation. |
 | Progression doors/shutters | **Observation:** some objects block only the client from reachable level regions. | Treat each root object identity and its complete relay/forwarder chain as distinct. A known card-door route is evidence for that object only; `0x41080010` is not a semantic open-door opcode. |
 | Saberization and Saberizer HUD | **Observation:** Saberization lacks peer synchronization and a peer can retain an inappropriate laser-gun HUD. | Recover gameplay state/owner separately from presentation/HUD selection. The removed scanner experiment is negative evidence: do not reinstate a broad scanner/HUD suppression hook. |
@@ -477,8 +525,8 @@ is explicitly not an implementation instruction.
 | Mooch versus laser mines | **Hypothesis:** tripwire/mines react through an ordinary target hit or trigger receiver, not a direct mine-disable call. | Test local F1 and normal Mooch attack against one identified mine; log source Fly, target identity, hit/event route and native result before choosing replication. |
 | Dynamic physics / key-card | **Observation:** card insertion can replicate without making the card itself a shared physical object. | Design only after discovering stable identity and native ownership/lifetime: pickup, carry, transform, drop, destruction and late link must have explicit authority. Never network raw addresses. |
 | NPC death, animation, attacks and damage | **Observation:** a client can receive and locally kill a dynamic “toaster” before a distant host creates its canonical copy and assigns `world_id`; normally linked NPC fights can still carry client damage. | Investigate damage/death loss or reconciliation **before late link**, not a blanket absence of client damage. Fresh-level tests: host/client trigger, delayed linking, kill-before-link, attack animation, incoming and outgoing damage. Do not infer global NPC sync from a single successful kill. |
-| World streaming / unloaded level areas | **Observation:** an alternative client route can unload parts of an apparently linear level in that process. | Recover native streaming-cell/zone transition and its relation to local loaded state versus shared progression. Do not mask it with teleportation, door replay or a forced spawn. |
-| Chat | Missing feature. | Define a transport and presentation route independent of game control edges, with message limits, peer identity, UI focus, menu/cutscene policy and disconnect behavior. |
+| World streaming / unloaded level areas | **Observation:** an alternative client route can unload parts of an apparently linear level in that process. | Recover native streaming-cell/zone transition and its relation to local loaded state versus shared progression. A rally may reunite peers at a confirmed cutscene/checkpoint, but must not be a generic streaming fix. |
+| Chat | **Build state:** F10 opens a bounded retained non-activating GDI window owned by the game; transport uses a separate reliable UTF-8 packet. The old direct-DC panel flashed, while the first WS_CHILD replacement was completely hidden by D3D. | Two-process text delivery, Cyrillic layout, stable redraw in windowed/exclusive display, connection loss and message limits. Keep it independent from game action edges. |
 
 Recommended evidence order is: late-join persistent-state policy, death/cutscene
 recovery, concrete blocked progression objects and physics card, Saberization/HUD,
@@ -487,6 +535,43 @@ regressions and chat design. Each new live result must record level/checkpoint,
 host/client role, runtime PID log excerpts, object identity and the exact visible
 result. Update `RE_CATALOG.md` with exact static evidence before promoting a
 candidate from `guess` to `approved`.
+
+## Current ABR state — RDV root-transform test
+
+The global `WorldObjectEvent` rollback was falsified: the ABR fixed-point crash
+persisted while the rollback regressed remote door/card effects. Object-event
+queue and ingress are restored. Any older claim that ABR suppresses all world
+traffic is historical experiment text, not active runtime behavior.
+
+P1 publishes its settled post-ABR root in the existing `CoopInput` snapshot.
+The receiver applies that complete finite root before and after the stock ABR
+controller tick, separately from ordinary P2 interpolation. **Live test
+2026-09-16:** `0x10000014` remote press edges reached both receivers, and the
+RDV task was created/configured, but no remote ABR shot was visible. The exact
+`GForce.exe` path explains the missing pressed-query log: the RDV helper at
+`0x005BD5D0` calls predicate `0x005BC480` at `0x005BD5FD`; a false result exits
+at `0x005BD604`, before the native `0x10000014` query at `0x005BDBD8`.
+
+The new receiver first checks that *both* local P1 and the remote owner are in
+ABR and that the verified P2 RDV task is configured. Only then it changes P2's
+registered ABR conflict mask `3 -> 2` (dropping the exclusive active-owner bit)
+and uses the stock state dispatcher to enter P2 ABR from Default. Death, Ledge,
+cutscene and other P2 modes are not overridden. The P2 ABR tick receives only
+the remote `0x10000014` press/held/release input. The local P1 camera fields and
+active-entity pair are restored after that tick. If both owners later report
+Default, P2 leaves ABR through the same stock dispatcher. This is a guarded
+native-mode test, **not yet a confirmed remote beam fix**. The next two-process
+test now also has a narrow predicate override: only a fresh received ABR Fire
+edge, only while the remote-input scope is active, and only when the predicate's
+owning controller is exactly RemoteP2 in outer ABR mode may turn its false into
+true. It does not call a projectile, modify inventory, or bypass the predicate
+for P1. The expected log sequence is
+`[abr-fire] allowing RemoteP2 ABR attack block ...`, followed by
+`[abr-fire] native ABR pressed query accepted`; a shot on screen is the actual
+success criterion. This override is **not-tested**. The former fixed-point ABR
+crash was not reproduced after
+root-transform correction; the old trace had P2 health `50 -> 0` just before
+local trigger events `0x410800E2/E3`, without a recovered semantic for E2/E3.
 
 ## Build and deploy
 

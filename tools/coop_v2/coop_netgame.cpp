@@ -1,6 +1,7 @@
 #include "coop_netgame.h"
 
 #include "coop_runtime.h"
+#include "chat_overlay.h"
 #include "gforce_constants.h"
 #include "protocol/packet_view.h"
 #include "player2.h"
@@ -302,6 +303,20 @@ namespace coop
 			IsFiniteFloatArray(rotation, 4);
 	}
 
+	// Convert the fixed-size wire representation only after validating every
+	// component.  Feature code should work with the typed retail transform.
+	bool DecodeFiniteWireTransform(const float position[4], const float rotation[4],
+		retail::Transform& transform)
+	{
+		transform = {};
+		if (!IsFiniteWireTransform(position, rotation))
+			return false;
+
+		memcpy(&transform.position, position, sizeof(transform.position));
+		memcpy(&transform.rotation, rotation, sizeof(transform.rotation));
+		return true;
+	}
+
 	bool IsFiniteRetailTransform(const retail::Transform& transform)
 	{
 		return IsFiniteFloat(transform.position.x) &&
@@ -515,6 +530,11 @@ namespace coop
 			reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
 	}
 
+	bool __fastcall CoopNetGame::HookAbrAttackPredicate(void* mode, void*)
+	{
+		return Instance().HandleAbrAttackPredicate(mode);
+	}
+
 	bool __fastcall HookInputReleasedQuery(void* input_manager, void* edx,
 		std::uint32_t device, std::uint32_t action, std::uint32_t flags)
 	{
@@ -628,6 +648,10 @@ namespace coop
 		m_remote_connected(0),
 		m_last_send_tick(0),
 		m_last_remote_transform_apply_tick(0),
+		m_remote_player_frame_transform(),
+		m_remote_player_frame_entity(nullptr),
+		m_remote_player_frame_sequence(0),
+		m_remote_player_frame_transform_valid(false),
 		m_last_invalid_input_trace_tick(0),
 		m_last_remote_fly_deactivation_suppression_tick(0),
 		m_peer_connected_tick(0),
@@ -642,6 +666,11 @@ namespace coop
 		m_action_up_query_hooked(false),
 		m_threshold_query_hooked(false),
 		m_axis_query_hooked(false),
+		m_abr_attack_predicate_hooked(false),
+		m_abr_attack_predicate_seen_in_scope(false),
+		m_remote_abr_aim_ray_applied(false),
+		m_remote_abr_aim_input_manager(),
+		m_remote_abr_saved_aim_ray(),
 		m_async_key_state_iat_slot(nullptr),
 		m_original_get_async_key_state(nullptr),
 		m_state_machine_select_state_trampoline(nullptr),
@@ -654,6 +683,8 @@ namespace coop
 		m_original_input_threshold_query(nullptr),
 		m_input_axis_trampoline(nullptr),
 		m_original_input_axis_query(nullptr),
+		m_abr_attack_predicate_trampoline(nullptr),
+		m_original_abr_attack_predicate(nullptr),
 		m_logged_remote_gamepad(false),
 		m_remote_gamepad_unavailable(false),
 		m_remote_gamepad(nullptr),
@@ -694,6 +725,8 @@ namespace coop
 		m_original_object_event_forwarder(nullptr),
 		m_object_event_forwarder_hooked(false),
 		m_load_game_hooked(false),
+		m_native_save_load_trampoline(nullptr),
+		m_original_native_save_load(nullptr),
 		m_remote_input_thread_id(0),
 
 		m_local_transform_sequence(0),
@@ -721,7 +754,8 @@ namespace coop
 		m_logged_fly_active_entity_repair(false),
 		m_local_weapon_sequence(0),
 		m_last_local_weapon_type(0xFFFFFFFFu),
-		m_logged_remote_transform(false)
+		m_logged_remote_transform(false),
+		m_logged_remote_abr_transform(false)
 	{
 		InitializeSRWLock(&m_input_lock);
 		InitializeSRWLock(&m_fly_ability_lock);
@@ -750,8 +784,12 @@ namespace coop
 			sizeof(m_original_input_threshold_query_bytes));
 		ZeroMemory(m_original_input_axis_query_bytes,
 			sizeof(m_original_input_axis_query_bytes));
+		ZeroMemory(m_original_abr_attack_predicate_bytes,
+			sizeof(m_original_abr_attack_predicate_bytes));
 		ZeroMemory(m_original_state_machine_select_state_bytes,
 			sizeof(m_original_state_machine_select_state_bytes));
+		ZeroMemory(m_original_native_save_load_bytes,
+			sizeof(m_original_native_save_load_bytes));
 
 		ZeroMemory(m_prev_local_action_down, sizeof(m_prev_local_action_down));
 		ZeroMemory(m_prev_remote_action_down, sizeof(m_prev_remote_action_down));
@@ -899,6 +937,7 @@ namespace coop
 		ReleaseSRWLockExclusive(&m_input_lock);
 		ClearFlyAbilityQueues();
 		m_last_remote_transform_apply_tick = 0;
+		ChatOverlay::Instance().OnPeerDisconnected();
 		WorldSync::Instance().OnPeerDisconnected();
 		CoopRuntime::Instance().Log("[netgame] remote peer disconnected\r\n");
 	}
@@ -1130,6 +1169,8 @@ namespace coop
 
 	bool CoopNetGame::IsGameForeground() const
 	{
+		if (ChatOverlay::Instance().IsInputActive())
+			return false;
 		const HWND foreground = GetForegroundWindow();
 		if (!foreground)
 			return false;
@@ -1376,6 +1417,20 @@ namespace coop
 			mode_id, force_reselect);
 		if (selected)
 		{
+			const retail::StateMachineRef state_machine_ref = {
+				retail::ToAddress(controller)
+			};
+			if (mode_id == gforce::kGPigCombatRdvFireModeId &&
+				retail::StateMachineView(state_machine_ref).
+					ContainsRegisteredVTable(gforce::kGPigCombatRdvFireVtable))
+			{
+				// This is the confirmed ABR combat route, not the shared numeric
+				// Fire state used by other GPig combat machines. Remote replay reaches
+				// it through the fire-only input scope of the P2-owned ABR controller.
+				CoopRuntime::Instance().Log(
+					"[abr-fire] native GPigCombatRDV Fire selected machine=%p force=%u\r\n",
+					controller, force_reselect ? 1u : 0u);
+			}
 			// The dispatcher also owns nested motors. Player2Module identifies the
 			// machine from its registry before observing it, so this cannot turn a
 			// reused numeric mode ID from another class into a Ledge transition.
@@ -1438,6 +1493,54 @@ namespace coop
 		ZeroMemory(m_local_press_recorded, sizeof(m_local_press_recorded));
 		ZeroMemory(m_local_release_recorded, sizeof(m_local_release_recorded));
 		ReleaseSRWLockExclusive(&m_input_lock);
+	}
+
+	bool CoopNetGame::PollLocalAbrPropulsionDirection(float& direction)
+	{
+		direction = 0.0f;
+		if (!m_original_input_axis_query || !IsGameForeground())
+			return false;
+
+		retail::GamePadRef input_manager = {};
+		retail::EntitySlotRepository players;
+		const retail::EntityRef player1 = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		std::uint32_t device = 0;
+		if (!player1 ||
+			!retail::PrimaryGamePadStore().Read(input_manager) || !input_manager ||
+			!retail::GamePointerStore().InputDevice(device))
+		{
+			return false;
+		}
+
+		__try
+		{
+			// ABR's 0x10000000 query is a one-shot vehicle action, not the
+			// continuous WASD state (Space happened to satisfy it in the live test).
+			// The native RDV update consumes logical movement axes 0/1, so use those
+			// same binding-aware values to choose propulsion. Retail turns axis 1
+			// into its forward component as -axis_y: W/up is negative, while S/down
+			// is positive. Pure lateral input retains the game's forward propulsion.
+			const float axis_x = m_original_input_axis_query(
+				retail::ToPointer(input_manager.value), device, 0u, 1u);
+			const float axis_y = m_original_input_axis_query(
+				retail::ToPointer(input_manager.value), device, 1u, 1u);
+			if (!_finite(axis_x) || !_finite(axis_y))
+				return false;
+			CaptureLocalAnalogAxis(0u, axis_x);
+			CaptureLocalAnalogAxis(1u, axis_y);
+			if (axis_y < -0.05f)
+				direction = 1.0f;
+			else if (axis_y > 0.05f)
+				direction = -1.0f;
+			else if (fabsf(axis_x) > 0.05f)
+				direction = 1.0f;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+		return true;
 	}
 
 	void CoopNetGame::CaptureLocalAction(std::uint32_t action, bool is_down)
@@ -1654,6 +1757,49 @@ namespace coop
 			(1u << (action_index % 32))) != 0;
 	}
 
+	bool CoopNetGame::HandleAbrAttackPredicate(void* mode)
+	{
+		if (!m_original_abr_attack_predicate)
+			return false;
+		const bool stock_result = m_original_abr_attack_predicate(mode);
+		if (!mode || !IsRemoteInputActiveOnThisThread() ||
+			!HasActiveRemotePressedEdge(kAbrFireActionId) ||
+			m_active_remote_input.player_mode != kAbrModeId)
+		{
+			return stock_result;
+		}
+
+		const retail::ModeRef mode_ref = { retail::ToAddress(mode) };
+		retail::ControllerRef controller = {};
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding remote_p2 = {};
+		retail::ModeRef registered_abr_mode = {};
+		if (!retail::ModeView(mode_ref).Controller(controller) ||
+			!players.GetBinding(retail::EntitySlot::RemoteP2, remote_p2) ||
+			controller != remote_p2.controller ||
+			!retail::ControllerView(controller).RegisteredMode(
+				kAbrModeId, registered_abr_mode) ||
+			mode_ref != registered_abr_mode)
+		{
+			return stock_result;
+		}
+		// Count the predicate only after proving that this is RemoteP2's exact
+		// registered ABR mode. The hook can be reached by unrelated controller
+		// work; treating any invocation as success used to suppress the fallback
+		// while producing no projectile at all.
+		m_abr_attack_predicate_seen_in_scope = true;
+		if (stock_result)
+			return true;
+
+		// The peer packet proves a fresh ABR edge and this exact registered mode
+		// owns RemoteP2. This does not require the outer controller's current mode:
+		// receiver-side ABR presentation deliberately avoids taking camera/HUD
+		// ownership from P1.
+		CoopRuntime::Instance().Log(
+			"[abr-fire] allowing RemoteP2 ABR attack block after native predicate rejected edge\r\n");
+		return true;
+	}
+
 	bool CoopNetGame::GetActiveRemotePlayerTransform(
 		retail::Transform& transform, std::uint32_t& transform_sequence,
 		std::uint32_t& player_mode) const
@@ -1663,16 +1809,12 @@ namespace coop
 		player_mode = 0;
 		if (!IsRemoteInputActiveOnThisThread() ||
 			m_active_remote_input.transform_sequence == 0 ||
-			!IsFiniteWireTransform(m_active_remote_input.position,
-				m_active_remote_input.rotation))
+			!DecodeFiniteWireTransform(m_active_remote_input.position,
+				m_active_remote_input.rotation, transform))
 		{
 			return false;
 		}
 
-		memcpy(&transform.position, m_active_remote_input.position,
-			sizeof(transform.position));
-		memcpy(&transform.rotation, m_active_remote_input.rotation,
-			sizeof(transform.rotation));
 		transform_sequence = m_active_remote_input.transform_sequence;
 		player_mode = m_active_remote_input.player_mode;
 		return true;
@@ -2800,6 +2942,7 @@ namespace coop
 		// World events are reliable and should leave the worker immediately; they
 		// must not wait for the next 60 Hz input pacing slot.
 		WorldSync::Instance().NetworkTick();
+		ChatOverlay::Instance().NetworkTick();
 		SendQueuedFlyAbilityPackets();
 		const DWORD now = GetTickCount();
 		if (static_cast<DWORD>(now - m_last_send_tick) < kInputSendIntervalMs)
@@ -2810,6 +2953,9 @@ namespace coop
 
 	void CoopNetGame::GameTick()
 	{
+		// The socket worker never touches a Win32 control. Deliver queued peer
+		// lines here, after the stock P1 tick, even when a session just ended.
+		ChatOverlay::Instance().GameTick();
 		if (!HasRemotePeer())
 			return;
 
@@ -2968,8 +3114,18 @@ namespace coop
 			CaptureLocalAimRay(retail::ToPointer(primary_gamepad.value));
 	}
 
+	void CoopNetGame::PublishLocalAbrAimRay()
+	{
+		retail::GamePadRef primary_gamepad = {};
+		if (retail::PrimaryGamePadStore().Read(primary_gamepad) && primary_gamepad)
+			CaptureLocalAimRay(retail::ToPointer(primary_gamepad.value));
+	}
+
 	bool CoopNetGame::ApplyRemotePlayerTransform(void* player2)
 	{
+		m_remote_player_frame_transform_valid = false;
+		m_remote_player_frame_entity = nullptr;
+		m_remote_player_frame_sequence = 0;
 		if (!player2 || !IsRemoteInputActiveOnThisThread() ||
 			m_active_remote_input.transform_sequence == 0 ||
 			IsVehicleMotorActiveForRemoteP2(m_active_remote_input))
@@ -2977,17 +3133,14 @@ namespace coop
 			return false;
 		}
 
-		retail::Vec4 remote_position = {};
-		retail::Vec4 remote_rotation = {};
-		memcpy(&remote_position, m_active_remote_input.position,
-			sizeof(remote_position));
-		memcpy(&remote_rotation, m_active_remote_input.rotation,
-			sizeof(remote_rotation));
-		if (!IsFiniteWireTransform(m_active_remote_input.position,
-			m_active_remote_input.rotation))
+		retail::Transform remote_transform = {};
+		if (!DecodeFiniteWireTransform(m_active_remote_input.position,
+			m_active_remote_input.rotation, remote_transform))
 		{
 			return false;
 		}
+		const retail::Vec4& remote_position = remote_transform.position;
+		const retail::Vec4& remote_rotation = remote_transform.rotation;
 
 		const retail::EntityRef player2_ref = { retail::ToAddress(player2) };
 		retail::EntityView player2_view(player2_ref);
@@ -3001,8 +3154,7 @@ namespace coop
 
 		if (!IsFiniteRetailTransform(transform))
 		{
-			const retail::Transform replacement = { remote_position, remote_rotation };
-			if (!player2_view.WriteTransform(replacement))
+			if (!player2_view.WriteTransform(remote_transform))
 			{
 				CoopRuntime::Instance().Log(
 					"[net-transform-error] could not repair non-finite remote P2 transform\r\n");
@@ -3011,6 +3163,11 @@ namespace coop
 			CoopRuntime::Instance().Log(
 				"[net-transform-recovery] replaced non-finite P2 transform seq=%u\r\n",
 				m_active_remote_input.transform_sequence);
+			m_remote_player_frame_transform = remote_transform;
+			m_remote_player_frame_entity = player2;
+			m_remote_player_frame_sequence =
+				m_active_remote_input.transform_sequence;
+			m_remote_player_frame_transform_valid = true;
 			return true;
 		}
 
@@ -3049,11 +3206,70 @@ namespace coop
 				"[net-transform-error] could not write remote P2 transform target\r\n");
 			return false;
 		}
+		m_remote_player_frame_transform = transform;
+		m_remote_player_frame_entity = player2;
+		m_remote_player_frame_sequence =
+			m_active_remote_input.transform_sequence;
+		m_remote_player_frame_transform_valid = true;
 		if (!m_logged_remote_transform)
 		{
 			CoopRuntime::Instance().Log(
 				"[net-transform] remote target correction active for P2\r\n");
 			m_logged_remote_transform = true;
+		}
+		return true;
+	}
+
+	bool CoopNetGame::ReapplyRemotePlayerFrameTransform(void* player2)
+	{
+		if (!player2 || !m_remote_player_frame_transform_valid ||
+			m_remote_player_frame_entity != player2 ||
+			m_remote_player_frame_sequence == 0)
+		{
+			return false;
+		}
+		const retail::EntityRef player2_ref = { retail::ToAddress(player2) };
+		if (!retail::EntityView(player2_ref).WriteTransform(
+			m_remote_player_frame_transform))
+		{
+			CoopRuntime::Instance().Log(
+				"[net-transform-error] could not reapply prepared remote P2 transform\r\n");
+			return false;
+		}
+		return true;
+	}
+
+	bool CoopNetGame::ApplyRemoteAbrTransform(void* player2)
+	{
+		if (!player2)
+			return false;
+
+		CoopInput remote = {};
+		if (!GetRemoteInput(remote) || remote.player_mode != kAbrModeId ||
+			remote.transform_sequence == 0)
+		{
+			return false;
+		}
+
+		retail::Transform transform = {};
+		if (!DecodeFiniteWireTransform(remote.position, remote.rotation, transform))
+			return false;
+
+		const retail::EntityRef player2_ref = { retail::ToAddress(player2) };
+		retail::EntityView player2_view(player2_ref);
+		if (!player2_view.WriteTransform(transform))
+		{
+			CoopRuntime::Instance().Log(
+				"[abr-transform] could not write remote P2/RDV root seq=%u\r\n",
+				remote.transform_sequence);
+			return false;
+		}
+
+		if (!m_logged_remote_abr_transform)
+		{
+			CoopRuntime::Instance().Log(
+				"[abr-transform] peer ABR root transform active for P2/RDV\r\n");
+			m_logged_remote_abr_transform = true;
 		}
 		return true;
 	}
@@ -3185,24 +3401,22 @@ namespace coop
 			reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
 	}
 
-	bool __fastcall CoopNetGame::HookHostLoadGame(void* manager, void*,
+	bool __fastcall CoopNetGame::HookNativeSaveLoad(void* manager, void*,
 		std::uint32_t slot)
 	{
 		CoopNetGame& game = Instance();
-		if (game.IsHost() && game.HasRemotePeer())
-			SaveSync::Instance().OnHostLoadGame(slot);
-
-		const retail::LoadSaveManagerRef manager_ref = {
-			retail::ToAddress(manager)
-		};
-		bool result = false;
-		if (!retail::NativeGameApi::BeginNativeLoad(manager_ref, slot, result))
+		if (!game.m_original_native_save_load)
+			return false;
+		if (retail::ToAddress(manager) == gforce::kLoadSaveManager &&
+			game.IsHost() && game.HasRemotePeer() &&
+			slot < gforce::kVisibleSaveSlotCount)
 		{
 			CoopRuntime::Instance().Log(
-				"[save-sync] host native Load Game call fault manager=%p slot=%u\r\n",
-				manager, slot);
+				"[save-sync] host native Load Game intercepted slot=%u\r\n",
+				slot);
+			SaveSync::Instance().OnHostLoadGame(slot);
 		}
-		return result;
+		return game.m_original_native_save_load(manager, slot);
 	}
 
 	void CoopNetGame::HandleTriggerSpawnFromDefinition(void* trigger)
@@ -3466,6 +3680,8 @@ namespace coop
 			(static_cast<std::uint32_t>(event_code) & 0xFF000000u) ==
 				0x41000000u)
 		{
+			WorldSync::Instance().QueueProgressionRally(source,
+				static_cast<std::uint32_t>(source_vtable), event_code);
 			// This route accepts only registered non-entity map templates. Nested
 			// relays and `sub_46D6F0` are part of this exact call and are recreated
 			// by the peer's relay; neither is queued a second time.
@@ -3563,6 +3779,8 @@ namespace coop
 			(static_cast<std::uint32_t>(event_code) & 0xFF000000u) ==
 				0x41000000u)
 		{
+			WorldSync::Instance().QueueProgressionRally(object,
+				static_cast<std::uint32_t>(object_vtable), event_code);
 			if (IsCanonicalObjectEventReceiver(receiver))
 			{
 				WorldSync::Instance().QueueObjectEvent(object,
@@ -3630,6 +3848,15 @@ namespace coop
 		}
 
 		WorldSync::Instance().RecordTriggerEvent(trigger, event_code);
+		if (result != 0 && !IsRemoteObjectEventReplayActive())
+		{
+			std::uint32_t trigger_vtable = 0;
+			if (TryReadObjectVtable(trigger, trigger_vtable))
+			{
+				WorldSync::Instance().QueueProgressionRally(trigger,
+					trigger_vtable, event_code);
+			}
+		}
 		const retail::TriggerRef trigger_ref = { retail::ToAddress(trigger) };
 		const retail::TriggerView trigger_view(trigger_ref);
 		retail::TriggerIdentity identity = {};
@@ -4102,6 +4329,139 @@ namespace coop
 		InterlockedExchange(&m_remote_input_active, 1);
 	}
 
+	void CoopNetGame::BeginRemoteAbrFireInput()
+	{
+		m_abr_attack_predicate_seen_in_scope = false;
+		ZeroMemory(&m_active_remote_input, sizeof(m_active_remote_input));
+		const bool have_remote = GetRemoteInput(m_active_remote_input);
+		ZeroMemory(m_remote_press_edge, sizeof(m_remote_press_edge));
+		ZeroMemory(m_remote_release_edge, sizeof(m_remote_release_edge));
+
+		const std::uint32_t fire_index =
+			kAbrFireActionId - kFirstKeyboardActionId;
+		if (have_remote)
+		{
+			// Consume every counter while ABR is active so actions performed inside
+			// the vehicle cannot replay after Darwin returns. Only Fire is exposed
+			// during this vehicle tick.
+			for (std::uint32_t index = 0; index < kCoopActionCount; ++index)
+			{
+				const std::uint8_t press =
+					m_active_remote_input.action_press_seq[index];
+				const std::uint8_t release =
+					m_active_remote_input.action_release_seq[index];
+				if (index == fire_index)
+				{
+					m_remote_press_edge[index] =
+						press != m_prev_remote_press_seq[index];
+					m_remote_release_edge[index] =
+						release != m_prev_remote_release_seq[index];
+				}
+				m_prev_remote_press_seq[index] = press;
+				m_prev_remote_release_seq[index] = release;
+			}
+		}
+
+		const std::uint32_t fire_word = fire_index / 32u;
+		const std::uint32_t fire_bit = 1u << (fire_index % 32u);
+		const bool fire_held = have_remote &&
+			(m_active_remote_input.action_down[fire_word] & fire_bit) != 0;
+		ZeroMemory(m_active_remote_input.action_down,
+			sizeof(m_active_remote_input.action_down));
+		if (fire_held)
+			m_active_remote_input.action_down[fire_word] = fire_bit;
+		ZeroMemory(m_active_remote_input.virtual_keys,
+			sizeof(m_active_remote_input.virtual_keys));
+		ZeroMemory(m_active_remote_input.analog_axis,
+			sizeof(m_active_remote_input.analog_axis));
+		m_active_remote_input.fly_controlled = 0;
+		m_active_remote_input.fly_transform_sequence = 0;
+
+		m_remote_action_held[fire_index] = fire_held;
+		if (fire_held && m_remote_hold_start_tick[fire_index] == 0)
+			m_remote_hold_start_tick[fire_index] = GetTickCount();
+		else if (!fire_held)
+			m_remote_hold_start_tick[fire_index] = 0;
+
+		m_remote_input_thread_id = GetCurrentThreadId();
+		InterlockedExchange(&m_remote_input_active, 1);
+		// ABR's native weapon helper reads XGamePad +0x2774/+0x2780 directly.
+		// Apply the peer ray around the whole P2 ABR controller tick, not only the
+		// fallback call: the normal dispatcher may now reach the fire block first.
+		m_remote_abr_aim_ray_applied = false;
+		m_remote_abr_aim_input_manager = {};
+		m_remote_abr_saved_aim_ray = {};
+		if (have_remote &&
+			retail::PrimaryGamePadStore().Read(
+				m_remote_abr_aim_input_manager) &&
+			m_remote_abr_aim_input_manager)
+		{
+			m_remote_abr_aim_ray_applied = ApplyActiveRemoteAimRay(
+				retail::ToPointer(m_remote_abr_aim_input_manager.value),
+				m_remote_abr_saved_aim_ray);
+		}
+		if (have_remote && (m_remote_press_edge[fire_index] ||
+			m_remote_release_edge[fire_index]))
+		{
+			CoopRuntime::Instance().Log(
+				"[abr-fire] remote logical edge press=%u release=%u held=%u ray=%u origin=(%.2f,%.2f,%.2f) direction=(%.3f,%.3f,%.3f)\r\n",
+				m_remote_press_edge[fire_index] ? 1u : 0u,
+				m_remote_release_edge[fire_index] ? 1u : 0u,
+				fire_held ? 1u : 0u,
+				m_remote_abr_aim_ray_applied ? 1u : 0u,
+				m_active_remote_input.aim_origin[0],
+				m_active_remote_input.aim_origin[1],
+				m_active_remote_input.aim_origin[2],
+				m_active_remote_input.aim_direction[0],
+				m_active_remote_input.aim_direction[1],
+				m_active_remote_input.aim_direction[2]);
+		}
+	}
+
+	bool CoopNetGame::RunRemoteAbrFireFallback(void* controller)
+	{
+		if (!controller || !IsRemoteInputActiveOnThisThread() ||
+			!HasActiveRemotePressedEdge(kAbrFireActionId) ||
+			m_active_remote_input.player_mode != kAbrModeId ||
+			m_abr_attack_predicate_seen_in_scope)
+		{
+			return false;
+		}
+
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding remote_p2 = {};
+		const retail::ControllerRef controller_ref = {
+			retail::ToAddress(controller)
+		};
+		retail::ModeRef abr_mode = {};
+		if (!players.GetBinding(retail::EntitySlot::RemoteP2, remote_p2) ||
+			remote_p2.controller != controller_ref ||
+			!retail::ControllerView(controller_ref).RegisteredMode(
+				kAbrModeId, abr_mode))
+		{
+			return false;
+		}
+
+		retail::GamePadRef input_manager = {};
+		retail::AimRay saved_ray = {};
+		const bool have_input =
+			retail::PrimaryGamePadStore().Read(input_manager) && input_manager;
+		const bool ray_applied = have_input && ApplyActiveRemoteAimRay(
+			retail::ToPointer(input_manager.value), saved_ray);
+		CoopRuntime::Instance().Log(
+			"[abr-fire] P2 dispatcher skipped outer RDV update; running exact registered mode once ray=%u\r\n",
+			ray_applied ? 1u : 0u);
+		const bool completed = retail::NativeGameApi::RunGPigRdvModeUpdate(
+			abr_mode);
+		if (ray_applied)
+			RestoreAimRay(retail::ToPointer(input_manager.value), saved_ray);
+		CoopRuntime::Instance().Log(
+			"[abr-fire] fallback outer RDV update completed=%u predicate=%u\r\n",
+			completed ? 1u : 0u,
+			m_abr_attack_predicate_seen_in_scope ? 1u : 0u);
+		return completed && m_abr_attack_predicate_seen_in_scope;
+	}
+
 	void CoopNetGame::EndRemoteInput()
 	{
 		// This edge is meaningful only while the stock P2 controller is consuming
@@ -4109,6 +4469,15 @@ namespace coop
 		// into a later local, Fly, menu or load input query.
 		m_remote_ledge_release_edge_armed = false;
 		m_remote_ledge_release_edge_consumed = false;
+		if (m_remote_abr_aim_ray_applied && m_remote_abr_aim_input_manager)
+		{
+			RestoreAimRay(retail::ToPointer(
+				m_remote_abr_aim_input_manager.value),
+				m_remote_abr_saved_aim_ray);
+		}
+		m_remote_abr_aim_ray_applied = false;
+		m_remote_abr_aim_input_manager = {};
+		m_remote_abr_saved_aim_ray = {};
 		InterlockedExchange(&m_remote_input_active, 0);
 		m_remote_input_thread_id = 0;
 		RestoreKeyboardState();
@@ -4119,6 +4488,10 @@ namespace coop
 	void CoopNetGame::ResetForWorldLoad()
 	{
 		m_remote_p2_weapon_record = nullptr;
+		m_abr_attack_predicate_seen_in_scope = false;
+		m_remote_abr_aim_ray_applied = false;
+		m_remote_abr_aim_input_manager = {};
+		m_remote_abr_saved_aim_ray = {};
 		m_logged_remote_p2_ammo_restore = false;
 		m_remote_gamepad = nullptr;
 		m_remote_gamepad_unavailable = false;
@@ -4396,7 +4769,15 @@ namespace coop
 			if (IsMirrorSuppressedAction(action))
 				return false;
 			const uint32_t action_index = action - kFirstKeyboardActionId;
-			return m_remote_press_edge[action_index];
+			const bool pressed = m_remote_press_edge[action_index];
+			if (pressed && action == kAbrFireActionId &&
+				caller_return_address == kAbrFirePressedQueryReturn)
+			{
+				CoopRuntime::Instance().Log(
+					"[abr-fire] native ABR pressed query accepted device=%u flags=0x%08X\r\n",
+					device, flags);
+			}
+			return pressed;
 		}
 		if (is_keyboard_action && IsMoochAction(action) &&
 			IsRemoteFlyControlledForInputQuery())
@@ -4987,6 +5368,38 @@ namespace coop
 		m_pressed_query_hooked = false;
 	}
 
+	bool CoopNetGame::InstallAbrAttackPredicateHook()
+	{
+		if (m_abr_attack_predicate_hooked)
+			return true;
+		if (!InstallJmpHookRaw(kAbrAttackPredicate,
+			kExpectedAbrAttackPredicate, sizeof(kExpectedAbrAttackPredicate),
+			reinterpret_cast<void*>(&HookAbrAttackPredicate),
+			m_original_abr_attack_predicate_bytes,
+			&m_abr_attack_predicate_trampoline,
+			"RemoteP2 ABR attack predicate"))
+		{
+			return false;
+		}
+		m_original_abr_attack_predicate =
+			reinterpret_cast<AbrAttackPredicateFn>(
+				m_abr_attack_predicate_trampoline);
+		m_abr_attack_predicate_hooked = true;
+		return true;
+	}
+
+	void CoopNetGame::RemoveAbrAttackPredicateHook()
+	{
+		if (!m_abr_attack_predicate_hooked)
+			return;
+		RemoveJmpHookRaw(kAbrAttackPredicate,
+			m_original_abr_attack_predicate_bytes,
+			sizeof(m_original_abr_attack_predicate_bytes),
+			&m_abr_attack_predicate_trampoline);
+		m_original_abr_attack_predicate = nullptr;
+		m_abr_attack_predicate_hooked = false;
+	}
+
 	bool CoopNetGame::InstallReleasedQueryHook()
 	{
 		if (m_released_query_hooked)
@@ -5534,28 +5947,22 @@ namespace coop
 	{
 		if (m_load_game_hooked)
 			return true;
-		BYTE* const call = reinterpret_cast<BYTE*>(gforce::kHostLoadGameCall);
-		if (memcmp(call, gforce::kExpectedHostLoadGameCall,
-			sizeof(gforce::kExpectedHostLoadGameCall)) != 0)
-		{
-			CoopRuntime::Instance().Log(
-				"[save-sync] host Load Game call mismatch at 0x%08X\r\n",
-				static_cast<unsigned>(gforce::kHostLoadGameCall));
+		// Two retail menu routes call the same stock loader (0x5ED3F0 and
+		// 0x5EDC20). Intercept its checked entry so an already connected
+		// client receives every host-selected DATA<n> load.
+		if (!InstallJmpHookRaw(gforce::kBeginNativeSaveLoad,
+			gforce::kExpectedBeginNativeSaveLoad,
+			sizeof(m_original_native_save_load_bytes),
+			reinterpret_cast<void*>(&HookNativeSaveLoad),
+			m_original_native_save_load_bytes,
+			&m_native_save_load_trampoline, "native Load Game broadcast"))
 			return false;
-		}
-		memcpy(m_original_load_game_call_bytes, call,
-			sizeof(m_original_load_game_call_bytes));
-		BYTE replacement[5] = { 0xE8, 0, 0, 0, 0 };
-		const intptr_t displacement = reinterpret_cast<BYTE*>(&HookHostLoadGame) -
-			(call + sizeof(replacement));
-		const int32_t relative = static_cast<int32_t>(displacement);
-		memcpy(replacement + 1, &relative, sizeof(relative));
-		if (!MemoryPatch::Write(call, replacement, sizeof(replacement)))
-			return false;
+		m_original_native_save_load =
+			reinterpret_cast<NativeSaveLoadFn>(m_native_save_load_trampoline);
 		m_load_game_hooked = true;
 		CoopRuntime::Instance().Log(
-			"[save-sync] host Load Game call hooked at 0x%08X\r\n",
-			static_cast<unsigned>(gforce::kHostLoadGameCall));
+			"[save-sync] native Load Game entry hooked at 0x%08X\r\n",
+			static_cast<unsigned>(gforce::kBeginNativeSaveLoad));
 		return true;
 	}
 
@@ -5563,18 +5970,11 @@ namespace coop
 	{
 		if (!m_load_game_hooked)
 			return;
-		BYTE* const call = reinterpret_cast<BYTE*>(gforce::kHostLoadGameCall);
-		if (memcmp(call, m_original_load_game_call_bytes,
-			sizeof(m_original_load_game_call_bytes)) != 0)
-		{
-			CoopRuntime::Instance().Log(
-				"[save-sync] Load Game call changed; leaving it untouched\r\n");
-		}
-		else
-		{
-			MemoryPatch::Write(call, m_original_load_game_call_bytes,
-				sizeof(m_original_load_game_call_bytes));
-		}
+		RemoveJmpHookRaw(gforce::kBeginNativeSaveLoad,
+			m_original_native_save_load_bytes,
+			sizeof(m_original_native_save_load_bytes),
+			&m_native_save_load_trampoline);
+		m_original_native_save_load = nullptr;
 		m_load_game_hooked = false;
 	}
 
@@ -5722,6 +6122,7 @@ namespace coop
 					InstallActionUpQueryHook() &&
 					InstallThresholdQueryHook() &&
 					InstallAxisQueryHook() && InstallPressedQueryHook() &&
+					InstallAbrAttackPredicateHook() &&
 					InstallReleasedQueryHook() && InstallHoldDurationQueryHook() &&
 					InstallAimHoldQueryHook() && InstallRawPressedQueryHook() &&
 					InstallRawReleasedQueryHook() && InstallRawHeldQueryHook() &&
@@ -5801,6 +6202,7 @@ namespace coop
 		RemoveAimHoldQueryHook();
 		RemoveHoldDurationQueryHook();
 		RemoveReleasedQueryHook();
+		RemoveAbrAttackPredicateHook();
 		RemovePressedQueryHook();
 		RemoveAxisQueryHook();
 		RemoveThresholdQueryHook();

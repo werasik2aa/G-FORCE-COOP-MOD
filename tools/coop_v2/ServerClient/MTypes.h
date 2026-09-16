@@ -50,7 +50,13 @@ enum CoopPacketId : std::uint32_t
 	kCoopPacketWorldObjectEvent = 36,
 	// Reliable, owner-authoritative Mooch ability event. It contains no process
 	// pointer, HUD state, controller mode, or camera state.
-	kCoopPacketFlyAbility = 40
+	kCoopPacketFlyAbility = 40,
+	// Reliable progression boundary. It moves the peer to a confirmed local
+	// cutscene/checkpoint position without serialising a retail object pointer.
+	kCoopPacketProgressionRally = 41,
+	// Reliable UTF-8 user text. Chat deliberately has no relation to input edges
+	// or the fixed CoopInput snapshot.
+	kCoopPacketChat = 50
 
 };
 

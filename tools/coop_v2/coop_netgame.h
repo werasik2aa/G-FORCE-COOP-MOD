@@ -23,6 +23,7 @@ namespace coop
 		bool IsHost() const;
 		bool IsClient() const;
 		bool HasRemotePeer() const;
+		bool HasNativeLoadHook() const { return m_load_game_hooked; }
 
 		void OnPeerConnected();
 		void OnPeerDisconnected();
@@ -37,6 +38,15 @@ namespace coop
 		void RemoveInputHook();
 		void BeginRemoteInput();
 		void EndRemoteInput();
+		// ABR keeps its own vehicle motor. This scope exposes only the replicated
+		// logical Fire level/edges to its native combat machine.
+		void BeginRemoteAbrFireInput();
+		// If the P2 dispatcher skipped its registered outer ABR update, run that
+		// exact native mode once for a fresh remote Fire edge.
+		bool RunRemoteAbrFireFallback(void* controller);
+		// Poll the retail movement axes through the current binding. The signed
+		// result is +1 for forward propulsion, -1 for reverse and 0 for stop.
+		bool PollLocalAbrPropulsionDirection(float& direction);
 		void ResetForWorldLoad();
 
 		// The stock ammo-consume callback may run after P2's controller scope has
@@ -116,9 +126,20 @@ namespace coop
 		// normal Default-controller hook. Publish it every locally owned Fly tick so
 		// a receiver can reconstruct the native body aim target continuously.
 		void PublishLocalFlyAimRay();
+		// RDV reads the same process-global XGamePad ray but does not pass through
+		// Default-mode's capture hook. Publish it after every local ABR tick.
+		void PublishLocalAbrAimRay();
 		// Darwin's normal on-foot controller owns this correction. Vehicle/RDV uses
 		// a separate native motor path and must never be fed through this helper.
 		bool ApplyRemotePlayerTransform(void* player2);
+		// Reapplies the exact interpolated root prepared before this P2 update.
+		// This prevents physics from undoing the correction without performing a
+		// second interpolation step in the same rendered frame.
+		bool ReapplyRemotePlayerFrameTransform(void* player2);
+		// ABR/RDV still publishes P1's settled root transform through the ordinary
+		// input snapshot. The receiver applies that complete root after its own
+		// stock vehicle tick, without borrowing on-foot input, camera or weapon code.
+		bool ApplyRemoteAbrTransform(void* player2);
 		// Valid only during a scoped remote P2 controller tick. This exposes the
 		// finite peer target to the Ledge recovery gate without copying its private
 		// input packet into Player2Module.
@@ -188,6 +209,8 @@ namespace coop
 		typedef bool(__thiscall* InputRawQueryFn)(void*, void*, std::uint32_t, std::uint32_t, bool);
 		typedef float(__thiscall* InputAxisQueryFn)(void*, std::uint32_t, std::uint32_t, std::uint32_t);
 		typedef bool(__thiscall* StateMachineSelectStateFn)(void*, std::uint32_t, bool);
+		typedef bool(__thiscall* AbrAttackPredicateFn)(void*);
+		typedef bool(__thiscall* NativeSaveLoadFn)(void*, std::uint32_t);
 		typedef float(__thiscall* CameraYawFn)(void*);
 		typedef void(__thiscall* GPigCameraUpdateFn)(void*);
 		typedef void(__thiscall* DefaultModeUpdateFn)(void*, void*, void*);
@@ -268,6 +291,7 @@ namespace coop
 		void HandleDefaultModeUpdate(void* mode, void* input_manager, void* mode_context);
 		bool HandleStateMachineSelectState(void* controller, std::uint32_t mode_id,
 			bool force_reselect);
+		bool HandleAbrAttackPredicate(void* mode);
 		void HandleFireHandler(void* mode, void* input_manager, void* mode_context);
 		void HandleWeaponAmmoConsume(void* weapon_record);
 		
@@ -348,6 +372,8 @@ namespace coop
 		void RemoveAxisQueryHook();
 		bool InstallPressedQueryHook();
 		void RemovePressedQueryHook();
+		bool InstallAbrAttackPredicateHook();
+		void RemoveAbrAttackPredicateHook();
 		bool InstallReleasedQueryHook();
 		void RemoveReleasedQueryHook();
 		bool InstallHoldDurationQueryHook();
@@ -404,13 +430,14 @@ namespace coop
 		static void __fastcall HookDefaultModeUpdate(void* mode, void*, void* input_manager, void* mode_context);
 		static bool __fastcall HookStateMachineSelectState(void* controller, void*,
 			std::uint32_t mode_id, bool force_reselect);
+		static bool __fastcall HookAbrAttackPredicate(void* mode, void*);
 		static void __fastcall HookFireHandler(void* mode, void*, void* input_manager, void* mode_context);
 		static void __fastcall HookWeaponAmmoConsume(void* weapon_record, void*);
 		static void __fastcall HookHealthComponentSet(void* component, void*, float requested_value, std::uint32_t slot, bool notify);
 		static void __fastcall HookHealthComponentAdd(void* component, void*, float delta, std::uint32_t slot);
 		static void __fastcall HookHealthComponentSubtract(void* component, void*, float amount, std::uint32_t slot);
 		static void __fastcall HookTriggerSpawnFromDefinition(void* trigger, void*);
-		static bool __fastcall HookHostLoadGame(void* manager, void*, std::uint32_t slot);
+		static bool __fastcall HookNativeSaveLoad(void* manager, void*, std::uint32_t slot);
 
 		static void* __cdecl HookTriggerFactory(std::uint32_t family, std::uint32_t subtype, void* output);
 		static int __fastcall HookTriggerEvent(void* trigger, void*, int event_code);
@@ -433,6 +460,10 @@ namespace coop
 		retail::KeyboardStateSnapshot m_active_remote_scan_codes;
 		DWORD m_last_send_tick;
 		DWORD m_last_remote_transform_apply_tick;
+		retail::Transform m_remote_player_frame_transform;
+		void* m_remote_player_frame_entity;
+		std::uint32_t m_remote_player_frame_sequence;
+		bool m_remote_player_frame_transform_valid;
 		// Throttles malformed snapshot diagnostics on the network worker. A rejected
 		// snapshot never replaces the last finite P2/Fly state.
 		DWORD m_last_invalid_input_trace_tick;
@@ -491,6 +522,11 @@ namespace coop
 		bool m_threshold_query_hooked;
 		bool m_axis_query_hooked;
 		bool m_pressed_query_hooked;
+		bool m_abr_attack_predicate_hooked;
+		bool m_abr_attack_predicate_seen_in_scope;
+		bool m_remote_abr_aim_ray_applied;
+		retail::GamePadRef m_remote_abr_aim_input_manager;
+		retail::AimRay m_remote_abr_saved_aim_ray;
 		bool m_released_query_hooked;
 		bool m_hold_duration_query_hooked;
 		bool m_aim_hold_query_hooked;
@@ -523,6 +559,9 @@ namespace coop
 		BYTE m_original_input_pressed_query_bytes[6];
 		BYTE* m_input_pressed_trampoline;
 		InputActionQueryFn m_original_input_pressed_query;
+		BYTE m_original_abr_attack_predicate_bytes[9];
+		BYTE* m_abr_attack_predicate_trampoline;
+		AbrAttackPredicateFn m_original_abr_attack_predicate;
 		BYTE m_original_input_released_query_bytes[6];
 		BYTE* m_input_released_trampoline;
 		InputActionQueryFn m_original_input_released_query;
@@ -602,7 +641,10 @@ namespace coop
 		bool m_object_event_forwarder_hooked;
 		bool m_load_game_hooked;
 		bool m_logged_remote_transform;
-		BYTE m_original_load_game_call_bytes[5];
+		bool m_logged_remote_abr_transform;
+		BYTE m_original_native_save_load_bytes[7];
+		BYTE* m_native_save_load_trampoline;
+		NativeSaveLoadFn m_original_native_save_load;
 
 		std::uint32_t m_prev_local_action_down[3];
 		std::uint32_t m_prev_remote_action_down[3];

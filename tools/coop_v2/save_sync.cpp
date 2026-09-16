@@ -89,7 +89,8 @@ namespace
 
 	bool VerifyNativeLoadPath()
 	{
-		if (coop::retail::NativeGameApi::NativeLoadEntryMatchesExpected())
+		if (coop::CoopNetGame::Instance().HasNativeLoadHook() ||
+			coop::retail::NativeGameApi::NativeLoadEntryMatchesExpected())
 		{
 			return true;
 		}

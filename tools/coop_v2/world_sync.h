@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "protocol/rally_packets.h"
 #include "protocol/world_packets.h"
 
 namespace coop
@@ -49,6 +50,11 @@ namespace coop
 		// the separate host-authoritative NPC/monster dispatcher request/activation.
 		bool QueueObjectEvent(void* source, std::uint32_t source_vtable,
 			int event_code, std::uint32_t route);
+		// A successful native cutscene/checkpoint event is a co-op rally boundary.
+		// The source pointer is used only for local de-duplication; it never crosses
+		// the wire.
+		bool QueueProgressionRally(void* source, std::uint32_t source_vtable,
+			int event_code);
 		// Game-thread: the host publishes an entity's current absolute HP through a
 		// reliable packet. Client replicas never feed their local AI damage back.
 		bool ReportLocalDamage(void* entity, int event_code);
@@ -105,6 +111,7 @@ namespace coop
 		using WorldReadyPacket = protocol::WorldReadyPacket;
 		using WorldTriggerEventPacket = protocol::WorldTriggerEventPacket;
 		using WorldObjectEventPacket = protocol::WorldObjectEventPacket;
+		using ProgressionRallyPacket = protocol::ProgressionRallyPacket;
 		using WorldDamagePacket = protocol::WorldDamagePacket;
 		using WorldDespawnPacket = protocol::WorldDespawnPacket;
 
@@ -187,6 +194,7 @@ namespace coop
 		bool HandleWorldSnapshotPacket(const protocol::PacketView& view);
 		bool HandleWorldTriggerEventPacket(const protocol::PacketView& view);
 		bool HandleWorldObjectEventPacket(const protocol::PacketView& view);
+		bool HandleProgressionRallyPacket(const protocol::PacketView& view);
 		bool HandleWorldDamagePacket(const protocol::PacketView& view);
 		bool ReadEntityTransform(void* entity, float position[4], float rotation[4]) const;
 		bool ReadEntityHealth(void* entity, float& health) const;
@@ -194,6 +202,7 @@ namespace coop
 		void EnumerateHostEntities();
 		void EnumerateClientEntities();
 		void ProcessClientPackets();
+		void ApplyPendingProgressionRallies();
 		void ResolvePendingSpawns();
 		void ApplyIncomingDamage();
 		void DetectLocalHealthChanges();
@@ -259,10 +268,13 @@ namespace coop
 		std::vector<WorldSnapshotPacket> m_outgoing_snapshots;
 		std::vector<WorldTriggerEventPacket> m_outgoing_trigger_events;
 		std::vector<WorldObjectEventPacket> m_outgoing_object_events;
+		std::vector<ProgressionRallyPacket> m_outgoing_rallies;
 		std::vector<WorldSpawnPacket> m_incoming_spawns;
 		std::vector<WorldSnapshotPacket> m_incoming_snapshots;
 		std::vector<WorldTriggerEventPacket> m_incoming_trigger_events;
 		std::vector<WorldObjectEventPacket> m_incoming_object_events;
+		std::vector<ProgressionRallyPacket> m_incoming_rallies;
+		std::vector<ProgressionRallyPacket> m_pending_rallies;
 		std::vector<TriggerCounter> m_host_trigger_counters;
 		std::vector<TriggerCounter> m_client_trigger_counters;
 		std::vector<TriggerTemplate> m_trigger_templates;
@@ -275,6 +287,11 @@ namespace coop
 		std::uint32_t m_snapshot_sequence;
 		std::uint32_t m_object_event_sequence;
 		std::uint32_t m_last_received_object_event_sequence;
+		std::uint32_t m_rally_sequence;
+		std::uint32_t m_last_received_rally_sequence;
+		void* m_last_local_rally_source;
+		int m_last_local_rally_event;
+		DWORD m_last_local_rally_tick;
 		DWORD m_last_snapshot_tick;
 		volatile LONG m_host_resync_requested;
 		volatile LONG m_client_ready_pending;

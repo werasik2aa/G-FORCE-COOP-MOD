@@ -67,6 +67,15 @@ namespace coop
 		constexpr uintptr_t kInputPressedQuery = 0x00488CE0u;     // pressed this frame (rising edge)
 		constexpr uintptr_t kInputReleasedQuery = 0x00488C00u;    // released this frame (falling edge)
 		constexpr uintptr_t kInputHoldDurationQuery = 0x00488E50u;// hold duration >= threshold
+		// XControllerMode_GPig_RDV's update calls this predicate before the block
+		// containing its native input queries. A presentation-only P2 can fail the
+		// predicate even with a valid RDV task, so co-op may override false only for
+		// RemoteP2, only in ABR, and only on a received ABR fire edge.
+		constexpr uintptr_t kAbrAttackPredicate = 0x005BC480u;
+		constexpr uint8_t kExpectedAbrAttackPredicate[] = {
+			0x8B, 0x49, 0x04,                         // mov ecx,[ecx+4]
+			0x8B, 0x15, 0x34, 0x56, 0x91, 0x00        // mov edx,[0x00915634]
+		};
 		// 0x488B00 is the aim-hold query of 0x5BB1D0 (0x5BB321 with float [0x6F26D8],
 		// 0x5BB34D with float [0x6F2754]).  Same shape as 0x488DC0 but a different
 		// function AND a different argument order: the flags word is pushed before the
@@ -388,6 +397,10 @@ namespace coop
 		// class name only when that metadata validates; it never replays an event.
 		constexpr uintptr_t kObjectEventRelay = 0x0041E890u;
 		constexpr uintptr_t kObjectEventForwarder = 0x0046D6F0u;
+		// Exact retail map-trigger vtables observed in the object-event chain.
+		// They identify durable progression boundaries, not universal object events.
+		constexpr uintptr_t kTriggerObCutsceneVtable = 0x006F3FD4u;
+		constexpr uintptr_t kTriggerPlCheckpointVtable = 0x006F3EFCu;
 		// `sub_41E890` uses `mov ecx, 0x00912AA8` before calling the object
 		// forwarder. This is the literal retail receiver address (not a pointer to
 		// dereference); the exact EXE fingerprint makes the fixed address valid.
@@ -549,6 +562,19 @@ constexpr size_t kModeIdOffset = 0x08u;
 		// guards the separate native path; never treat it as an ordinary on-foot
 		// P2 transform or as a separately spawned world object.
 		constexpr uint32_t kAbrModeId = 0x6100006Eu;
+		// Exact retail XControllerMode_GPig_RDV class. Slot +0x0C is the outer
+		// mode update; it invokes the gun helper at 0x005BD5D0 and owns the native
+		// movement/camera preparation around it.
+		constexpr uintptr_t kAbrModeVtable = 0x00718524u;
+		constexpr uintptr_t kAbrModeUpdate = 0x005BDCD0u;
+		constexpr uint8_t kExpectedAbrModeUpdate[] = {
+			0x83, 0xEC, 0x44, 0x53, 0x55, 0x56, 0x8B, 0xF1
+		};
+		// The ABR vehicle owns a nested combat machine. The Fire state selects this
+		// ID and the registered RTTI class below; neither identifier describes the
+		// outer GPig controller mode or an ordinary Darwin weapon fire.
+		constexpr uint32_t kGPigCombatRdvFireModeId = 0x61000035u;
+		constexpr uintptr_t kGPigCombatRdvFireVtable = 0x0070098Cu;
 		// XMotorSystem::EnsureGPigRdvTask. Static dump: ECX is XMotorSystem,
 		// the bool argument is stack-owned and the function returns `ret 4`.
 		// It indexes [XMotorSystem+0x2C] (= handler+0x4EC) using the engine-owned
@@ -565,6 +591,21 @@ constexpr size_t kModeIdOffset = 0x08u;
 		constexpr uintptr_t kGPigRdvTaskVtable = 0x006FC27Cu;
 		constexpr size_t kGPigRdvTaskEnabledOffset = 0x30u;
 		constexpr uint8_t kGPigRdvTaskEnabledValue = 1u;
+		// XMotorTask_RDV constructor initializes all three to 1.0. The native
+		// 0x4CA480 update moves current speed toward target by rate*dt, and
+		// 0x4CA5C0 returns current speed multiplied by the RDV tuning value.
+		constexpr size_t kGPigRdvTaskCurrentSpeedOffset = 0x40u;
+		constexpr size_t kGPigRdvTaskTargetSpeedOffset = 0x44u;
+		constexpr size_t kGPigRdvTaskAccelerationOffset = 0x48u;
+		// XControllerMode_GPig_RDV lazily obtains this separate 44-byte drive task
+		// through handler+0x4C0 and engine index 0x009155F8. Retail latches +0x04
+		// after the first 0x10000000 edge, which is why the vehicle keeps driving
+		// after the movement control is released.
+		constexpr uintptr_t kGPigRdvDriveTaskStateIndex = 0x009155F8u;
+		constexpr uintptr_t kGetGPigRdvDriveTask = 0x0040CA70u;
+		constexpr uintptr_t kGPigRdvDriveTaskVtable = 0x006FC134u;
+		constexpr size_t kGPigRdvDriveTaskActiveOffset = 0x04u;
+		constexpr size_t kGPigRdvDriveTaskDirectionOffset = 0x10u;
 		// XMotorFunction_GPigRDV resource used by the native RDV task.
 		constexpr uintptr_t kGPigRdvMotorFunctionVtable = 0x007040DCu;
 		constexpr uint32_t kGPigRdvMotorResourceIndex = 11u;
@@ -585,6 +626,15 @@ constexpr size_t kModeIdOffset = 0x08u;
 		constexpr uint32_t kFirstKeyboardActionId = 0x10000000u;
 		constexpr uint32_t kKeyboardActionCount = 0x43u;
 		constexpr uint32_t kFireActionId = 0x10000007u;
+		// The outer RDV mode uses this logical action to latch drive control. Query
+		// its held level separately so custom key bindings remain valid.
+		constexpr uint32_t kAbrMoveActionId = 0x10000000u;
+		// RDV/ABR polls this separate pressed-edge action at 0x005BDBD8.
+		constexpr uint32_t kAbrFireActionId = 0x10000014u;
+		constexpr uintptr_t kAbrFirePressedQueryReturn = 0x005BDBDDu;
+		// Retail RDV and Default controller modes are registered with mask 3.
+		// P2 is presentation-only and must not claim the exclusive owner bit.
+		constexpr uint32_t kAbrModeConflictMask = 0x00000003u;
 		// The Default-mode second-action query 0x4008000A maps to this ordinary
 		// pressed edge.  Its physical bind is intentionally not named here.
 		constexpr uint32_t kLedgeReleaseActionId = 0x1000000Du;

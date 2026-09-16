@@ -1,5 +1,6 @@
 #include "window_hook.h"
 
+#include "chat_overlay.h"
 #include "coop_runtime.h"
 #include "save_sync.h"
 #include "world_sync.h"
@@ -122,7 +123,14 @@ namespace coop
 		// the native loader. Once a world exists, TickPlayer1 consumes the same
 		// one-shot queue before this fallback is reached.
 		if (SUCCEEDED(result))
+		{
+			// Chat owns a retained non-activating GDI HWND over the game client. Keeping its
+			// layout here after Present avoids D3D state changes while avoiding the
+			// direct-client-DC flashing caused by a following D3D flip.
+			ChatOverlay::Instance().Render(
+				destination_window ? destination_window : m_game_window);
 			SaveSync::Instance().OnMainFrame();
+		}
 		return result;
 	}
 
