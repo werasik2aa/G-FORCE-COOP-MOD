@@ -1,6 +1,6 @@
 # G-FORCE COOP MOD
 
-An experimental, fan-made multiplayer co-op mod for the 2009 PC game
+An experimental, fan-made co-op mod for the 2009 PC game
 **Disney G-Force**. The original game is a third-person action-platformer based
 on the film, where players control Darwin and use the companion fly Mooch for
 special traversal and interaction sequences.
