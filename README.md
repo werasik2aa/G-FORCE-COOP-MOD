@@ -1,3 +1,5 @@
+Discord: https://discord.com/invite/cRBKJaKMP3
+
 # G-FORCE COOP MOD
 
 An experimental, fan-made co-op mod for the 2009 PC game
