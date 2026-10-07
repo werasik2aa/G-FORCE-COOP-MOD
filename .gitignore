@@ -23,8 +23,10 @@
 *.VC.db
 *.opendb
 
-# Local Steamworks/GameNetworkingSockets SDK; install separately to build.
-/tools/coop_v2/SteamWorksSDK/
+# Vendored Steamworks/GameNetworkingSockets SDK is committed under
+# tools/coop_v2/SteamWorksSDK so a fresh checkout has the build inputs.
+!tools/coop_v2/SteamWorksSDK/
+!tools/coop_v2/SteamWorksSDK/**
 
 # Generated reverse-engineering traces
 **/ida_trace_*.log
@@ -32,3 +34,6 @@
 # Python bytecode is local execution cache, never source or RE evidence.
 **/__pycache__/
 *.py[cod]
+
+# Local Steamworks/GNS SDK (not redistributable)
+/tools/coop_v2/SteamWorksSDK/

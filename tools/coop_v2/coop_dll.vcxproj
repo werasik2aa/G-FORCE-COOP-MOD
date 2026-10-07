@@ -111,6 +111,7 @@ copy /Y "$(GnsRuntimeRoot)\abseil_dll.dll" "$(OutDir)abseil_dll.dll"</Command>
 	<ClCompile Include="debug_actions.cpp" />
 	<ClCompile Include="ip_connect_dialog.cpp" />
 	<ClCompile Include="menu_connect_hook.cpp" />
+	<ClCompile Include="menu_session_hook.cpp" />
 	<ClCompile Include="player2.cpp" />
 	<ClCompile Include="save_sync.cpp" />
 	<ClCompile Include="shared_camera.cpp" />
@@ -132,6 +133,7 @@ copy /Y "$(GnsRuntimeRoot)\abseil_dll.dll" "$(OutDir)abseil_dll.dll"</Command>
 	<ClInclude Include="debug_actions.h" />
 	<ClInclude Include="ip_connect_dialog.h" />
 	<ClInclude Include="menu_connect_hook.h" />
+	<ClInclude Include="menu_session_hook.h" />
 	<ClInclude Include="gforce_constants.h" />
 	<ClInclude Include="player2.h" />
 	<ClInclude Include="remote_root_math.h" />

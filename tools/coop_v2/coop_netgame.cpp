@@ -656,7 +656,6 @@ namespace coop
 		m_last_invalid_input_trace_tick(0),
 		m_last_remote_fly_deactivation_suppression_tick(0),
 		m_peer_connected_tick(0),
-		m_menu_quit_miss_tick(0),
 
 		m_logged_spawn(0),
 		m_remote_input_active(0),
@@ -892,6 +891,11 @@ namespace coop
 		CoopRuntime::Instance().Log("[netgame] role=CLIENT\r\n");
 	}
 
+	void CoopNetGame::SetModeNone()
+	{
+		InterlockedExchange(&m_role, RoleNone);
+	}
+
 	bool CoopNetGame::IsHost() const
 	{
 		return InterlockedCompareExchange(
@@ -929,75 +933,10 @@ namespace coop
 			"[netgame] peer connected; P2 spawn queued for game thread\r\n");
 	}
 
-	void CoopNetGame::CheckMenuQuitTick()
-	{
-		// Runs ~1/sec from the Present hook, which also fires in menus. A
-		// missing local P1 with an active session means either quit-to-menu
-		// or a native load in flight; only the former persists, so require
-		// 15 continuous seconds before tearing down. Pause/overlay menus keep
-		// P1 alive and never arm. Pending host-save loads disarm outright.
-		if (!HasRemotePeer())
-		{
-			m_menu_quit_miss_tick = 0;
-			return;
-		}
-		retail::EntitySlotRepository players;
-		retail::EntitySlotBinding player1 = {};
-		if (players.GetBinding(retail::EntitySlot::LocalP1, player1))
-		{
-			m_menu_quit_miss_tick = 0;
-			return;
-		}
-		if (SaveSync::Instance().HasPendingLoad())
-		{
-			m_menu_quit_miss_tick = 0;
-			return;
-		}
-		const LONG now = static_cast<LONG>(GetTickCount());
-		if (m_menu_quit_miss_tick == 0)
-		{
-			m_menu_quit_miss_tick = now;
-			CoopRuntime::Instance().Log(
-				"[netgame] no local P1 with active session; confirming menu quit\r\n");
-			return;
-		}
-		if (static_cast<DWORD>(now - m_menu_quit_miss_tick) < 15000)
-			return;
-		m_menu_quit_miss_tick = 0;
-		QuitSessionToMainMenu();
-	}
-
 	void CoopNetGame::QuitSessionToMainMenu()
 	{
-		if (!HasRemotePeer())
-			return;
-		// Re-verify under the same conditions as the tick above.
-		retail::EntitySlotRepository players;
-		retail::EntitySlotBinding player1 = {};
-		if (players.GetBinding(retail::EntitySlot::LocalP1, player1))
-			return;
-		if (SaveSync::Instance().HasPendingLoad())
-			return;
-		if (IsClient())
-		{
-			CoopRuntime::Instance().Log(
-				"[netgame] quit to menu: client disconnecting\r\n");
-			if (SteamOClient)
-				SteamOClient->Disconnect();
-			return;
-		}
-		if (IsHost())
-		{
-			CoopRuntime::Instance().Log(
-				"[netgame] quit to menu: host stopping servers\r\n");
-			if (SteamOServer)
-				SteamOServer->CloseServer();
-			if (SteamSServer)
-				SteamSServer->CloseServer();
-			if (SteamManager)
-				SteamManager->DisarmAutomaticHost();
-			OnPeerDisconnected();
-		}
+		if (SteamManager)
+			SteamManager->CloseSessionFromMenu();
 	}
 
 	void CoopNetGame::OnPeerDisconnected()

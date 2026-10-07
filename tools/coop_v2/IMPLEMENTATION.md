@@ -17,15 +17,25 @@ AI visibly fights forced modes, add stickiness (apply once per change).
 
 ## Session lifecycle (quit/reconnect)
 
-Quitting to the main menu tears the session down: the per-frame Present hook
-(which also fires in menus) runs `CheckMenuQuitTick` ~1/sec, and 15 continuous
-seconds with an active session, no local P1 and no pending host-save load
-confirm the quit (pause menus keep P1; loads set pending). Host closes both
-listeners (clients get a clean close) and disarms the automatic host so the
-next loaded save reopens it; client disconnects free the server slot.
+`MenuSessionHook` wraps the native main/pause menu confirmation vtable slots.
+Only answer `1` (Yes) calls `QuitSessionToMainMenu`, before the original callback
+commits the stock application exit or quit-to-main-menu transition. No/Cancel
+only reaches the original callback. The 15-second missing-P1 watchdog and its
+Present counter are removed; loading and cutscenes cannot trigger a guessed quit.
+
+`CSteamManager::CloseSessionFromMenu` synchronously closes both client transports
+(including pending Steam retries), both listeners and Steam rich presence, even
+for a host without a peer or a still-connecting client. A session SRW lock
+serializes this action with the network worker's frame and IP role transition.
+It clears peer state, cancels a queued host-save load and resets the role.
+Automatic hosting is inhibited during the stock fade while P1 can still tick;
+the checked native main-menu entry callback clears that inhibition and resets
+world readiness, so the next loaded save can reopen the listeners.
 Reconnect uses the same menu row: the already-a-client block now applies
 only while connected. A disconnected host-side P2 presentation is kept
 frozen (no verified native destroy) and resyncs on reconnect.
+The callback bytes/vtable slots are statically **approved**; exit, cancel and
+reload/reconnect behavior is **not live-tested**.
 
 ## Scope and executable boundary
 
@@ -49,6 +59,7 @@ winmm.dll proxy
   -> coop_dll.dll / CoopApplication
        -> CoopRuntime (verification, log, safe patches)
        -> MenuConnectHook (native main-menu row -> existing F8 request)
+       -> MenuSessionHook (native confirmed exit -> serialized session close)
        -> Player2Module (native GPig spawn and controller ticks)
        -> CoopNetGame (packet snapshots, scoped input, hooks)
        -> SharedCameraCoordinator (one retail camera handler)

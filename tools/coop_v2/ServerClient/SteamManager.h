@@ -29,6 +29,9 @@ public:
 	// Called from P1's native controller tick, never from the menu.  It merely
 	// queues the host listeners for the network worker.
 	void NotifyGameWorldReady();
+	// The native menu invokes this before committing its exit. Serialized with
+	// worker socket access, and safe when alone, connecting or already closed.
+	void CloseSessionFromMenu();
 	// Called when our own servers were stopped for quit-to-menu, so the next
 	// world load re-arms the automatic host listener instead of staying deaf.
 	void DisarmAutomaticHost();
@@ -61,6 +64,8 @@ private:
 	CSteamID m_my_steam_id;
 	HANDLE m_stop_event;
 	HANDLE m_worker_thread;
+	SRWLOCK m_session_lock;
+	volatile LONG m_menu_quit_in_progress;
 	volatile LONG m_game_world_ready;
 	volatile LONG m_automatic_host_attempted;
 	volatile LONG m_ip_prompt_requested;

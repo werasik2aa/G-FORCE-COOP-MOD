@@ -7,6 +7,7 @@
 #include "MServerONLINE.h"
 #include "../coop_netgame.h"
 #include "../ip_connect_dialog.h"
+#include "../save_sync.h"
 
 #include <new>
 #include <string.h>
@@ -24,11 +25,13 @@ CSteamManager::CSteamManager() :
 	m_steam_initialized(false),
 	m_stop_event(nullptr),
 	m_worker_thread(nullptr),
+	m_menu_quit_in_progress(0),
 	m_game_world_ready(0),
 	m_automatic_host_attempted(0),
 	m_ip_prompt_requested(0),
 	m_f8_was_down(false)
 {
+	InitializeSRWLock(&m_session_lock);
 	lstrcpynA(m_last_ip_address, "127.0.0.1:44139",
 		static_cast<int>(_countof(m_last_ip_address)));
 }
@@ -223,13 +226,38 @@ const CSteamID& CSteamManager::GetMySteamID() const
 
 void CSteamManager::NotifyGameWorldReady()
 {
-	InterlockedExchange(&m_game_world_ready, 1);
+	if (!InterlockedCompareExchange(&m_menu_quit_in_progress, 0, 0))
+		InterlockedExchange(&m_game_world_ready, 1);
+}
+
+void CSteamManager::CloseSessionFromMenu()
+{
+	// P1 can still tick during the stock fade. It must not reopen listeners
+	// before the actual main-menu entry disarms/rearms automatic hosting.
+	InterlockedExchange(&m_menu_quit_in_progress, 1);
+	AcquireSRWLockExclusive(&m_session_lock);
+	InterlockedExchange(&m_game_world_ready, 0);
+	InterlockedExchange(&m_ip_prompt_requested, 0);
+	Msg("[network-session] menu exit: disconnecting clients and closing listeners");
+	if (SteamLClient)
+		SteamLClient->Disconnect();
+	if (SteamSClient)
+		SteamSClient->Disconnect(); // Also cancels a pending Steam retry.
+	StopServersForClient();
+	if (coop::CoopNetGame::Instance().HasRemotePeer())
+		coop::CoopNetGame::Instance().OnPeerDisconnected();
+	coop::SaveSync::Instance().CancelPendingLoad();
+	coop::CoopNetGame::Instance().SetModeNone();
+	ReleaseSRWLockExclusive(&m_session_lock);
 }
 
 void CSteamManager::DisarmAutomaticHost()
 {
+	AcquireSRWLockExclusive(&m_session_lock);
 	InterlockedExchange(&m_automatic_host_attempted, 0);
 	InterlockedExchange(&m_game_world_ready, 0);
+	InterlockedExchange(&m_menu_quit_in_progress, 0);
+	ReleaseSRWLockExclusive(&m_session_lock);
 }
 
 void CSteamManager::RequestIpConnectionPrompt()
@@ -254,6 +282,7 @@ void CSteamManager::WorkerLoop()
 
 void CSteamManager::OnFrame()
 {
+	AcquireSRWLockExclusive(&m_session_lock);
 	if (m_steam_initialized)
 		SteamAPI_RunCallbacks();
 	if (SteamOClient)
@@ -274,6 +303,7 @@ void CSteamManager::OnFrame()
 
 	ProcessAutomaticHostRequest();
 	coop::CoopNetGame::Instance().NetworkTick();
+	ReleaseSRWLockExclusive(&m_session_lock);
 }
 
 bool CSteamManager::IsGameForeground() const
@@ -300,6 +330,8 @@ void CSteamManager::PollHotkeys()
 
 void CSteamManager::ProcessAutomaticHostRequest()
 {
+	if (InterlockedCompareExchange(&m_menu_quit_in_progress, 0, 0))
+		return;
 	if (!InterlockedCompareExchange(&m_game_world_ready, 0, 0) || InterlockedCompareExchange(&m_automatic_host_attempted, 0, 0))
 		return;
 
@@ -379,6 +411,12 @@ void CSteamManager::ConnectToIpAddress(const char* address)
 	// Explicit IP input is client intent.  A process can already have opened its
 	// own listener after loading a save, so close it only after validation rather
 	// than leaving both roles active or losing host state on a typo.
+	AcquireSRWLockExclusive(&m_session_lock);
+	if (InterlockedCompareExchange(&m_menu_quit_in_progress, 0, 0))
+	{
+		ReleaseSRWLockExclusive(&m_session_lock);
+		return;
+	}
 	coop::CoopNetGame::Instance().SetModeClient();
 	if (SteamOClient && SteamOClient != SteamLClient)
 		SteamOClient->Disconnect();
@@ -388,6 +426,7 @@ void CSteamManager::ConnectToIpAddress(const char* address)
 	if (started)
 		lstrcpynA(m_last_ip_address, connection_address, static_cast<int>(_countof(m_last_ip_address)));
 	Msg("[network-client] IP connect address=%s started=%s", connection_address, started ? "started" : "failed");
+	ReleaseSRWLockExclusive(&m_session_lock);
 }
 
 void CSteamManager::StopServersForClient()
@@ -402,6 +441,8 @@ void CSteamManager::OnGameRichPresenceJoinRequested(
 	GameRichPresenceJoinRequested_t* callback)
 {
 	if (!callback || !SteamSClient)
+		return;
+	if (InterlockedCompareExchange(&m_menu_quit_in_progress, 0, 0))
 		return;
 	Msg("[network-steam] join request from %llu; connecting without X-Ray UI "
 		"(relay=%s)",

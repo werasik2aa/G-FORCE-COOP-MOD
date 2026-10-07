@@ -44,6 +44,9 @@
 	<ClCompile Include="menu_connect_hook.cpp">
 		<Filter>Source Files</Filter>
 	</ClCompile>
+	<ClCompile Include="menu_session_hook.cpp">
+		<Filter>Source Files</Filter>
+	</ClCompile>
 	<ClCompile Include="save_sync.cpp">
 		<Filter>Source Files</Filter>
 	</ClCompile>
@@ -101,6 +104,9 @@
 		<Filter>Header Files</Filter>
 	</ClInclude>
 	<ClInclude Include="menu_connect_hook.h">
+		<Filter>Header Files</Filter>
+	</ClInclude>
+	<ClInclude Include="menu_session_hook.h">
 		<Filter>Header Files</Filter>
 	</ClInclude>
 	<ClInclude Include="save_sync.h">
