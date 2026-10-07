@@ -3407,7 +3407,7 @@ namespace coop
 		void* point, std::uint32_t ground_snap, std::uint32_t show_message)
 	{
 		Instance().HandleRespawnPointRegister(handler, point, ground_snap,
-			show_message);
+			show_message, reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
 	}
 
 	bool __fastcall CoopNetGame::HookNativeSaveLoad(void* manager, void*,
@@ -4006,7 +4006,8 @@ namespace coop
 	}
 
 	void CoopNetGame::HandleRespawnPointRegister(void* handler, void* point,
-		std::uint32_t ground_snap, std::uint32_t show_message)
+		std::uint32_t ground_snap, std::uint32_t show_message,
+		std::uintptr_t caller_return_address)
 	{
 		if (!m_original_respawn_point)
 			return;
@@ -4023,8 +4024,11 @@ namespace coop
 		}
 		// Only the stock registration of this process's own P1 is a progress
 		// signal; the remote presentation never reaches the slot-1 checkpoint path.
-		if (g_applying_remote_respawn_point || !point || !HasRemotePeer() ||
-			handler != LocalPlayer1Handler())
+		bool progression_caller = false;
+		for (const std::uintptr_t caller : kRespawnPointProgressionCallers)
+			progression_caller = progression_caller || caller == caller_return_address;
+		if (!progression_caller || g_applying_remote_respawn_point || !point ||
+			!HasRemotePeer() || handler != LocalPlayer1Handler())
 		{
 			return;
 		}

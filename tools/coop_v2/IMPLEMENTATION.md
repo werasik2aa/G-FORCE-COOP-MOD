@@ -659,9 +659,13 @@ the point is a registered map template, queues `kWorldObjectEventRouteRespawnPoi
 (6) with `event_code = 0x41000000 | ground_snap`. The receiver resolves the same map
 object by the normal object-event identity and calls the original routine for its
 own LocalP1 handler with `show_message = 0`, under a thread-local guard so the
-registration is never republished. All seven native callers are covered (checkpoint
-volume, scripted active-entity point `0x0042C387`, volume trigger `0x00441A89`, spawn
-and load paths); latest registration wins, exactly as in single player. The Mooch
+registration is never republished. Only the four progression call sites publish,
+checked by native return address: checkpoint volume `0x0043EAED`, scripted
+active-entity point `0x0042C387` and volume trigger `0x00441A89`/`0x00441A98`. The
+GPig factory (`0x00545425`, which registers every spawned GPig at its spawn
+context), the spawn path `0x0043F20F` and `0x0046BE66` are process-local; publishing
+them would let a late spawn (for example a promoted Black Pig) reset the peer to the
+level start. Latest registration wins, exactly as in single player. The Mooch
 respawn path and the checkpoint autosave/HUD side effects are not replicated.
 
 Build-verified only; **not live-tested**. Evidence: `[respawn-sync] local P1 respawn

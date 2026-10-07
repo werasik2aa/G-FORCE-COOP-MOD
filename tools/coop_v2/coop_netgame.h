@@ -436,7 +436,8 @@ namespace coop
 		bool InstallRespawnPointHook();
 		void RemoveRespawnPointHook();
 		void HandleRespawnPointRegister(void* handler, void* point,
-			std::uint32_t ground_snap, std::uint32_t show_message);
+			std::uint32_t ground_snap, std::uint32_t show_message,
+			std::uintptr_t caller_return_address);
 		bool InstallLoadGameHook();
 		void RemoveLoadGameHook();
 

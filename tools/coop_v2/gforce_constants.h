@@ -437,6 +437,14 @@ namespace coop
 		constexpr uint8_t kExpectedRespawnPointRegister[] = {
 			0x81, 0xEC, 0x74, 0x01, 0x00, 0x00
 		};
+		// Return addresses of the progression callers only: checkpoint volume
+		// 0x0043EAED, scripted active-entity point 0x0042C387 and the two calls of
+		// the volume trigger at 0x00441A89/0x00441A98. The GPig factory
+		// (0x00545425), spawn path (0x0043F20F) and 0x0046BE66 register a
+		// process-local spawn/restore point and must never move the peer.
+		constexpr uintptr_t kRespawnPointProgressionCallers[] = {
+			0x0043EAF2u, 0x0042C38Cu, 0x00441A8Eu, 0x00441A9Du
+		};
 		// Exact retail map-trigger vtables observed in the object-event chain.
 		// They identify durable progression boundaries, not universal object events.
 		constexpr uintptr_t kTriggerObCutsceneVtable = 0x006F3FD4u;
