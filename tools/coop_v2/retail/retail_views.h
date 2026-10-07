@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cfloat>
 
 #include "../gforce_constants.h"
 #include "retail_memory.h"
@@ -640,6 +641,36 @@ namespace retail
         {
             return TryRead(AddOffset(task_.value,
                 gforce::kGPigRdvTaskEnabledOffset), out);
+        }
+
+        bool RdvTracks(RdvTrackIds& out) const
+        {
+            return task_ && TryRead(AddOffset(task_.value,
+                gforce::kGPigRdvTaskTrackIdsOffset), out) && out.Valid();
+        }
+
+        bool SetRdvTracks(const RdvTrackIds& tracks) const
+        {
+            return task_ && tracks.Valid() && TryWrite(AddOffset(task_.value,
+                gforce::kGPigRdvTaskTrackIdsOffset), tracks);
+        }
+
+        bool RdvRequestedTrack(std::uint32_t& out) const
+        {
+            return task_ && TryRead(AddOffset(task_.value,
+                gforce::kGPigRdvTaskRequestedTrackOffset), out);
+        }
+
+        bool SetRdvRequestedTrack(std::uint32_t track) const
+        {
+            return task_ && TryWrite(AddOffset(task_.value,
+                gforce::kGPigRdvTaskRequestedTrackOffset), track);
+        }
+
+        bool SetRdvInitializationPending(std::uint8_t pending) const
+        {
+            return task_ && TryWrite(AddOffset(task_.value,
+                gforce::kGPigRdvTaskEnabledOffset), pending);
         }
 
 		bool RdvSpeed(float& current, float& target) const
@@ -1574,6 +1605,117 @@ namespace retail
             {
                 return false;
             }
+        }
+
+        // Recover only a late-spawned task's empty track selection. Source IDs
+        // stay inside this process; native code constructs destination-owned
+        // handles and finds the path parameter at the destination position.
+        static bool RecoverMissingGPigRdvTracks(MotorSystemRef source_system,
+            MotorTaskRef source_task, MotorSystemRef destination_system,
+            MotorTaskRef destination_task, bool& recovered)
+        {
+            recovered = false;
+            if (!source_system || !source_task || !destination_system ||
+                !destination_task || source_task == destination_task)
+                return false;
+            Address source_vtable = 0;
+            Address destination_vtable = 0;
+            const MotorTaskView source(source_task);
+            const MotorTaskView destination(destination_task);
+            RdvTrackIds source_tracks = {};
+            RdvTrackIds old_tracks = {};
+            if (!source.VTable(source_vtable) ||
+                source_vtable != gforce::kGPigRdvTaskVtable ||
+                !destination.VTable(destination_vtable) ||
+                destination_vtable != gforce::kGPigRdvTaskVtable ||
+                !source.RdvTracks(source_tracks) || source_tracks.Empty() ||
+                !destination.RdvTracks(old_tracks))
+                return false;
+            if (!old_tracks.Empty())
+                return true;
+            if (!CodePrefixMatches(gforce::kFindGPigRdvMotor,
+                    gforce::kExpectedFindGPigRdvMotor,
+                    sizeof(gforce::kExpectedFindGPigRdvMotor)) ||
+                !CodePrefixMatches(gforce::kRefreshGPigRdvTracks,
+                    gforce::kExpectedRefreshGPigRdvTracks,
+                    sizeof(gforce::kExpectedRefreshGPigRdvTracks)) ||
+                !CodePrefixMatches(gforce::kGetGPigRdvCurrentTrack,
+                    gforce::kExpectedGetGPigRdvCurrentTrack,
+                    sizeof(gforce::kExpectedGetGPigRdvCurrentTrack)))
+                return false;
+            using FindMotorFn = void* (__thiscall*)(void*);
+            using RefreshTracksFn = void(__thiscall*)(void*, void*);
+            using CurrentTrackFn = void* (__thiscall*)(void*);
+            const FindMotorFn find_motor = reinterpret_cast<FindMotorFn>(
+                gforce::kFindGPigRdvMotor);
+            const RefreshTracksFn refresh = reinterpret_cast<RefreshTracksFn>(
+                gforce::kRefreshGPigRdvTracks);
+            const CurrentTrackFn current_track =
+                reinterpret_cast<CurrentTrackFn>(gforce::kGetGPigRdvCurrentTrack);
+            Address source_resource = 0;
+            Address destination_resource = 0;
+            __try
+            {
+                source_resource = ToAddress(find_motor(
+                    ToPointer(source_system.value)));
+                destination_resource = ToAddress(find_motor(
+                    ToPointer(destination_system.value)));
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                return false;
+            }
+            std::int32_t track_index = -1;
+            Address source_resource_vtable = 0;
+            Address destination_resource_vtable = 0;
+            if (!TryRead(source_resource, source_resource_vtable) ||
+                !TryRead(destination_resource, destination_resource_vtable) ||
+                source_resource == destination_resource ||
+                source_resource_vtable != gforce::kGPigRdvMotorFunctionVtable ||
+                destination_resource_vtable != gforce::kGPigRdvMotorFunctionVtable ||
+                !TryRead(AddOffset(source_resource,
+                    gforce::kGPigRdvResourceTrackIndexOffset), track_index) ||
+                track_index < 0 ||
+                track_index >= static_cast<std::int32_t>(gforce::kGPigRdvTrackCount) ||
+                source_tracks.value[track_index] == 0)
+                return false;
+            std::uint8_t old_pending = 0;
+            std::uint32_t old_requested_track = 0;
+            if (!destination.RdvEnabled(old_pending) ||
+                !destination.RdvRequestedTrack(old_requested_track))
+                return false;
+            // Request the source's actual path, not its spline cursor or angle.
+            // Clearing +0x30 takes the stock explicit-track branch; +0x30 is
+            // consumed by native initialization, rather than a persistent enable.
+            bool bound = false;
+            if (destination.SetRdvTracks(source_tracks) &&
+                destination.SetRdvRequestedTrack(source_tracks.value[track_index]) &&
+                destination.SetRdvInitializationPending(0))
+            {
+                __try
+                {
+                    refresh(ToPointer(destination_resource),
+                        ToPointer(destination_task.value));
+                    float parameter = -1.0f;
+                    bound = current_track(ToPointer(destination_resource)) != nullptr &&
+                        TryRead(AddOffset(destination_resource,
+                            gforce::kGPigRdvResourceTrackParameterOffset), parameter) &&
+                        parameter >= 0.0f && parameter <= FLT_MAX;
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    bound = false;
+                }
+            }
+            if (!bound)
+            {
+                destination.SetRdvTracks(old_tracks);
+                destination.SetRdvRequestedTrack(old_requested_track);
+                destination.SetRdvInitializationPending(old_pending);
+                return false;
+            }
+            recovered = true;
+            return true;
         }
 
         // XControllerMode_GPig_RDV obtains its separate drive task through

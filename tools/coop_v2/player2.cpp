@@ -777,6 +777,56 @@ namespace coop
 			m_abr_native_task_configured_player2);
 	}
 
+	bool Player2Module::RecoverRdvTracksForEntity(retail::EntityRef source,
+		retail::EntityRef destination)
+	{
+		CoopNetGame& netgame = CoopNetGame::Instance();
+		retail::EntitySlotRepository players;
+		const retail::EntityRef local = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		const retail::EntityRef remote = players.GetSelectable(
+			retail::EntitySlot::RemoteP2);
+		if (!netgame.HasRemotePeer() || netgame.IsLocalFlyControlled() ||
+			!((source == local && destination == remote) ||
+				(source == remote && destination == local)))
+		{
+			return false;
+		}
+		retail::HandlerRef source_handler = {};
+		retail::HandlerRef destination_handler = {};
+		retail::MotorSystemRef source_motor = {};
+		retail::MotorSystemRef destination_motor = {};
+		retail::MotorTaskRef source_task = {};
+		retail::MotorTaskRef destination_task = {};
+		std::uint32_t state_index = 0;
+		if (!source || !destination || source == destination ||
+			!retail::ReadGPigRdvTaskStateIndex(state_index) ||
+			state_index >= kMotorSystemTaskStateSafetyLimit ||
+			!retail::EntityView(source).Handler(source_handler) ||
+			!retail::EntityView(destination).Handler(destination_handler) ||
+			!retail::HandlerView(source_handler).MotorSystem(source_motor) ||
+			!retail::HandlerView(destination_handler).MotorSystem(
+				destination_motor) ||
+			!retail::MotorSystemView(source_motor).TaskAt(state_index, source_task) ||
+			!retail::MotorSystemView(destination_motor).TaskAt(state_index,
+				destination_task))
+		{
+			return false;
+		}
+		bool recovered = false;
+		const bool ready = retail::NativeGameApi::RecoverMissingGPigRdvTracks(
+			source_motor, source_task, destination_motor, destination_task, recovered);
+		if (recovered)
+		{
+			CoopRuntime::Instance().Log(
+				"[abr-track] native path binding recovered source=%p destination=%p local=%u\r\n",
+				retail::ToPointer(source.value), retail::ToPointer(destination.value),
+				retail::EntitySlotRepository().GetSelectable(
+					retail::EntitySlot::LocalP1) == destination ? 1u : 0u);
+		}
+		return ready;
+	}
+
 	bool Player2Module::IsRdvSpawnOwnerValid(retail::EntityRef context_owner,
 		retail::EntityRef local_player) const
 	{
@@ -898,6 +948,9 @@ namespace coop
 			local_entity.WriteTransform(old_transform);
 			return;
 		}
+		// The spawn configurator does not carry the track trigger's path IDs.
+		// Bind the missing paths at this seeded position before native ABR entry.
+		RecoverRdvTracksForEntity(remote.entity, local.entity);
 		const bool accepted = retail::ControllerView(local.controller).
 			SelectMode(kAbrModeId);
 		const std::uint32_t selected_mode = GetModeId(player1_controller);
@@ -1318,6 +1371,15 @@ namespace coop
 		// network Black Pig exists, swap the two complete entities and continue this
 		// same guaranteed local tick with the promoted Black Pig controller.
 		PromoteClientBlackPigToPlayer1(player1_controller);
+		if (m_client_black_pig_promoted &&
+			GetModeId(player1_controller) == kAbrModeId)
+		{
+			// A late-spawned Black Pig may have entered ABR before promotion.
+			// Its mode alone does not prove that it received the track trigger.
+			// Fill only an empty path table; all driving/heading stays native.
+			RecoverRdvTracksForEntity(m_client_original_darwin_entity,
+				m_client_black_pig_entity);
+		}
 		if (m_client_black_pig_promoted && player1_controller &&
 			GetModeId(player1_controller) == kInactiveModeId)
 		{
@@ -2143,7 +2205,12 @@ namespace coop
 				// must supply activation, the motor step and root restoration alike.
 				netgame.ApplyRemoteAbrTransform(player2);
 				if (abr_task_ready)
+				{
+					// Resolve a missing path from this packet's settled position,
+					// before native activation/step samples its tangent.
+					RecoverRdvTracksForEntity(player1_ref, player2_ref);
 					TryEnterPlayer2AbrMode(controller);
+				}
 				// P2 never owns physical movement input. Clear the one-shot lane
 				// latch before the vehicle tick and after the remote Fire fallback.
 				SetAbrDriveGate(player2, false);

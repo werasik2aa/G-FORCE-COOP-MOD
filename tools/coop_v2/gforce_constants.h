@@ -606,6 +606,26 @@ constexpr size_t kModeIdOffset = 0x08u;
 		constexpr uintptr_t kGPigRdvTaskVtable = 0x006FC27Cu;
 		constexpr size_t kGPigRdvTaskEnabledOffset = 0x30u;
 		constexpr uint8_t kGPigRdvTaskEnabledValue = 1u;
+		// The native track trigger 0x43F970 fills eight local path IDs. Late
+		// network spawns miss that trigger. 0x4CA1E0 builds resource-owned path
+		// handles and resolves the requested path at the target entity position.
+		constexpr size_t kGPigRdvTaskTrackIdsOffset = 0x04u;
+		constexpr size_t kGPigRdvTrackCount = 8u;
+		constexpr size_t kGPigRdvTaskRequestedTrackOffset = 0x38u;
+		constexpr size_t kGPigRdvResourceTrackIndexOffset = 0x4Cu;
+		constexpr size_t kGPigRdvResourceTrackParameterOffset = 0x64u;
+		constexpr uintptr_t kFindGPigRdvMotor = 0x0040CCD0u;
+		constexpr uintptr_t kRefreshGPigRdvTracks = 0x004CA1E0u;
+		constexpr uintptr_t kGetGPigRdvCurrentTrack = 0x004C9320u;
+		constexpr uint8_t kExpectedFindGPigRdvMotor[] = {
+			0x56, 0x57, 0x8B, 0xF9, 0x33, 0xF6, 0x39, 0x77, 0x10
+		};
+		constexpr uint8_t kExpectedRefreshGPigRdvTracks[] = {
+			0x6A, 0xFF, 0x68, 0xBB, 0x89, 0x6D, 0x00
+		};
+		constexpr uint8_t kExpectedGetGPigRdvCurrentTrack[] = {
+			0x8B, 0x41, 0x4C, 0x85, 0xC0, 0x7C, 0x0C
+		};
 		// XMotorTask_RDV constructor initializes all three to 1.0. The native
 		// 0x4CA480 update moves current speed toward target by rate*dt, and
 		// 0x4CA5C0 returns current speed multiplied by the RDV tuning value.

@@ -359,6 +359,33 @@ namespace retail
         bool operator!=(const MotorTaskRef& other) const { return !(*this == other); }
     };
 
+    // Local resource IDs from the native ABR track trigger; never wire data
+    // or copies of the resource's allocated path handles/heading.
+    struct RdvTrackIds final
+    {
+        std::uint32_t value[gforce::kGPigRdvTrackCount];
+
+        bool Empty() const
+        {
+            for (const std::uint32_t id : value)
+                if (id != 0)
+                    return false;
+            return true;
+        }
+
+        bool Valid() const
+        {
+            for (const std::uint32_t id : value)
+                if (id != 0 && ((id & 0xFFFF0000u) != 0x0B000000u ||
+                    (id & 0xFFFFu) == 0))
+                    return false;
+            return true;
+        }
+    };
+
+    static_assert(sizeof(RdvTrackIds) == 8 * sizeof(std::uint32_t),
+        "RDV path IDs must preserve the eight native task entries");
+
     // Opaque native context forwarded by the stock GPig factory.  Only its
     // flags and linked active entity are exposed by SpawnContextView.
     struct SpawnContextRef final

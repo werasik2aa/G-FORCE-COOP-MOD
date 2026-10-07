@@ -105,6 +105,8 @@ namespace coop
 			std::uint32_t mode_id);
 		bool SetAbrDriveGate(void* player, bool active);
 		bool SetLocalAbrPropulsion(void* player, float direction);
+		bool RecoverRdvTracksForEntity(retail::EntityRef source,
+			retail::EntityRef destination);
 
 		void TickPlayer1(void* player1_controller);
 		void HandlePlayer1ModeTransition(void* player1_controller);

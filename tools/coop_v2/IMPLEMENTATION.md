@@ -625,6 +625,28 @@ before the remote tick runs, and restoration checks the same handler identity.
 This fixes a concrete snapshot omission; visual RDV part turning and Black Pig
 steering still require a live test and are not established by a successful build.
 
+Late network spawns can miss the native track trigger: `0x0043F970` writes
+eight path IDs only into RDV tasks that exist when it runs. Enabling a new
+RDV task with the spawn configurator does not populate those IDs. When one
+selectable GPig has a valid current native path and the other has an empty
+path table, co-op copies only these process-local IDs and requests that path
+through `0x004CA1E0`. Native code constructs the destination's own handles
+and resolves its spline parameter from its position. The source spline cursor,
+resource heading, attached parts and ownership flags are never copied.
+This runs before local Black Pig ABR ticks (including promotion in an already
+active ABR), at the seeded late-join entry, and after the remote task and
+accepted packet root are ready before its native activation/step.
+Existing nonempty selections remain native. A failed binding restores task
+request fields for retry; it does not block native ABR entry.
+`[abr-track] native path binding recovered ... local=1` identifies a recovery
+for the client's local Black Pig; `local=0` identifies the remote presentation.
+Recovery can also happen while Black Pig is still RemoteP2, before its promotion;
+correlate the destination pointer with the following `[client-role]` line.
+The static route and Release build are verified; turning in DATA1 still needs
+the user's two-process test. Ordinary camera refresh is deliberately skipped
+in ABR: `0x005B03A0` writes look axes into the same direction window and cannot
+recover track ownership.
+
 The global `WorldObjectEvent` rollback was falsified: the ABR fixed-point crash
 persisted while the rollback regressed remote door/card effects. Object-event
 queue and ingress are restored. Any older claim that ABR suppresses all world
@@ -645,7 +667,8 @@ ABR and that the verified P2 RDV task is configured. Only then it changes P2's
 registered ABR conflict mask `3 -> 2` (dropping the exclusive active-owner bit)
 and uses the stock state dispatcher to enter P2 ABR from Default. Death, Ledge,
 cutscene and other P2 modes are not overridden. The P2 ABR tick receives only
-the remote `0x10000014` press/held/release input. The local P1 camera fields and
+the remote `0x10000014` press/held/release input and native steering axes 0/1
+(positive/backward axis 1 is suppressed). The local P1 camera fields and
 active-entity pair are restored after that tick. If both owners later report
 Default, P2 leaves ABR through the same stock dispatcher. This is a guarded
 native-mode test, **not yet a confirmed remote beam fix**. The next two-process
