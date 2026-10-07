@@ -1826,6 +1826,14 @@ namespace retail
         std::uint8_t value;
         std::int32_t threshold;
         std::uint32_t state_flags;
+        std::uint8_t disabled_flags;
+
+        // True when the stock forwarder would reach OnEvent and OnEvent would
+        // mutate the value (see kTriggerCounterDisabledOffset).
+        bool IsMutable() const
+        {
+            return (disabled_flags & 1u) == 0 && (state_flags & 2u) == 0;
+        }
     };
 
     class TriggerView final
@@ -1844,7 +1852,9 @@ namespace retail
                 TryRead(AddOffset(trigger_.value,
                     gforce::kTriggerCounterThresholdOffset), out.threshold) &&
                 TryRead(AddOffset(trigger_.value,
-                    gforce::kTriggerStateFlagsOffset), out.state_flags);
+                    gforce::kTriggerStateFlagsOffset), out.state_flags) &&
+                TryRead(AddOffset(trigger_.value,
+                    gforce::kTriggerCounterDisabledOffset), out.disabled_flags);
         }
 
         bool Identity(TriggerIdentity& out) const

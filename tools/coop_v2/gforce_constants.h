@@ -379,6 +379,9 @@ namespace coop
 		constexpr uintptr_t kTriggerCounterVtable = 0x006F496Cu;
 		constexpr size_t kTriggerCounterValueOffset = 0x137u;
 		constexpr size_t kTriggerCounterThresholdOffset = 0x0Cu;
+		// Counter OnEvent 0x00440D3E returns before mutating when bit 0 of this
+		// byte is set; forwarder 0x0046D6FB skips OnEvent when state bit 1 is set.
+		constexpr size_t kTriggerCounterDisabledOffset = 0x10Cu;
 		constexpr size_t kTriggerStateFlagsOffset = 0x110u;
 		constexpr size_t kTriggerSpawnIdOffset = 0x130u;
 		// The native spawn routine stores its freshly constructed game object here.

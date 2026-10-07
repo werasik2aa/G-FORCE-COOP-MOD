@@ -58,6 +58,11 @@ namespace protocol
     // same local spawner, which is what previously produced duplicate mobs.
     constexpr std::uint32_t kWorldObjectEventRouteEntityTriggerActivation = 3u;
     constexpr std::uint32_t kWorldObjectEventRouteEntityTriggerRequest = 4u;
+    // One XTrigger_TR_Counter mutation that changed native value/state on the
+    // sender. Counters cross only through this route: a replayed chain never
+    // touches a counter, and each side's ledger pairs a local mutation with the
+    // peer's matching one so the same logical event is counted once.
+    constexpr std::uint32_t kWorldObjectEventRouteCounter = 5u;
 
     // Native event routes do not expose a process-neutral object pointer. The
     // receiver resolves the matching map template by family/subtype/definition,

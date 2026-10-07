@@ -58,6 +58,13 @@ namespace coop
 		// Game-thread: the host publishes an entity's current absolute HP through a
 		// reliable packet. Client replicas never feed their local AI damage back.
 		bool ReportLocalDamage(void* entity, int event_code);
+		// XTrigger_TR_Counter ledger (game thread only). Both peers simulate the
+		// same map, so one logical increment is usually observed by both. Each
+		// local native mutation either consumes a recent matching peer mutation
+		// (returns true: the caller must skip the native call) or is published.
+		bool ConsumePeerCounterCredit(void* counter, int event_code);
+		void PublishLocalCounterChange(void* counter, std::uint32_t counter_vtable,
+			int event_code);
 		// Returns the world id of a linked entity, or zero when untracked.
 		std::uint32_t WorldIdOfEntity(void* entity) const;
 		// Read-only game-thread lookup used by the native health hooks. It proves
@@ -266,6 +273,18 @@ namespace coop
 		std::vector<TriggerCounter> m_host_trigger_counters;
 		std::vector<TriggerCounter> m_client_trigger_counters;
 		std::vector<TriggerTemplate> m_trigger_templates;
+		struct CounterLedgerEntry
+		{
+			void* counter;
+			std::uint32_t kind;
+			DWORD tick;
+			bool from_peer;
+		};
+		std::vector<CounterLedgerEntry> m_counter_ledger;
+		bool TakeCounterLedgerEntry(void* counter, std::uint32_t kind,
+			bool from_peer, DWORD now);
+		void ApplyRemoteCounterEvent(const WorldObjectEventPacket& packet,
+			void* target, const char* match_kind);
 		std::vector<HostEntity> m_host_entities;
 		std::vector<ClientEntity> m_client_entities;
 		std::vector<std::uint32_t> m_stale_client_world_ids;

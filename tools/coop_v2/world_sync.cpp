@@ -108,7 +108,8 @@ namespace coop
 		return route == protocol::kWorldObjectEventRouteRelay ||
 			route == protocol::kWorldObjectEventRouteForwarder ||
 			route == protocol::kWorldObjectEventRouteEntityTriggerActivation ||
-			route == protocol::kWorldObjectEventRouteEntityTriggerRequest;
+			route == protocol::kWorldObjectEventRouteEntityTriggerRequest ||
+			route == protocol::kWorldObjectEventRouteCounter;
 	}
 
 	bool IsEntityTriggerRoute(std::uint32_t route)
@@ -305,6 +306,7 @@ namespace coop
 
 	void WorldSync::ClearGameState()
 	{
+		m_counter_ledger.clear();
 		m_host_trigger_counters.clear();
 		m_client_trigger_counters.clear();
 		m_trigger_templates.clear();
@@ -903,6 +905,121 @@ namespace coop
 		return queued;
 	}
 
+	namespace
+	{
+		// Peer mutations of the same counter that arrive within this window are
+		// treated as one logical event. Increments are fungible, so pairing only
+		// needs the counter and the mutation kind, not a cause identity.
+		constexpr DWORD kCounterLedgerWindowMs = 3000;
+		constexpr size_t kMaxCounterLedgerEntries = 256;
+
+		// Mirrors 0x00440D66..0x00440D84: low16 0x53 decrements, 0x64 resets,
+		// every other event increments.
+		std::uint32_t CounterEventKind(int event_code)
+		{
+			const std::uint32_t low = static_cast<std::uint32_t>(event_code) & 0xFFFFu;
+			return low == 0x53u || low == 0x64u ? low : 1u;
+		}
+	}
+
+	bool WorldSync::TakeCounterLedgerEntry(void* counter, std::uint32_t kind,
+		bool from_peer, DWORD now)
+	{
+		bool taken = false;
+		for (std::vector<CounterLedgerEntry>::iterator it = m_counter_ledger.begin();
+			it != m_counter_ledger.end();)
+		{
+			if (static_cast<DWORD>(now - it->tick) > kCounterLedgerWindowMs)
+			{
+				it = m_counter_ledger.erase(it);
+				continue;
+			}
+			if (!taken && it->counter == counter && it->kind == kind &&
+				it->from_peer == from_peer)
+			{
+				it = m_counter_ledger.erase(it);
+				taken = true;
+				continue;
+			}
+			++it;
+		}
+		return taken;
+	}
+
+	bool WorldSync::ConsumePeerCounterCredit(void* counter, int event_code)
+	{
+		if (!counter || !CoopNetGame::Instance().HasRemotePeer())
+			return false;
+		return TakeCounterLedgerEntry(counter, CounterEventKind(event_code), true,
+			GetTickCount());
+	}
+
+	void WorldSync::PublishLocalCounterChange(void* counter,
+		std::uint32_t counter_vtable, int event_code)
+	{
+		if (!counter || !CoopNetGame::Instance().HasRemotePeer())
+			return;
+		if (!QueueObjectEvent(counter, counter_vtable, event_code,
+			protocol::kWorldObjectEventRouteCounter))
+		{
+			return;
+		}
+		if (m_counter_ledger.size() >= kMaxCounterLedgerEntries)
+			m_counter_ledger.erase(m_counter_ledger.begin());
+		CounterLedgerEntry entry = {};
+		entry.counter = counter;
+		entry.kind = CounterEventKind(event_code);
+		entry.tick = GetTickCount();
+		entry.from_peer = false;
+		m_counter_ledger.push_back(entry);
+	}
+
+	void WorldSync::ApplyRemoteCounterEvent(const WorldObjectEventPacket& packet,
+		void* target, const char* match_kind)
+	{
+		const DWORD now = GetTickCount();
+		const std::uint32_t kind = CounterEventKind(packet.event_code);
+		if (TakeCounterLedgerEntry(target, kind, false, now))
+		{
+			CoopRuntime::Instance().Log(
+				"[counter-sync] peer seq=%u matched local mutation target=%p event=%08X; not applied twice\r\n",
+				packet.sequence, target, static_cast<unsigned>(packet.event_code));
+			return;
+		}
+		const retail::TriggerView view(retail::TriggerRef{ retail::ToAddress(target) });
+		retail::TriggerCounterState before = {};
+		if (!view.ReadCounterState(before))
+		{
+			CoopRuntime::Instance().Log(
+				"[counter-sync] peer seq=%u target=%p is not a live counter\r\n",
+				packet.sequence, target);
+			return;
+		}
+		const bool replayed = CoopNetGame::Instance().ReplayObjectEvent(target,
+			packet.event_code, protocol::kWorldObjectEventRouteForwarder);
+		retail::TriggerCounterState after = {};
+		const bool have_after = view.ReadCounterState(after);
+		CoopRuntime::Instance().Log(
+			"[counter-sync] peer seq=%u applied target=%p match=%s event=%08X value=%u->%u threshold=%d mutable=%u native=%u\r\n",
+			packet.sequence, target, match_kind,
+			static_cast<unsigned>(packet.event_code),
+			static_cast<unsigned>(before.value),
+			static_cast<unsigned>(have_after ? after.value : before.value),
+			before.threshold, before.IsMutable() ? 1u : 0u, replayed ? 1u : 0u);
+		// A local copy that could not mutate gives no credit: a later local
+		// mutation is then a real, separate event.
+		if (!before.IsMutable())
+			return;
+		if (m_counter_ledger.size() >= kMaxCounterLedgerEntries)
+			m_counter_ledger.erase(m_counter_ledger.begin());
+		CounterLedgerEntry entry = {};
+		entry.counter = target;
+		entry.kind = kind;
+		entry.tick = now;
+		entry.from_peer = true;
+		m_counter_ledger.push_back(entry);
+	}
+
 	bool WorldSync::QueueProgressionRally(void* source,
 		std::uint32_t source_vtable, int event_code)
 	{
@@ -1089,6 +1206,11 @@ namespace coop
 				packet.sequence, target, match_kind,
 				static_cast<unsigned>(packet.event_code));
 			replayed = true;
+		}
+		else if (packet.route == protocol::kWorldObjectEventRouteCounter)
+		{
+			ApplyRemoteCounterEvent(packet, target, match_kind);
+			return;
 		}
 		else
 		{

@@ -607,6 +607,41 @@ not approved new hooks. A successful object route alone is not a start signal.
 The current rally now keeps only the newest pending destination but still needs
 two-process confirmation and exact activation provenance.
 
+## Counter ledger — 2026-10-07
+
+Evidence (runtime log, retail `0x00440D30`): `XTrigger_TR_Counter::OnEvent`
+returns unchanged when byte `+0x10C` bit 0 is set; otherwise low16 `0x53`
+decrements, `0x64` resets and every other event increments, and its outputs fire
+only when the new value **equals** the threshold. The forwarder `0x0046D6F0`
+skips OnEvent when `[+0x110]` bit 1 is set. Two defects followed:
+
+- an output helper (caller `0x0053CD9C`) pulses `0x41080010` at a disabled
+  counter every frame. Each pulse was a no-op locally but was queued as a
+  reliable route-2 packet (about 6,500 in one session) and replayed through the
+  trampoline on a peer whose copy was enabled, so it silently incremented there;
+- one logical increment observed natively by both processes was also replayed
+  from the peer (`native 1->2` reaching threshold 2, then `peer-replay 2->3`),
+  firing outputs at half the real progress.
+
+Counters now cross processes only through `kWorldObjectEventRouteCounter` (5),
+and only after a local native forwarder call actually changed value/state flags
+of a mutable counter. Replayed relay/forwarder routes never queue a counter target
+and, inside a replay, a mutable counter call is suppressed (the peer publishes its
+own mutation). A per-counter ledger pairs mutations by kind (inc/dec/reset) for
+3 s: a received mutation that matches an unpaired local one is not applied, and a
+local native mutation that matches an unpaired applied peer one is skipped before
+OnEvent. Increments are fungible, so pairing needs no cause identity. Unchanged
+calls are no longer logged as `[world-counter]`. `ReplayTriggerEvent` now enters
+the remote replay scope, so relays nested under a replayed dispatcher are not
+echoed back. Calls that reach a counter's OnEvent outside `0x0046D6F0` (for
+example the global forwarder `0x0046D760`) are not covered.
+
+Build-verified only; **not live-tested**. Expected evidence is
+`[counter-sync] peer seq=... applied`, `... matched local mutation` or
+`local duplicate of peer mutation suppressed`, with doors/cutscenes driven by
+counters firing once at the real threshold on both peers. Both peers must run the
+same DLL: an older receiver rejects route 5.
+
 ## Current ABR state — RDV root-transform test
 
 For a client joining during the cutscene before a track, the promoted Black Pig

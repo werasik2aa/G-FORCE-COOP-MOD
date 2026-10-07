@@ -3681,10 +3681,14 @@ namespace coop
 				static_cast<std::uint32_t>(source_vtable), event_code);
 			// This route accepts only registered non-entity map templates. Nested
 			// relays and `sub_46D6F0` are part of this exact call and are recreated
-			// by the peer's relay; neither is queued a second time.
-			WorldSync::Instance().QueueObjectEvent(source,
-				static_cast<std::uint32_t>(source_vtable), event_code,
-				protocol::kWorldObjectEventRouteRelay);
+			// by the peer's relay; neither is queued a second time. A relay whose
+			// target is a counter is carried by the counter route instead.
+			if (source_vtable != gforce::kTriggerCounterVtable)
+			{
+				WorldSync::Instance().QueueObjectEvent(source,
+					static_cast<std::uint32_t>(source_vtable), event_code,
+					protocol::kWorldObjectEventRouteRelay);
+			}
 		}
 		return result;
 	}
@@ -3700,6 +3704,32 @@ namespace coop
 			retail::TriggerRef{ retail::ToAddress(object) });
 		retail::TriggerCounterState counter_before = {};
 		const bool have_counter_before = counter_view.ReadCounterState(counter_before);
+		// Counters cross processes only through kWorldObjectEventRouteCounter. A
+		// replayed peer chain must not mutate one (the peer publishes that mutation
+		// itself), and a local mutation the peer already published is not repeated.
+		// Without this, a per-frame no-op on a disabled sender counter and the
+		// stacked native+replay increments overshot equality thresholds.
+		const bool counter_sync = have_counter_before && HasRemotePeer() &&
+			counter_before.IsMutable() &&
+			(static_cast<std::uint32_t>(event_code) & 0xFF000000u) == 0x41000000u;
+		if (counter_sync)
+		{
+			const bool replay_chain = IsRemoteObjectEventReplayActive();
+			if (replay_chain ||
+				WorldSync::Instance().ConsumePeerCounterCredit(object, event_code))
+			{
+				CoopRuntime::Instance().Log(
+					"[counter-sync] local %s suppressed caller=%08X object=%p event=%08X value=%u threshold=%d\r\n",
+					replay_chain ? "replay-chain mutation" : "duplicate of peer mutation",
+					static_cast<unsigned>(caller_return_address), object,
+					static_cast<unsigned>(event_code),
+					static_cast<unsigned>(counter_before.value),
+					counter_before.threshold);
+				// The stock forwarder's return is an unspecified register value;
+				// its callers (relay 0x41E890 and output helpers) discard it.
+				return 1;
+			}
+		}
 		int result = 0;
 		++g_object_event_route_depth;
 		__try
@@ -3716,7 +3746,18 @@ namespace coop
 		}
 		--g_object_event_route_depth;
 		retail::TriggerCounterState counter_after = {};
-		if (have_counter_before && counter_view.ReadCounterState(counter_after))
+		const bool counter_changed = have_counter_before &&
+			counter_view.ReadCounterState(counter_after) &&
+			(counter_after.value != counter_before.value ||
+				counter_after.state_flags != counter_before.state_flags);
+		if (counter_changed && counter_sync)
+		{
+			WorldSync::Instance().PublishLocalCounterChange(object,
+				static_cast<std::uint32_t>(gforce::kTriggerCounterVtable), event_code);
+		}
+		// Unchanged calls are frequent per-frame output pulses; logging them made
+		// the runtime log itself a frame-time cost.
+		if (counter_changed)
 		{
 			CoopRuntime::Instance().Log(
 				"[world-counter] origin=%s caller=%08X object=%p event=%08X "
@@ -3782,7 +3823,11 @@ namespace coop
 		{
 			WorldSync::Instance().QueueProgressionRally(object,
 				static_cast<std::uint32_t>(object_vtable), event_code);
-			if (IsCanonicalObjectEventReceiver(receiver))
+			if (have_counter_before)
+			{
+				// Published above through the counter route when it changed.
+			}
+			else if (IsCanonicalObjectEventReceiver(receiver))
 			{
 				WorldSync::Instance().QueueObjectEvent(object,
 					static_cast<std::uint32_t>(object_vtable), event_code,
@@ -3968,17 +4013,27 @@ namespace coop
 			family, subtype, definition_id);
 		if (!template_trigger)
 			return false;
+		const std::uint32_t saved_route_depth = g_object_event_route_depth;
+		const std::uint32_t saved_replay_depth = g_remote_object_event_replay_depth;
 		__try
 		{
 			if (m_original_trigger_event)
 			{
+				// Nested relays/forwarders belong to this peer event; without the
+				// replay scope they were treated as local and sent back.
+				++g_remote_object_event_replay_depth;
+				++g_object_event_route_depth;
 				m_original_trigger_event(template_trigger, event_code);
+				--g_object_event_route_depth;
+				--g_remote_object_event_replay_depth;
 				return true;
 			}
 			return SpawnWorldFromTrigger(template_trigger);
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
+			g_object_event_route_depth = saved_route_depth;
+			g_remote_object_event_replay_depth = saved_replay_depth;
 			CoopRuntime::Instance().Log(
 				"[world-trigger-event] native replay fault family=%08X subtype=%08X definition=%d event=%d\r\n",
 				family, subtype, definition_id, event_code);
