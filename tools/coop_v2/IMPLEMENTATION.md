@@ -607,6 +607,27 @@ not approved new hooks. A successful object route alone is not a start signal.
 The current rally now keeps only the newest pending destination but still needs
 two-process confirmation and exact activation provenance.
 
+## Playtest triage — 2026-10-07 (branch `playtest-feedback-2026-10`)
+
+User-reported items, with the static/log evidence gathered so far. Only the first
+two rows have code changes; every row still needs a two-process test.
+
+| Report | Status | Evidence / next boundary |
+| --- | --- | --- |
+| Doors stay closed, entities desync, counters/cutscenes fire early | **Changed**: counter ledger (below) | Runtime log: about 6,500 per-frame no-op counter pulses replayed into the peer, and native+replay double increments against equality thresholds. |
+| Death respawns at level start behind closed doors | **Changed**: respawn point sync (below) | `0x0043EA70` registers checkpoints only for GPig slot 1; the remote presentation never does. |
+| Weapon names | Finding | Item factory `0x005424E0`: `0x50000003` (called "saberizer" in older notes) is `XItemHandler_WeaponChipImplanter`, the appliance hacker, not a separate scanner. `0x50000000` Taser, `0x50000001` Missile, `0x50000010/11/0A` Beam, `0x50000012/0E/16` MultiMissile, `0x50000013` ClusterRifle, `0x50000006` Grapple. In-game names still need user confirmation. |
+| Green "scan" screen on any shot | Open | ChipImplanter `0x911CC0` effect calls (`0x0059F056`, `0x0059F6EC`) are keyed to the weapon object, not the screen. Camera `0x00528685` sets `+0x129` only when slot-1 GPig is active and holds `0x50000003`. The global driver is still unknown. |
+| HeatVision on P2 | Open, analysed | `XItemHandler_GadgetGoggle` update `0x00591750`: requested mode `+0x660`, applied `+0x65C`; mode 2 adds camera post-FX `0x2D70004A`/`0x2D7011E2` plus `0x009154F0`, mode 1 adds `0x2D700045`/`0x2D70004C` plus `0x00914648` and plays owner animation `0x6005002C` through `0x005366C0`. All render effects are global, with no owner check. Showing P2's goggles needs a non-P1 path that keeps only that animation/attachment; the TAB toggle has no logical action. |
+| Hacked mob / laser not synced on host | Open | Hacking is the ChipImplanter route above; its hit/convert event still needs a live trace. |
+| Hackable vacuum (pre-last chapter), antenna shield | Open | Classes `XController_EnemyVacuumCleaner`, `XTrigger_MO_VacuumCleaner`, `XItemHandler_Shield`, `XTrigger_OB_Shield`; no ownership/control route recovered. |
+| ABR turn delay, crooked remote Black Pig | Open (active upstream work) | Needs a log from the current ABR build (`[abr-track]`, `[client-role]`). |
+| Level unloads itself | Open | No `XTrigger_FS_*` streaming event was replicated in the archived log; only `TR_LoadLevel`/`TR_Killzone`/`TR_Hurtzone` enable (`0x41080022`) and disable (`0x41080021`) toggles were. |
+| Cutscenes kill a player | Open | Same enable/disable toggles of `XTrigger_TR_Killzone` are replicated; whether one is enabled under the peer's player during a cutscene needs a log. |
+| Central servers Wi-Fi doors | Open | Needs that level's log with the counter ledger build. |
+| Different P2 model, character select | Open | Factory `0x00545370` builds through `0x00535440(..., id, 0x0070C650, context)`; P2 reuses P1's spawn context and so its character template. |
+| Mooch attach does not disable devices remotely | Open | No replicated route recovered for attach/disable. |
+
 ## Counter ledger — 2026-10-07
 
 Evidence (runtime log, retail `0x00440D30`): `XTrigger_TR_Counter::OnEvent`
