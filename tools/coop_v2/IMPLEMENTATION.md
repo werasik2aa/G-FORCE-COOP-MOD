@@ -79,10 +79,14 @@ cutscene class was also seen on the successful object-event route. After the
 original relay, forwarder or trigger dispatcher reports a nonzero result, the
 game thread may queue one 60-byte reliable ProgressionRallyPacket. It contains
 only a sequence, a reason and the finite P1 root transform—never a retail
-pointer, a generic event opcode or a raw trigger identity. The source process
-uses that same snapshot to move its P2 presentation; the peer moves local P1
-on its next game tick. Duplicate source/event observations are suppressed for
-750 ms. Remote object-event replay cannot generate a rally back to its sender.
+pointer, a generic event opcode or a raw trigger identity. The first peer whose
+classified cutscene/checkpoint activation queues the rally supplies the gather
+point. The source process moves its remote P2 presentation; the receiving
+process applies the same snapshot to both LocalP1 and RemoteP2 slots together,
+waiting until both are ready and neither is in ABR. This is independent of
+player model and role-promotion timing. Duplicate source/event observations are
+suppressed for 750 ms. Remote object-event replay cannot generate a rally back
+to its sender.
 
 The rally writer uses retail::EntityView::WriteTransform, including normal
 transform-cache invalidation. It does not change controller mode, invent input,

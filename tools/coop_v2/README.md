@@ -431,13 +431,15 @@ XTrigger_PL_CheckPoint DLL создаёт отдельный 60-byte reliable
 ProgressionRallyPacket: причина, sequence и finite root transform P1.
 Это не generic object-event и не packet с указателем объекта. Инициирующий
 процесс сразу ставит к P1 свою remote P2-копию; peer применяет тот же transform
-к своему P1 на ближайшем game tick. ABR не перезаписывается — такой packet ждёт
-завершения ABR. Native object-event replay не создаёт обратный rally, а
-source/event подавляется на 750 ms.
+к обоим кооп-слотам (LocalP1 и RemoteP2) на game tick. Точка из первого
+успешного activation packet — общая точка сбора независимо от модели игрока.
+Пакет ждёт, пока обе сущности доступны и ни одна не находится в ABR; модель
+персонажа и этап role promotion не являются условиями. Native object-event
+replay не создаёт обратный rally, а source/event подавляется на 750 ms.
 
 Проверка в двух окнах: дать host или client запустить катсцену, затем отдельно
 перейти checkpoint за закрывающейся дверью. В обоих случаях ожидаются строки
-[progression-rally] queued, moved remote P2, received и applied to local P1.
+[progression-rally] queued, moved remote P2, received и `moved both peer slots`.
 Это build-verified, пока not-tested в живой игре; смерть после катсцены и world
 streaming остаются отдельными задачами.
 

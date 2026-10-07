@@ -30,12 +30,12 @@ namespace coop
 		// Called during native save load / transition to clear P2 state
 		// and prevent crashes from stale entity pointers.
 		void ResetForWorldLoad();
-		// Applies a one-shot progression rally to the local representation. The
-		// source process moves its remote P2 copy; the receiving process moves its
-		// local P1. Both use the same finite root snapshot and cache invalidation.
+		// Applies a one-shot progression rally. The source process moves its remote
+		// P2 copy; the receiving process gathers both selectable co-op player slots
+		// at the initiator's finite root snapshot.
 		bool ApplyProgressionRallyToRemoteP2(const retail::Transform& transform,
 			protocol::ProgressionRallyReason reason, std::uint32_t sequence);
-		bool ApplyProgressionRallyToLocalP1(const retail::Transform& transform,
+		bool ApplyProgressionRallyToPeerPlayers(const retail::Transform& transform,
 			protocol::ProgressionRallyReason reason, std::uint32_t sequence);
 
 	private:

@@ -1858,14 +1858,14 @@ namespace coop
 			retail::Transform transform = {};
 			memcpy(&transform.position, it->position, sizeof(transform.position));
 			memcpy(&transform.rotation, it->rotation, sizeof(transform.rotation));
-			if (!Player2Module::Instance().ApplyProgressionRallyToLocalP1(transform,
+			if (!Player2Module::Instance().ApplyProgressionRallyToPeerPlayers(transform,
 				it->reason, it->sequence))
 			{
 				++it;
 				continue;
 			}
 			CoopRuntime::Instance().Log(
-				"[progression-rally] applied %s seq=%u to local P1\r\n",
+				"[progression-rally] applied %s seq=%u to both peer player slots\r\n",
 				ProgressionRallyReasonName(it->reason), it->sequence);
 			it = m_pending_rallies.erase(it);
 		}

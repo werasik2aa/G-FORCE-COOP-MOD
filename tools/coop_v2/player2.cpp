@@ -1350,12 +1350,67 @@ namespace coop
 			reason, sequence, "remote P2");
 	}
 
-	bool Player2Module::ApplyProgressionRallyToLocalP1(
+	bool Player2Module::ApplyProgressionRallyToPeerPlayers(
 		const retail::Transform& transform,
 		protocol::ProgressionRallyReason reason, std::uint32_t sequence)
 	{
-		return ApplyProgressionRally(retail::EntitySlot::LocalP1, transform,
-			reason, sequence, "local P1");
+		if (sequence == 0 ||
+			(reason != protocol::ProgressionRallyReason::Cutscene &&
+				reason != protocol::ProgressionRallyReason::Checkpoint) ||
+			!IsFiniteProgressionTransform(transform))
+		{
+			return false;
+		}
+
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding local = {};
+		retail::EntitySlotBinding remote = {};
+		if (!players.GetBinding(retail::EntitySlot::LocalP1, local) ||
+			!local || !players.GetBinding(retail::EntitySlot::RemoteP2, remote) ||
+			!remote)
+		{
+			return false;
+		}
+
+		void* const local_controller =
+			retail::ToPointer(local.controller.value);
+		void* const remote_controller =
+			retail::ToPointer(remote.controller.value);
+		// Never write an on-foot rally into either active ABR vehicle.
+		if ((local_controller && GetModeId(local_controller) == kAbrModeId) ||
+			(remote_controller && GetModeId(remote_controller) == kAbrModeId))
+		{
+			return false;
+		}
+
+		const retail::EntityView local_entity(local.entity);
+		const retail::EntityView remote_entity(remote.entity);
+		retail::Transform old_local = {};
+		retail::Transform old_remote = {};
+		if (!local_entity.ReadTransform(old_local) ||
+			!IsFiniteProgressionTransform(old_local) ||
+			(remote.entity != local.entity &&
+				(!remote_entity.ReadTransform(old_remote) ||
+					!IsFiniteProgressionTransform(old_remote))))
+		{
+			return false;
+		}
+
+		if (!local_entity.WriteTransform(transform))
+			return false;
+		if (remote.entity != local.entity &&
+			!remote_entity.WriteTransform(transform))
+		{
+			local_entity.WriteTransform(old_local);
+			return false;
+		}
+
+		CoopRuntime::Instance().Log(
+			"[progression-rally] moved both peer slots seq=%u local=%p remote=%p target=(%.2f,%.2f,%.2f)\r\n",
+			sequence, retail::ToPointer(local.entity.value),
+			retail::ToPointer(remote.entity.value), transform.position.x,
+			transform.position.y, transform.position.z);
+		return true;
 	}
 
 	bool Player2Module::ApplyProgressionRally(retail::EntitySlot slot,
@@ -1375,7 +1430,6 @@ namespace coop
 		retail::EntitySlotBinding binding = {};
 		if (!players.GetBinding(slot, binding) || !binding.entity)
 			return false;
-
 		void* const controller = retail::ToPointer(binding.controller.value);
 		// A vehicle owns its own root and attached presentation.  Keep the rally
 		// pending rather than writing an on-foot correction into ABR.
@@ -1387,8 +1441,9 @@ namespace coop
 			return false;
 
 		CoopRuntime::Instance().Log(
-			"[progression-rally] moved %s seq=%u target=(%.2f,%.2f,%.2f)\r\n",
+			"[progression-rally] moved %s seq=%u entity=%p target=(%.2f,%.2f,%.2f)\r\n",
 			recipient ? recipient : "player", sequence,
+			retail::ToPointer(binding.entity.value),
 			transform.position.x, transform.position.y, transform.position.z);
 		return true;
 	}
