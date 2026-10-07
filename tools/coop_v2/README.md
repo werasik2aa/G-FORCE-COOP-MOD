@@ -368,8 +368,8 @@ Runtime proof: `[abr-transform] peer ABR root transform active for P2/RDV`.
 и принимает явный путь через `GFORCE_VCVARSALL`; более новый установленный
 компилятор — лишь локальный fallback.
 
-Проект `coop_dll` использует локально установленный x86 SDK Steamworks и
-GameNetworkingSockets в папке `SteamWorksSDK` (эта папка не публикуется). Путь
+Проект `coop_dll` использует включённый в репозиторий x86 SDK Steamworks и
+GameNetworkingSockets в папке `SteamWorksSDK`. Путь
 можно переопределить MSBuild-свойством `GnsSdkRoot`.
 Runtime-путь задаётся свойством `GnsRuntimeRoot`. В линковку добавлены
 `GameNetworkingSockets.lib` и `steam_api.lib`; runtime DLL автоматически копируются
