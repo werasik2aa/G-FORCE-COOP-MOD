@@ -63,6 +63,10 @@ namespace protocol
     // touches a counter, and each side's ledger pairs a local mutation with the
     // peer's matching one so the same logical event is counted once.
     constexpr std::uint32_t kWorldObjectEventRouteCounter = 5u;
+    // The sender's local P1 registered this map object as its respawn point
+    // (native 0x005450B0). event_code is 0x41000000 | ground_snap; the receiver
+    // registers its own P1 at the same point without the HUD message.
+    constexpr std::uint32_t kWorldObjectEventRouteRespawnPoint = 6u;
 
     // Native event routes do not expose a process-neutral object pointer. The
     // receiver resolves the matching map template by family/subtype/definition,

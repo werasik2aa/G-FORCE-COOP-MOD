@@ -428,6 +428,15 @@ namespace coop
 		// class name only when that metadata validates; it never replays an event.
 		constexpr uintptr_t kObjectEventRelay = 0x0041E890u;
 		constexpr uintptr_t kObjectEventForwarder = 0x0046D6F0u;
+		// Respawn-point registration, __thiscall(GPig handler, point trigger,
+		// ground_snap byte, show_message byte), ret 0xC. It stores the point at
+		// handler+0x26AC and the respawn transform at +0x26B0..+0x26CC. The
+		// checkpoint volume update 0x0043EA70 calls it (0x0043EAED) only for GPig
+		// slot 1 [0x009128DC], so each process records only its own P1's points.
+		constexpr uintptr_t kRespawnPointRegister = 0x005450B0u;
+		constexpr uint8_t kExpectedRespawnPointRegister[] = {
+			0x81, 0xEC, 0x74, 0x01, 0x00, 0x00
+		};
 		// Exact retail map-trigger vtables observed in the object-event chain.
 		// They identify durable progression boundaries, not universal object events.
 		constexpr uintptr_t kTriggerObCutsceneVtable = 0x006F3FD4u;

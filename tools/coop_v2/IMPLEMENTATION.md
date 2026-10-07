@@ -642,6 +642,32 @@ Build-verified only; **not live-tested**. Expected evidence is
 counters firing once at the real threshold on both peers. Both peers must run the
 same DLL: an older receiver rejects route 5.
 
+## Respawn point sync — 2026-10-07
+
+User report: after a death a player respawns at the very start of the level,
+behind doors the progression has already closed. Static evidence: the checkpoint
+volume update `0x0043EA70` reads the occupant through `vtbl+0x28(2,0)` and calls
+`0x005450B0(handler, checkpoint, ground_snap, show_message)` only when that
+occupant is GPig slot 1 `[0x009128DC]` (slot 4 `[0x009128E8]` uses the Mooch path
+`0x00540670`). `0x005450B0` stores the point at `handler+0x26AC` and the respawn
+transform at `+0x26B0..+0x26CC`. The remote player's presentation never registers
+anything, so each process keeps only the points its own P1 walked into.
+
+A checked entry hook on `0x005450B0` (6 relocated bytes `81 EC 74 01 00 00`)
+calls the original and, only when the handler is this process's LocalP1 handler and
+the point is a registered map template, queues `kWorldObjectEventRouteRespawnPoint`
+(6) with `event_code = 0x41000000 | ground_snap`. The receiver resolves the same map
+object by the normal object-event identity and calls the original routine for its
+own LocalP1 handler with `show_message = 0`, under a thread-local guard so the
+registration is never republished. All seven native callers are covered (checkpoint
+volume, scripted active-entity point `0x0042C387`, volume trigger `0x00441A89`, spawn
+and load paths); latest registration wins, exactly as in single player. The Mooch
+respawn path and the checkpoint autosave/HUD side effects are not replicated.
+
+Build-verified only; **not live-tested**. Evidence: `[respawn-sync] local P1 respawn
+... published` on one peer, then `[respawn-sync] peer seq=... registered for local P1`
+on the other; a death after the partner passed a checkpoint should respawn there.
+
 ## Current ABR state — RDV root-transform test
 
 For a client joining during the cutscene before a track, the promoted Black Pig

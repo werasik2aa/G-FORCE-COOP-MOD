@@ -65,6 +65,8 @@ namespace coop
 		bool ConsumePeerCounterCredit(void* counter, int event_code);
 		void PublishLocalCounterChange(void* counter, std::uint32_t counter_vtable,
 			int event_code);
+		// The local P1 just registered `point` as its respawn point natively.
+		void PublishLocalRespawnPoint(void* point, bool ground_snap);
 		// Returns the world id of a linked entity, or zero when untracked.
 		std::uint32_t WorldIdOfEntity(void* entity) const;
 		// Read-only game-thread lookup used by the native health hooks. It proves

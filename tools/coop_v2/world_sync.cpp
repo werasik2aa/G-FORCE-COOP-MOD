@@ -109,7 +109,8 @@ namespace coop
 			route == protocol::kWorldObjectEventRouteForwarder ||
 			route == protocol::kWorldObjectEventRouteEntityTriggerActivation ||
 			route == protocol::kWorldObjectEventRouteEntityTriggerRequest ||
-			route == protocol::kWorldObjectEventRouteCounter;
+			route == protocol::kWorldObjectEventRouteCounter ||
+			route == protocol::kWorldObjectEventRouteRespawnPoint;
 	}
 
 	bool IsEntityTriggerRoute(std::uint32_t route)
@@ -974,6 +975,20 @@ namespace coop
 		m_counter_ledger.push_back(entry);
 	}
 
+	void WorldSync::PublishLocalRespawnPoint(void* point, bool ground_snap)
+	{
+		std::uint32_t vtable = 0;
+		if (!point || !retail::TryRead(retail::ToAddress(point), vtable))
+			return;
+		const int event_code = static_cast<int>(0x41000000u | (ground_snap ? 1u : 0u));
+		const bool queued = QueueObjectEvent(point, vtable, event_code,
+			protocol::kWorldObjectEventRouteRespawnPoint);
+		CoopRuntime::Instance().Log(
+			"[respawn-sync] local P1 respawn point=%p vtable=%08X snap=%u %s\r\n",
+			point, vtable, ground_snap ? 1u : 0u,
+			queued ? "published" : "not published (unregistered map object)");
+	}
+
 	void WorldSync::ApplyRemoteCounterEvent(const WorldObjectEventPacket& packet,
 		void* target, const char* match_kind)
 	{
@@ -1210,6 +1225,18 @@ namespace coop
 		else if (packet.route == protocol::kWorldObjectEventRouteCounter)
 		{
 			ApplyRemoteCounterEvent(packet, target, match_kind);
+			return;
+		}
+		else if (packet.route == protocol::kWorldObjectEventRouteRespawnPoint)
+		{
+			const bool ground_snap =
+				(static_cast<std::uint32_t>(packet.event_code) & 1u) != 0;
+			const bool applied =
+				CoopNetGame::Instance().ApplyRemoteRespawnPoint(target, ground_snap);
+			CoopRuntime::Instance().Log(
+				"[respawn-sync] peer seq=%u point=%p match=%s snap=%u %s\r\n",
+				packet.sequence, target, match_kind, ground_snap ? 1u : 0u,
+				applied ? "registered for local P1" : "local P1 unavailable");
 			return;
 		}
 		else

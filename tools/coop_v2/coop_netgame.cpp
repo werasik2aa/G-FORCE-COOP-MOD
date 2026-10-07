@@ -729,6 +729,9 @@ namespace coop
 		m_object_event_forwarder_trampoline(nullptr),
 		m_original_object_event_forwarder(nullptr),
 		m_object_event_forwarder_hooked(false),
+		m_respawn_point_trampoline(nullptr),
+		m_original_respawn_point(nullptr),
+		m_respawn_point_hooked(false),
 		m_load_game_hooked(false),
 		m_native_save_load_trampoline(nullptr),
 		m_original_native_save_load(nullptr),
@@ -834,6 +837,8 @@ namespace coop
 			sizeof(m_original_object_event_relay_bytes));
 		ZeroMemory(m_original_object_event_forwarder_bytes,
 			sizeof(m_original_object_event_forwarder_bytes));
+		ZeroMemory(m_original_respawn_point_bytes,
+			sizeof(m_original_respawn_point_bytes));
 		ZeroMemory(m_original_input_pressed_query_bytes,
 			sizeof(m_original_input_pressed_query_bytes));
 		ZeroMemory(m_original_input_released_query_bytes,
@@ -3398,6 +3403,13 @@ namespace coop
 			reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
 	}
 
+	void __fastcall CoopNetGame::HookRespawnPointRegister(void* handler, void*,
+		void* point, std::uint32_t ground_snap, std::uint32_t show_message)
+	{
+		Instance().HandleRespawnPointRegister(handler, point, ground_snap,
+			show_message);
+	}
+
 	bool __fastcall CoopNetGame::HookNativeSaveLoad(void* manager, void*,
 		std::uint32_t slot)
 	{
@@ -3975,6 +3987,71 @@ namespace coop
 				WorldSync::Instance().ReportLocalDamage(linked_entity, event_code);
 		}
 		return result;
+	}
+
+	namespace
+	{
+		thread_local bool g_applying_remote_respawn_point = false;
+
+		void* LocalPlayer1Handler()
+		{
+			retail::EntitySlotRepository players;
+			const retail::EntityRef player1 =
+				players.GetSelectable(retail::EntitySlot::LocalP1);
+			retail::HandlerRef handler = {};
+			if (!player1 || !retail::EntityView(player1).Handler(handler) || !handler)
+				return nullptr;
+			return retail::ToPointer(handler.value);
+		}
+	}
+
+	void CoopNetGame::HandleRespawnPointRegister(void* handler, void* point,
+		std::uint32_t ground_snap, std::uint32_t show_message)
+	{
+		if (!m_original_respawn_point)
+			return;
+		__try
+		{
+			m_original_respawn_point(handler, point, ground_snap, show_message);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log(
+				"[respawn-sync] native registration fault handler=%p point=%p\r\n",
+				handler, point);
+			return;
+		}
+		// Only the stock registration of this process's own P1 is a progress
+		// signal; the remote presentation never reaches the slot-1 checkpoint path.
+		if (g_applying_remote_respawn_point || !point || !HasRemotePeer() ||
+			handler != LocalPlayer1Handler())
+		{
+			return;
+		}
+		WorldSync::Instance().PublishLocalRespawnPoint(point,
+			(ground_snap & 0xFFu) != 0);
+	}
+
+	bool CoopNetGame::ApplyRemoteRespawnPoint(void* point, bool ground_snap)
+	{
+		void* const handler = LocalPlayer1Handler();
+		if (!point || !handler || !m_original_respawn_point)
+			return false;
+		bool applied = false;
+		g_applying_remote_respawn_point = true;
+		__try
+		{
+			m_original_respawn_point(handler, point, ground_snap ? 1u : 0u, 0u);
+			applied = true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			CoopRuntime::Instance().Log(
+				"[respawn-sync] native peer registration fault point=%p\r\n",
+				point);
+		}
+		g_applying_remote_respawn_point = false;
+		return applied;
 	}
 
 	bool CoopNetGame::SpawnWorldFromTrigger(void* trigger)
@@ -6103,6 +6180,34 @@ namespace coop
 		m_object_event_relay_hooked = false;
 	}
 
+	bool CoopNetGame::InstallRespawnPointHook()
+	{
+		if (m_respawn_point_hooked)
+			return true;
+		if (!InstallJmpHookRaw(kRespawnPointRegister,
+			kExpectedRespawnPointRegister, sizeof(kExpectedRespawnPointRegister),
+			reinterpret_cast<void*>(&HookRespawnPointRegister),
+			m_original_respawn_point_bytes, &m_respawn_point_trampoline,
+			"respawn point sync"))
+		{
+			return false;
+		}
+		m_original_respawn_point = reinterpret_cast<RespawnPointRegisterFn>(
+			m_respawn_point_trampoline);
+		m_respawn_point_hooked = true;
+		return true;
+	}
+
+	void CoopNetGame::RemoveRespawnPointHook()
+	{
+		if (!m_respawn_point_hooked)
+			return;
+		RemoveJmpHookRaw(kRespawnPointRegister, m_original_respawn_point_bytes,
+			sizeof(m_original_respawn_point_bytes), &m_respawn_point_trampoline);
+		m_original_respawn_point = nullptr;
+		m_respawn_point_hooked = false;
+	}
+
 	void CoopNetGame::RemoveObjectEventForwarderHook()
 	{
 		if (!m_object_event_forwarder_hooked)
@@ -6258,6 +6363,11 @@ namespace coop
 					CoopRuntime::Instance().Log(
 						"[object-trace] relay or forwarder hook unavailable; see byte-mismatch line\r\n");
 				}
+				if (!InstallRespawnPointHook())
+				{
+					CoopRuntime::Instance().Log(
+						"[respawn-sync] hook unavailable; checkpoints stay per-process\r\n");
+				}
 				if (!InstallLoadGameHook())
 					CoopRuntime::Instance().Log(
 						"[save-sync] host Load Game synchronization unavailable\r\n");
@@ -6277,6 +6387,7 @@ namespace coop
 		RemoveHealthComponentAddHook();
 		RemoveHealthComponentSetHook();
 		RemoveObjectEventForwarderHook();
+		RemoveRespawnPointHook();
 		RemoveObjectEventRelayHook();
 		RemoveGlobalEventForwarderHook();
 		RemoveTriggerEventHook();

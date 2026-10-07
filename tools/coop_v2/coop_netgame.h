@@ -176,6 +176,9 @@ namespace coop
 		// any nested local callback cannot echo a packet to the sender.
 		bool ReplayObjectEvent(void* source, int event_code,
 			std::uint32_t route);
+		// Game thread: registers the local P1 at a peer's respawn point through the
+		// stock routine (no HUD message). Never republished to the peer.
+		bool ApplyRemoteRespawnPoint(void* point, bool ground_snap);
 
 		// Applies a remote player's damage to the local twin of a world entity by
 		// driving the stock trigger event dispatcher.
@@ -236,6 +239,8 @@ namespace coop
 		// the stack. The former stdcall declaration accidentally relied on ECX
 		// surviving the hook; preserve the actual __thiscall ABI instead.
 		typedef int(__thiscall* ObjectEventForwarderFn)(void*, void*, int);
+		typedef void(__thiscall* RespawnPointRegisterFn)(void*, void*,
+			std::uint32_t, std::uint32_t);
 		typedef void(__thiscall* LanguageSelectFn)(void*, std::uint32_t,
 			std::uint32_t);
 		typedef void(__thiscall* HealthComponentSetFn)(void*, float, std::uint32_t, bool);
@@ -428,6 +433,10 @@ namespace coop
 		void RemoveObjectEventRelayHook();
 		bool InstallObjectEventForwarderHook();
 		void RemoveObjectEventForwarderHook();
+		bool InstallRespawnPointHook();
+		void RemoveRespawnPointHook();
+		void HandleRespawnPointRegister(void* handler, void* point,
+			std::uint32_t ground_snap, std::uint32_t show_message);
 		bool InstallLoadGameHook();
 		void RemoveLoadGameHook();
 
@@ -465,6 +474,8 @@ namespace coop
 		static int __cdecl HookObjectEventRelay(void* source, int event_code);
 		static int __fastcall HookObjectEventForwarder(void* receiver, void*,
 			void* object, int event_code);
+		static void __fastcall HookRespawnPointRegister(void* handler, void*,
+			void* point, std::uint32_t ground_snap, std::uint32_t show_message);
 
 		volatile LONG m_role;
 		volatile LONG m_remote_connected;
@@ -663,6 +674,10 @@ namespace coop
 		BYTE* m_object_event_forwarder_trampoline;
 		ObjectEventForwarderFn m_original_object_event_forwarder;
 		bool m_object_event_forwarder_hooked;
+		BYTE m_original_respawn_point_bytes[6];
+		BYTE* m_respawn_point_trampoline;
+		RespawnPointRegisterFn m_original_respawn_point;
+		bool m_respawn_point_hooked;
 		bool m_load_game_hooked;
 		bool m_logged_remote_transform;
 		bool m_logged_remote_abr_transform;
