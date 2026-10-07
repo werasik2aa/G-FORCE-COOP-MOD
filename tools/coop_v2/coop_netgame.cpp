@@ -10,6 +10,7 @@
 #include "retail/retail_types.h"
 #include "retail/retail_views.h"
 #include "world_sync.h"
+#include "remote_root_math.h"
 
 #include "ServerClient/MClient.h"
 #include "ServerClient/MServer.h"
@@ -3149,13 +3150,25 @@ namespace coop
 
 	bool CoopNetGame::ApplyRemotePlayerTransform(void* player2)
 	{
+		const DWORD now = GetTickCount();
+		// The last successful presentation is the interpolation baseline. Native
+		// physics can move the live entity again after our controller hook; feeding
+		// that displacement back into every blend creates a persistent root bias.
+		const bool have_presentation = m_remote_player_frame_transform_valid &&
+			m_remote_player_frame_entity == player2 &&
+			m_last_remote_transform_apply_tick != 0 &&
+			static_cast<DWORD>(now - m_last_remote_transform_apply_tick) <= 250;
+		const retail::Transform previous_presentation =
+			m_remote_player_frame_transform;
 		m_remote_player_frame_transform_valid = false;
 		m_remote_player_frame_entity = nullptr;
 		m_remote_player_frame_sequence = 0;
 		if (!player2 || !IsRemoteInputActiveOnThisThread() ||
 			m_active_remote_input.transform_sequence == 0 ||
-			IsVehicleMotorActiveForRemoteP2(m_active_remote_input))
+			IsVehicleMotorActiveForRemoteP2(m_active_remote_input) ||
+			m_active_remote_input.player_mode != kDefaultModeId)
 		{
+			ResetRemotePlayerPresentation();
 			return false;
 		}
 
@@ -3197,7 +3210,10 @@ namespace coop
 			return true;
 		}
 
-		const DWORD now = GetTickCount();
+		if (have_presentation && IsFiniteRetailTransform(previous_presentation))
+			transform = previous_presentation;
+		else
+			m_last_remote_transform_apply_tick = 0;
 		DWORD elapsed_ms = m_last_remote_transform_apply_tick == 0 ? 16 :
 			now - m_last_remote_transform_apply_tick;
 		m_last_remote_transform_apply_tick = now;
@@ -3217,16 +3233,23 @@ namespace coop
 		if (position_factor > 1.0f)
 			position_factor = 1.0f;
 
-		transform.position.x += (remote_position.x - transform.position.x) * position_factor;
-		transform.position.y += (remote_position.y - transform.position.y) * position_factor;
-		transform.position.z += (remote_position.z - transform.position.z) * position_factor;
+		transform.position.x = presentation::BlendPosition(transform.position.x,
+			remote_position.x, position_factor);
+		transform.position.y = presentation::BlendPosition(transform.position.y,
+			remote_position.y, position_factor);
+		transform.position.z = presentation::BlendPosition(transform.position.z,
+			remote_position.z, position_factor);
 		transform.position.w = remote_position.w;
 
-		transform.rotation.x += (remote_rotation.x - transform.rotation.x) * position_factor;
-		transform.rotation.y += (remote_rotation.y - transform.rotation.y) * position_factor;
-		transform.rotation.z += (remote_rotation.z - transform.rotation.z) * position_factor;
+		transform.rotation.x = presentation::BlendAngle(transform.rotation.x,
+			remote_rotation.x, position_factor);
+		transform.rotation.y = presentation::BlendAngle(transform.rotation.y,
+			remote_rotation.y, position_factor);
+		transform.rotation.z = presentation::BlendAngle(transform.rotation.z,
+			remote_rotation.z, position_factor);
 		transform.rotation.w = remote_rotation.w;
-		if (!player2_view.WriteTransform(transform))
+		if (!IsFiniteRetailTransform(transform) ||
+			!player2_view.WriteTransform(transform))
 		{
 			CoopRuntime::Instance().Log(
 				"[net-transform-error] could not write remote P2 transform target\r\n");
@@ -3244,6 +3267,14 @@ namespace coop
 			m_logged_remote_transform = true;
 		}
 		return true;
+	}
+
+	void CoopNetGame::ResetRemotePlayerPresentation()
+	{
+		m_last_remote_transform_apply_tick = 0;
+		m_remote_player_frame_transform_valid = false;
+		m_remote_player_frame_entity = nullptr;
+		m_remote_player_frame_sequence = 0;
 	}
 
 	bool CoopNetGame::ReapplyRemotePlayerFrameTransform(void* player2)

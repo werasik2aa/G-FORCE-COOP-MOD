@@ -89,6 +89,15 @@ observations are
 suppressed for 750 ms. Remote object-event replay cannot generate a rally back
 to its sender.
 
+Only the newest received gather destination is retained while the two slots are
+not ready; rally packets are destination snapshots rather than a queue of native
+events. A newer cutscene/checkpoint destination supersedes the old one. Successful
+rally root writes reset ordinary P2's interpolation baseline, as does role promotion.
+The broad post-event rally gate is still provisional: the exact cutscene virtual
+handler distinguishes low16 33, 34, 0 and 156, but the actual start can occur from
+its own update/spawn virtual method. A nonzero event result alone does not prove
+a new cutscene/checkpoint start. See the 2026-10-07 audit below.
+
 The rally writer uses retail::EntityView::WriteTransform, including normal
 transform-cache invalidation. It does not change controller mode, invent input,
 disable physics or write an ABR vehicle root. A pending on-foot rally is discarded
@@ -162,7 +171,7 @@ native lifecycles before a new server limit is considered.
 
 | Domain | Owner and data | Must not be mixed with |
 | --- | --- | --- |
-| Ordinary P2 on foot | Native Darwin controller consumes a scoped remote input snapshot. One interpolated root is written before its native update and the identical result is reapplied afterwards, so local physics cannot undo the correction in the same frame. | Fly and ABR vehicle-motor fields. |
+| Ordinary P2 on foot | Native Darwin controller consumes a scoped remote input snapshot. One interpolated root is written before its native update and the identical result is reapplied afterwards. Consecutive blends start from the last successful presentation root, avoiding feedback from intervening native displacement. | Fly and ABR vehicle-motor fields. |
 | Mooch / Fly | Только owner запускает native Fly state с физическим input и публикует transform и текущий XGamePad aim-ray. Receiver оставляет P1/камеру в обычном состоянии, очищает remote Fly-control flag, применяет root transform, записывает FlyFly target/current yaw+pitch и вызывает его terminal LookAt submitter. | Remote Fly input/controller/camera takeover, Darwin weapon fire, Fly movement axes и обычный P2 controller input. |
 | ABR / RDV vehicle | Native `XMotorFunction_GPigRDV` vehicle task/motor owns heading and attached parts. At either ABR boundary, its stock vehicle tick runs; generic P2 input, camera, weapon and smoothed on-foot transform correction stay skipped. The receiver may then write only the finite settled peer root snapshot. | Generic P2 transform recovery, motor-heading guesses or partial root-rotation writes. |
 
@@ -244,12 +253,24 @@ checks again before its root write. This is containment, not a physics switch.
 The same finite-only boundary covers `WorldSpawn`/`WorldSnapshot`: host reads and
 client ingress reject bad entity transforms before a native root write.
 
+Ordinary correction requires a peer Default snapshot. Its retained presentation
+baseline expires after a 250 ms tick gap and resets at outer-mode changes, either
+ABR path, role promotion and rally writes. Rotation blends take the shortest arc
+in radians; ordinary scalar Euler interpolation turned the long way across ±pi.
+Position arithmetic uses double intermediates so opposite finite float endpoints
+cannot overflow their subtraction. This changes reconciliation math, not the
+stock P2 physics/state tick, and is **not live-tested** as an underground-P2 fix.
+The standalone tests/run_remote_root_math_probe.bat covers the branch cut,
+finite extremes and persistent vertical-displacement convergence.
+
 This recovery is build-verified but **not live-tested**. Runtime proof requires
 `[p2-attachment-release] queued ...` and `result consumed=1`, followed by a
 normal stock exit from the attachment. While the gap persists, another pair after
 250 ms is expected rather than suppressed. An optional
 `[p2-attachment-observer] family=ledge|climb attachment=1 ...` records the
 classified native family; its absence does not suppress recovery.
+Queued and consumed diagnostics now share one throttle admission: previously the
+queued line updated the timestamp and suppressed its own immediate result line.
 
 An outer native `XGPigDeathMode` is separate from that Ledge state machine.
 The old P2 guard skipped its stock checkpoint respawn, but could also leave the
@@ -547,6 +568,33 @@ regressions and chat design. Each new live result must record level/checkpoint,
 host/client role, runtime PID log excerpts, object identity and the exact visible
 result. Update `RE_CATALOG.md` with exact static evidence before promoting a
 candidate from `guess` to `approved`.
+
+## Synchronization audit — 2026-10-07
+
+FindTemplateTrigger previously computed an exact pointer and then returned null.
+Its fallback also chose the first family/subtype match, which can address the
+wrong object when several templates share that class. The resolver now returns
+only one exact live identity, or a unique family/subtype fallback when no exact
+candidate exists. Ambiguity stays unresolved; object-route signature matching
+and wire layouts are unchanged.
+
+The archived client log gforce_coop — копия.log (PID 9816, 2026-09-23) contains
+native Counter increments from 0 through 4, then peer-replay increments through
+9 for the same vtable/object, and unresolved zero-root Cutscene packets. That
+confirms duplicate local/peer effects and ambiguous identities in that run; it
+does not prove that suppressing all nested callbacks would preserve card/door
+behavior. The earlier card regression is still relevant. Trigger dispatcher and
+route-4 replay networking policy remains unchanged after this audit; no counter
+value is restored or synthesized and no event retry queue has been enabled.
+
+Focused exact-vtable RE shows why the rally gate needs a separate lifecycle fix:
+Cutscene OnEvent at 0x00435AD0 uses low16 33 to mark an already-existing entity
+and low16 0/34 to invoke its update/cleanup path; its actual activation work is
+in update 0x0043C190 and spawn virtual 0x0043C460. CheckPoint activation is in
+update 0x0043EA70, whose entry latch is byte +0x13C. These are static evidence,
+not approved new hooks. A successful object route alone is not a start signal.
+The current rally now keeps only the newest pending destination but still needs
+two-process confirmation and exact activation provenance.
 
 ## Current ABR state — RDV root-transform test
 

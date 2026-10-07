@@ -112,6 +112,9 @@
     <ClInclude Include="player2.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="remote_root_math.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="shared_camera.h">
       <Filter>Header Files</Filter>
     </ClInclude>

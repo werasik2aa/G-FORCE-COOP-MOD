@@ -134,6 +134,7 @@ copy /Y "$(GnsRuntimeRoot)\abseil_dll.dll" "$(OutDir)abseil_dll.dll"</Command>
 	<ClInclude Include="menu_connect_hook.h" />
 	<ClInclude Include="gforce_constants.h" />
 	<ClInclude Include="player2.h" />
+	<ClInclude Include="remote_root_math.h" />
 	<ClInclude Include="save_sync.h" />
 	<ClInclude Include="shared_camera.h" />
 	<ClInclude Include="world_sync.h" />

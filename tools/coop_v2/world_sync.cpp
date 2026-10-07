@@ -408,27 +408,36 @@ namespace coop
 	void* WorldSync::FindTemplateTrigger(std::uint32_t family,
 		std::uint32_t subtype, std::int32_t definition_id)
 	{
-		TriggerKey key = {};
-		key.family = family;
-		key.subtype = subtype;
-		key.definition_id = definition_id;
-		TriggerTemplate* found = FindTriggerTemplate(key);
-		if (!found)
+		void* exact = nullptr;
+		void* family_match = nullptr;
+		std::uint32_t exact_count = 0;
+		std::uint32_t family_count = 0;
+		for (const TriggerTemplate& candidate : m_trigger_templates)
 		{
-			// Spawn-definition ids are per-process table indices and can differ
-			// between the two loads of the same map.  Fall back to the only
-			// stable parts of the identity: family plus subtype.
-			for (TriggerTemplate& existing : m_trigger_templates)
+			retail::TriggerIdentity live = {};
+			const retail::TriggerRef candidate_ref = {
+				retail::ToAddress(candidate.trigger)
+			};
+			if (!candidate.trigger ||
+				!retail::TriggerView(candidate_ref).Identity(live) ||
+				live.family != family || live.subtype != subtype)
 			{
-				if (existing.family == family && existing.subtype == subtype)
-				{
-					CoopRuntime::Instance().Log(
-						"[world-trigger] loose template match family=%08X subtype=%08X host_def=%d local_def=%d\r\n",
-						family, subtype, definition_id, existing.definition_id);
-					return existing.trigger;
-				}
+				continue;
+			}
+			family_match = candidate.trigger;
+			++family_count;
+			if (live.definition_id == definition_id)
+			{
+				exact = candidate.trigger;
+				++exact_count;
 			}
 		}
+		// The old exact branch forgot to return its found pointer. Also never
+		// choose the first of several objects merely sharing a family/subtype.
+		if (exact_count == 1)
+			return exact;
+		if (exact_count == 0 && family_count == 1)
+			return family_match;
 		return nullptr;
 	}
 
@@ -1833,8 +1842,11 @@ namespace coop
 			ReplayRemoteObjectEvent(packet);
 		for (const ProgressionRallyPacket& packet : rallies)
 		{
-			if (m_pending_rallies.size() < kMaxPendingWorldPackets)
-				m_pending_rallies.push_back(packet);
+			// Rally packets contain a gather destination, not native events. A
+			// newer destination supersedes every waiting checkpoint/cutscene root.
+			// Never return players to an earlier gather point after they become ready.
+			m_pending_rallies.clear();
+			m_pending_rallies.push_back(packet);
 		}
 		ApplyPendingProgressionRallies();
 

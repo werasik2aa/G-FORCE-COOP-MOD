@@ -138,6 +138,7 @@ namespace coop
 		m_client_peer_abr_entry_completed(false),
 		m_last_role_heartbeat_tick(0),
 		m_last_attachment_release_log_tick(0),
+		m_attachment_release_result_log_pending(false),
 		m_last_local_p1_weapon_type(0xFFFFFFFFu),
 		m_client_role_gate_logged(false),
 		m_client_black_pig_entity(),
@@ -586,6 +587,7 @@ namespace coop
 				retail::EntitySlot::RemoteP2);
 			return false;
 		}
+		CoopNetGame::Instance().ResetRemotePlayerPresentation();
 		return true;
 	}
 
@@ -1480,6 +1482,7 @@ namespace coop
 		m_remote_p2_attachment_active_tick = 0;
 		m_remote_p2_attachment_release_divergence_begin_tick = 0;
 		m_spawn_context = {};
+		m_attachment_release_result_log_pending = false;
 		m_local_abr_propulsion_locked = false;
 		m_local_abr_saved_target_speed = 1.0f;
 		m_local_abr_propulsion_direction = 1;
@@ -1583,6 +1586,7 @@ namespace coop
 			local_entity.WriteTransform(old_local);
 			return false;
 		}
+		CoopNetGame::Instance().ResetRemotePlayerPresentation();
 
 		CoopRuntime::Instance().Log(
 			"[progression-rally] moved both peer slots seq=%u local=%p remote=%p target=(%.2f,%.2f,%.2f)\r\n",
@@ -1621,6 +1625,7 @@ namespace coop
 		const retail::EntityView entity(binding.entity);
 		if (!entity.WriteTransform(transform))
 			return false;
+		CoopNetGame::Instance().ResetRemotePlayerPresentation();
 
 		CoopRuntime::Instance().Log(
 			"[progression-rally] moved %s seq=%u entity=%p target=(%.2f,%.2f,%.2f)\r\n",
@@ -1820,6 +1825,7 @@ namespace coop
 		void* controller, CoopNetGame& netgame, float& distance)
 	{
 		distance = 0.0f;
+		m_attachment_release_result_log_pending = false;
 		const DWORD now = GetTickCount();
 		// Do not require a particular inner Ledge/Climb class here. The exact
 		// observer remains diagnostic, but a stale native attachment is precisely
@@ -1890,6 +1896,7 @@ namespace coop
 		if (now_tick - m_last_attachment_release_log_tick > 5000)
 		{
 			m_last_attachment_release_log_tick = now_tick;
+			m_attachment_release_result_log_pending = true;
 			CoopRuntime::Instance().Log(
 				"[p2-attachment-release] queued distance=%.2f observer=%s target_seq=%u\r\n",
 				distance, m_remote_p2_attachment_family == AttachmentFamily::Ledge ?
@@ -2075,6 +2082,7 @@ namespace coop
 		const std::uint32_t remote_mode_now = GetModeId(controller);
 		if (remote_mode_now != m_last_remote_p2_mode)
 		{
+			netgame.ResetRemotePlayerPresentation();
 			CoopRuntime::Instance().Log(
 				"[p2-mode] remote P2 controller=%p mode=0x%08X -> 0x%08X\r\n",
 				controller, m_last_remote_p2_mode, remote_mode_now);
@@ -2111,6 +2119,7 @@ namespace coop
 		const bool remote_player_is_abr = GetModeId(controller) == kAbrModeId;
 		if (local_player_is_abr || remote_player_is_abr)
 		{
+			netgame.ResetRemotePlayerPresentation();
 			// ABR is a vehicle-motor domain. Do not even enter the generic P2 input,
 			// camera, weapon or root-transform path while either controller is in it:
 			// those paths belong to ordinary Darwin locomotion, not the RDV vehicle.
@@ -2198,15 +2207,16 @@ namespace coop
 		{
 			bool attachment_release_consumed = false;
 			netgame.FinishRemoteLedgeReleaseEdge(attachment_release_consumed);
-			const LONG now_tick = static_cast<LONG>(GetTickCount());
-			if (now_tick - m_last_attachment_release_log_tick > 5000)
+			// The queued line has just claimed the throttle. Its result must share
+			// that admission or every useful consumed=... line is suppressed.
+			if (m_attachment_release_result_log_pending)
 			{
-				m_last_attachment_release_log_tick = now_tick;
 				CoopRuntime::Instance().Log(
 					"[p2-attachment-release] result consumed=%u distance=%.2f\r\n",
 					attachment_release_consumed ? 1u : 0u,
 					attachment_release_distance);
 			}
+			m_attachment_release_result_log_pending = false;
 		}
 		netgame.ReapplyRemotePlayerFrameTransform(player2);
 		if (!stock_update_completed)

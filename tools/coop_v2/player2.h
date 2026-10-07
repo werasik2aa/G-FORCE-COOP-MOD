@@ -153,6 +153,7 @@ namespace coop
 		bool m_client_peer_abr_entry_completed;
 		LONG m_last_role_heartbeat_tick;
 		LONG m_last_attachment_release_log_tick;
+		bool m_attachment_release_result_log_pending;
 		std::uint32_t m_last_local_p1_weapon_type;
 		bool m_client_role_gate_logged;
 		retail::EntityRef m_client_black_pig_entity;

@@ -143,6 +143,9 @@ namespace coop
 		// This prevents physics from undoing the correction without performing a
 		// second interpolation step in the same rendered frame.
 		bool ReapplyRemotePlayerFrameTransform(void* player2);
+		// Clear the on-foot presentation baseline at native role/mode boundaries
+		// or after an explicit rally root write. No retail memory is touched.
+		void ResetRemotePlayerPresentation();
 		// ABR/RDV still publishes P1's settled root transform through the ordinary
 		// input snapshot. During the ABR fire scope, one accepted complete root is
 		// used before/after the stock tick so its attached parts see the same frame.
