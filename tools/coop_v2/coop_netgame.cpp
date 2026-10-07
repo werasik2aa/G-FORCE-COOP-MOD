@@ -4428,6 +4428,17 @@ namespace coop
 		const std::uint32_t fire_bit = 1u << (fire_index % 32u);
 		const bool fire_held = have_remote &&
 			(m_active_remote_input.action_down[fire_word] & fire_bit) != 0;
+		// RDV consumes the normal movement axes from the same input query used by
+		// Darwin. Keep the peer's steering/forward snapshot alive for the native
+		// vehicle tick; the old fire-only scope cleared all four axes, leaving the
+		// remote car with no W/A/D input and therefore no wheel/body turn. S is
+		// still deliberately disabled: positive axis 1 is the reverse component.
+		const float remote_axis_x = have_remote &&
+			IsFiniteFloat(m_active_remote_input.analog_axis[0]) ?
+			m_active_remote_input.analog_axis[0] : 0.0f;
+		const float remote_axis_y = have_remote &&
+			IsFiniteFloat(m_active_remote_input.analog_axis[1]) ?
+			m_active_remote_input.analog_axis[1] : 0.0f;
 		ZeroMemory(m_active_remote_input.action_down,
 			sizeof(m_active_remote_input.action_down));
 		if (fire_held)
@@ -4436,6 +4447,9 @@ namespace coop
 			sizeof(m_active_remote_input.virtual_keys));
 		ZeroMemory(m_active_remote_input.analog_axis,
 			sizeof(m_active_remote_input.analog_axis));
+		m_active_remote_input.analog_axis[0] = remote_axis_x;
+		m_active_remote_input.analog_axis[1] =
+			remote_axis_y > 0.0f ? 0.0f : remote_axis_y;
 		m_active_remote_input.fly_controlled = 0;
 		m_active_remote_input.fly_transform_sequence = 0;
 
