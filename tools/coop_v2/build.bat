@@ -45,7 +45,11 @@ if errorlevel 1 (
 )
 rem A final deploy must compile every translation unit, not merely relink an
 rem incremental object cache left by a previous experiment.
-msbuild.exe GForceCoop.sln /t:Rebuild "/p:Configuration=Release;Platform=Win32;GnsRuntimeRoot=%GnsRuntimeRoot%" /nologo /v:minimal
+rem v143 is the reference toolset; GFORCE_PLATFORM_TOOLSET (for example v145)
+rem lets a machine with only a newer Visual Studio build the same projects.
+set "GFORCE_TOOLSET_PROP="
+if defined GFORCE_PLATFORM_TOOLSET set "GFORCE_TOOLSET_PROP=;PlatformToolset=%GFORCE_PLATFORM_TOOLSET%"
+msbuild.exe GForceCoop.sln /t:Rebuild "/p:Configuration=Release;Platform=Win32;GnsRuntimeRoot=%GnsRuntimeRoot%%GFORCE_TOOLSET_PROP%" /nologo /v:minimal
 if errorlevel 1 exit /b 1
 for %%F in (coop_dll.dll winmm.dll) do (
 	if not exist "%GFORCE_BUILD_OUTPUT%\%%F" (
