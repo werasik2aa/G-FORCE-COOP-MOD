@@ -4,6 +4,7 @@
 #include "chat_overlay.h"
 #include "coop_netgame.h"
 #include "menu_connect_hook.h"
+#include "menu_session_hook.h"
 #include "player2.h"
 #include "ServerClient/SteamManager.h"
 #include "window_hook.h"
@@ -45,6 +46,8 @@ namespace coop
 			return FALSE;
 		}
 		runtime.LoadConfiguration();
+		if (!MenuSessionHook::Instance().Install())
+			runtime.Log("[menu-session-warning] native exit disconnect unavailable\r\n");
 		if (!MenuConnectHook::Instance().Install())
 			runtime.Log("[menu-warning] native Connect by IP row unavailable; F8 remains available\r\n");
 		if (!WindowHook::Instance().Install())
@@ -73,6 +76,7 @@ namespace coop
 			return;
 
 		MenuConnectHook::Instance().Remove();
+		MenuSessionHook::Instance().Remove();
 		ChatOverlay::Instance().Shutdown();
 		SteamManager->Destroy();
 		CoopNetGame::Instance().RemoveLanguageSelectHook();

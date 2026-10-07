@@ -193,6 +193,24 @@ namespace coop
 		// The narrow call-site below is immediately after the stock Credits row.  It
 		// is intentionally a profile-specific hook, not a generic EngineX UI API.
 		constexpr uintptr_t kMainMenuBuild = 0x005EECC0u;
+		// Stock confirmation dispatch calls menu vtable +0x4C with one uint.
+		// Answer 1 commits the exit; +0x3C is the main-menu entry callback.
+		constexpr uintptr_t kMainMenuQuitConfirmed = 0x005EEBC0u;
+		constexpr uintptr_t kMainMenuQuitVtableSlot = 0x0071B078u;
+		constexpr uintptr_t kPauseMenuQuitConfirmed = 0x005EFD10u;
+		constexpr uintptr_t kPauseMenuQuitVtableSlot = 0x0071B2B0u;
+		constexpr uintptr_t kMainMenuEnter = 0x005EEB70u;
+		constexpr uintptr_t kMainMenuEnterVtableSlot = 0x0071B068u;
+		constexpr uint8_t kExpectedMainMenuQuitConfirmed[] = {
+			0xB8, 0x01, 0x00, 0x00, 0x00, 0x39, 0x44, 0x24, 0x04, 0x75, 0x09
+		};
+		constexpr uint8_t kExpectedPauseMenuQuitConfirmed[] = {
+			0x83, 0xEC, 0x10, 0x83, 0x7C, 0x24, 0x14, 0x01,
+			0x0F, 0x85, 0x85, 0x00, 0x00, 0x00
+		};
+		constexpr uint8_t kExpectedMainMenuEnter[] = {
+			0x83, 0xEC, 0x10, 0xE8, 0x18, 0x29, 0x00, 0x00
+		};
 		constexpr uintptr_t kMenuCreditsAddChildCall = 0x005EED92u;
 		constexpr uintptr_t kMenuAddChild = 0x005C4850u;
 		constexpr uintptr_t kMenuCreateButton = 0x005E8420u;
