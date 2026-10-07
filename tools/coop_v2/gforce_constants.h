@@ -527,6 +527,11 @@ constexpr size_t kModeIdOffset = 0x08u;
 		// shared P1 camera cannot visibly snap toward Mooch for one frame.
 		constexpr size_t kCameraFlyTransientOffset = 0x91Cu;
 		constexpr size_t kCameraFlyTransientBytes = 0x9Cu; // +0x91C..+0x9B7
+		// RDV::Update (0x5BDCD0) also writes the track direction at +0x900..+0x908
+		// and movement axes at +0x914/+0x918, before its shared request/aim window.
+		// Preserve this complete verified window around the remote ABR tick only.
+		constexpr size_t kCameraAbrTransientOffset = 0x900u;
+		constexpr size_t kCameraAbrTransientBytes = 0xB8u; // +0x900..+0x9B7
 		// The bl gate of the yaw block at 0x5BBA98 picks what lands in
 		// [turn_task+0x10]: if 0x4B6F40(handler+0x498) is the follow state 0x44110010
 		// and that state's +0x3C is past [0x8B7824], the body receives its OWN current

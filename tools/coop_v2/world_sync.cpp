@@ -1852,6 +1852,15 @@ namespace coop
 
 	void WorldSync::ApplyPendingProgressionRallies()
 	{
+		if (!m_pending_rallies.empty() &&
+			Player2Module::Instance().IsProgressionRallyObsoleteForAbr())
+		{
+			CoopRuntime::Instance().Log(
+				"[progression-rally] discarded %u pending on-foot rallies at ABR boundary\r\n",
+				static_cast<unsigned>(m_pending_rallies.size()));
+			m_pending_rallies.clear();
+			return;
+		}
 		for (std::vector<ProgressionRallyPacket>::iterator it =
 			m_pending_rallies.begin(); it != m_pending_rallies.end();)
 		{

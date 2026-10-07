@@ -135,6 +135,43 @@ namespace coop
 		return true;
 	}
 
+	bool SharedCameraCoordinator::SaveAbrState(AbrState& saved) const
+	{
+		saved = {};
+		saved.handler = CameraHandler();
+		if (!saved.handler)
+			return false;
+		const retail::CameraHandlerView handler(saved.handler);
+		if (!handler.ReadAbrTransientState(saved.transient) ||
+			!handler.ReadAimAssist(saved.assist))
+		{
+			saved = {};
+			return false;
+		}
+		saved.has_follow_turn = ReadFollowTurn(saved.follow_turn);
+		return true;
+	}
+
+	bool SharedCameraCoordinator::RestoreAbrState(const AbrState& saved) const
+	{
+		// A world rebuild must never receive a previous handler's snapshot.
+		if (!saved.handler || CameraHandler().value != saved.handler.value)
+			return false;
+		const retail::CameraHandlerView handler(saved.handler);
+		const bool transient_restored =
+			handler.WriteAbrTransientState(saved.transient);
+		const bool assist_restored = handler.WriteAimAssist(saved.assist);
+		const bool follow_restored = !saved.has_follow_turn ||
+			WriteFollowTurn(saved.follow_turn);
+		if (!transient_restored || !assist_restored || !follow_restored)
+		{
+			CoopRuntime::Instance().Log(
+				"[camera] failed to restore the shared ABR state\r\n");
+			return false;
+		}
+		return true;
+	}
+
 	bool SharedCameraCoordinator::SaveAimState(AimState& saved) const
 	{
 		// 0x5BB1D0 fetches this handler globally.  P1 ticks first, so a remote

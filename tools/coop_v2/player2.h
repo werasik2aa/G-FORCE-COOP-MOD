@@ -37,6 +37,8 @@ namespace coop
 			protocol::ProgressionRallyReason reason, std::uint32_t sequence);
 		bool ApplyProgressionRallyToPeerPlayers(const retail::Transform& transform,
 			protocol::ProgressionRallyReason reason, std::uint32_t sequence);
+		// An on-foot snapshot is obsolete once either process enters ABR.
+		bool IsProgressionRallyObsoleteForAbr();
 
 	private:
 		// The stock factory ABI is the same four-float value already used by the
@@ -90,6 +92,9 @@ namespace coop
 		void LogClientRoleGateOnce(const char* gate,
 			std::uint32_t detail_a, std::uint32_t detail_b);
 		bool TryEnsurePlayer2RdvTask(const char* source);
+		bool IsRdvSpawnOwnerValid(retail::EntityRef context_owner,
+			retail::EntityRef local_player) const;
+		void SyncClientLocalAbrMode(void* player1_controller);
 		bool TryEnsureRdvTaskForEntity(const char* source,
 			retail::EntityRef entity, retail::EntityRef& configured_entity);
 		bool TryEnterPlayer2AbrMode(void* controller);
@@ -143,6 +148,9 @@ namespace coop
 		bool m_logged_blocked_active_publish;
 
 		bool m_client_black_pig_promoted;
+		// One catch-up per observed peer ABR interval; don't re-enter from a stale
+		// ABR packet after the local owner has already completed the track.
+		bool m_client_peer_abr_entry_completed;
 		LONG m_last_role_heartbeat_tick;
 		LONG m_last_attachment_release_log_tick;
 		std::uint32_t m_last_local_p1_weapon_type;

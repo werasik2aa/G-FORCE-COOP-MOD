@@ -83,15 +83,19 @@ pointer, a generic event opcode or a raw trigger identity. The first peer whose
 classified cutscene/checkpoint activation queues the rally supplies the gather
 point. The source process moves its remote P2 presentation; the receiving
 process applies the same snapshot to both LocalP1 and RemoteP2 slots together,
-waiting until both are ready and neither is in ABR. This is independent of
-player model and role-promotion timing. Duplicate source/event observations are
+waiting until both controllers and the peer snapshot are in Default. This is
+independent of player model and role-promotion timing. Duplicate source/event
+observations are
 suppressed for 750 ms. Remote object-event replay cannot generate a rally back
 to its sender.
 
 The rally writer uses retail::EntityView::WriteTransform, including normal
 transform-cache invalidation. It does not change controller mode, invent input,
-disable physics or write an ABR vehicle root: while either target is in ABR the
-packet stays pending. This is narrowly intended to keep a peer with a closing
+disable physics or write an ABR vehicle root. A pending on-foot rally is discarded
+as soon as either local slot or the peer snapshot enters ABR; it must not teleport
+the players back after the track ends. Absence of ABR during a cutscene is not
+readiness for an on-foot root write. This is narrowly intended to keep a peer
+with a closing
 door/checkpoint or an already-started cutscene from being stranded; it is not a
 world-streaming, checkpoint-respawn or universal event-replay solution. Live
 two-process proof remains required.
@@ -546,6 +550,33 @@ candidate from `guess` to `approved`.
 
 ## Current ABR state — RDV root-transform test
 
+For a client joining during the cutscene before a track, the promoted Black Pig
+may remain in Default while the host is already in ABR. A finite peer ABR snapshot
+now permits one checked catch-up per observed peer ABR interval: validate the
+recorded Black Pig/Darwin slot pair, configure the remote RDV task, strip its
+exclusive owner bit, then seed the local complete root and request native local
+ABR. Other local controller modes must finish natively. An owner already observed
+in ABR must not re-enter from a stale peer packet after completing the track.
+Before promotion both registered Default and ABR masks are restored for the new
+local owner. The native spawn context continues to name Darwin: the verified role
+swap is allowed by our context check because the configurator reads context flags
+and its explicit handler argument, not the context's owner pointer. The pointer
+is never rebound. This catch-up path is **not live-tested**.
+
+Local ABR propulsion accepts only positive native speed or zero. Bound forward
+and lateral axes enable propulsion; bound backward input (normally S) is ignored
+both by the gate and by the native movement-axis query. Idle zeros current and
+target speed before/after the stock tick; signed reverse is removed because the
+user observed severe shaking. Ordinary/Fly input and mouse-look flags remain
+separate. The two-process regression save is “Эксплуатационный туннель”, second
+in-game slot (user identifies it as likely DATA1).
+
+The remote ABR camera snapshot includes +0x900..+0x9B7, covering track direction
+and movement axes which the old +0x91C Fly snapshot missed. Reads must succeed
+before the remote tick runs, and restoration checks the same handler identity.
+This fixes a concrete snapshot omission; visual RDV part turning and Black Pig
+steering still require a live test and are not established by a successful build.
+
 The global `WorldObjectEvent` rollback was falsified: the ABR fixed-point crash
 persisted while the rollback regressed remote door/card effects. Object-event
 queue and ingress are restored. Any older claim that ABR suppresses all world
@@ -553,7 +584,8 @@ traffic is historical experiment text, not active runtime behavior.
 
 P1 publishes its settled post-ABR root in the existing `CoopInput` snapshot.
 The receiver applies that complete finite root before and after the stock ABR
-controller tick, separately from ordinary P2 interpolation. **Live test
+controller tick, using the same scoped packet for activation and both root
+writes, separately from ordinary P2 interpolation. **Live test
 2026-09-16:** `0x10000014` remote press edges reached both receivers, and the
 RDV task was created/configured, but no remote ABR shot was visible. The exact
 `GForce.exe` path explains the missing pressed-query log: the RDV helper at

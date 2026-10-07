@@ -113,7 +113,7 @@ namespace coop
 			};
 			for (const float value : values)
 			{
-				if (value < -FLT_MAX || value > FLT_MAX)
+				if (!(value >= -FLT_MAX && value <= FLT_MAX))
 					return false;
 			}
 			return true;
@@ -135,6 +135,7 @@ namespace coop
 		m_logged_blocked_active_publish(false),
 
 		m_client_black_pig_promoted(false),
+		m_client_peer_abr_entry_completed(false),
 		m_last_role_heartbeat_tick(0),
 		m_last_attachment_release_log_tick(0),
 		m_last_local_p1_weapon_type(0xFFFFFFFFu),
@@ -540,6 +541,7 @@ namespace coop
 	void Player2Module::ResetClientRoleCaches()
 	{
 		m_client_black_pig_promoted = false;
+		m_client_peer_abr_entry_completed = false;
 		m_client_black_pig_entity = {};
 		m_client_original_darwin_entity = {};
 		m_abr_native_task_configured_player2 = {};
@@ -644,8 +646,8 @@ namespace coop
 			}
 		}
 
-		// The hand-off stays active on ABR tracks too: the earlier wrong-way
-		// turns were the stripped P2 conflict mask, which is restored below.
+		// The hand-off stays active on ABR tracks too. Restore the owner's mode
+		// contracts; vehicle-part turning remains a separate native motor path.
 		const std::uint32_t local_mode = GetModeId(
 			retail::ToPointer(local.controller.value));
 		const std::uint32_t black_mode = GetModeId(
@@ -661,6 +663,15 @@ namespace coop
 		{
 			LogClientRoleGateOnce("black-pig-not-idle", local_mode, black_mode);
 			RefreshPlayer1ControllerFromSlot(player1_controller);
+			return false;
+		}
+
+		// Restore both registered owner modes before changing roles. Restoring
+		// only today's mode leaves ABR stripped when a cutscene activates it later.
+		if (!RestoreLocalModeContract(remote.controller, kDefaultModeId) ||
+			!RestoreLocalModeContract(remote.controller, kAbrModeId))
+		{
+			LogClientRoleGateOnce("local-mode-contract", local_mode, black_mode);
 			return false;
 		}
 
@@ -764,6 +775,139 @@ namespace coop
 			m_abr_native_task_configured_player2);
 	}
 
+	bool Player2Module::IsRdvSpawnOwnerValid(retail::EntityRef context_owner,
+		retail::EntityRef local_player) const
+	{
+		if (context_owner == local_player)
+			return true;
+		if (!m_client_black_pig_promoted ||
+			!CoopNetGame::Instance().IsClient() ||
+			local_player != m_client_black_pig_entity ||
+			context_owner != m_client_original_darwin_entity)
+		{
+			return false;
+		}
+		retail::EntitySlotRepository players;
+		return players.GetSelectable(retail::EntitySlot::RemoteP2) ==
+			m_client_original_darwin_entity;
+	}
+
+	void Player2Module::SyncClientLocalAbrMode(void* player1_controller)
+	{
+		CoopNetGame& netgame = CoopNetGame::Instance();
+		if (!m_client_black_pig_promoted || !netgame.IsClient() ||
+			!netgame.HasRemotePeer() || netgame.IsLocalFlyControlled())
+		{
+			return;
+		}
+		std::uint32_t peer_mode_sequence = 0;
+		std::uint32_t peer_mode = 0;
+		if (!netgame.GetRemotePlayerModeSnapshot(peer_mode_sequence, peer_mode) ||
+			peer_mode_sequence == 0)
+		{
+			return;
+		}
+		if (peer_mode != kAbrModeId)
+		{
+			m_client_peer_abr_entry_completed = false;
+			return;
+		}
+		if (GetModeId(player1_controller) == kAbrModeId)
+		{
+			m_client_peer_abr_entry_completed = true;
+			return;
+		}
+		if (m_client_peer_abr_entry_completed)
+			return;
+		retail::Transform entry_transform = {};
+		std::uint32_t peer_sequence = 0;
+		if (!netgame.GetRemoteAbrEntrySnapshot(entry_transform, peer_sequence))
+		{
+			return;
+		}
+
+		retail::EntitySlotRepository players;
+		retail::EntitySlotBinding local = {};
+		retail::EntitySlotBinding remote = {};
+		if (!players.GetBinding(retail::EntitySlot::LocalP1, local) ||
+			!players.GetBinding(retail::EntitySlot::RemoteP2, remote) ||
+			local.entity != m_client_black_pig_entity ||
+			remote.entity != m_client_original_darwin_entity ||
+			retail::ToPointer(local.controller.value) != player1_controller ||
+			GetModeId(player1_controller) != kDefaultModeId ||
+			(GetModeId(retail::ToPointer(remote.controller.value)) != kDefaultModeId &&
+				GetModeId(retail::ToPointer(remote.controller.value)) != kAbrModeId))
+		{
+			// Cutscene, death and other native transitions must finish themselves.
+			return;
+		}
+
+		// The peer is already driving, but a client loaded an earlier save and
+		// missed the native cutscene exit. Prepare the remote vehicle first and
+		// release its exclusive owner bit before requesting the local ABR mode.
+		if (!TryEnsureRdvTaskForEntity("client-late-join-remote", remote.entity,
+			m_abr_native_task_configured_player2))
+		{
+			return;
+		}
+		SharedCameraCoordinator::AbrState saved_camera = {};
+		retail::EntityRef active_a = {};
+		retail::EntityRef active_b = {};
+		if (!m_camera.SaveAbrState(saved_camera) ||
+			!retail::ActiveEntityStore().Read(active_a, active_b))
+		{
+			return;
+		}
+		// Both activations must seed their native heading from the peer root, not
+		// from the old save position. No local input scope is run for this entry.
+		if (!retail::EntityView(remote.entity).WriteTransform(entry_transform))
+			return;
+		const bool remote_entered = TryEnterPlayer2AbrMode(
+			retail::ToPointer(remote.controller.value));
+		const bool camera_restored = m_camera.RestoreAbrState(saved_camera);
+		const bool active_restored =
+			retail::ActiveEntityStore().Restore(active_a, active_b);
+		if (!remote_entered || !camera_restored || !active_restored ||
+			!RestoreLocalModeContract(local.controller, kAbrModeId))
+		{
+			return;
+		}
+
+		// Seed the complete root only while this owner is still on foot, before
+		// native RDV activation initializes its heading and attached parts. Once
+		// ABR owns the entity, local movement/turning stays entirely native.
+		retail::Transform old_transform = {};
+		retail::EntityRef configured_local = {};
+		const retail::EntityView local_entity(local.entity);
+		if (!local_entity.ReadTransform(old_transform))
+		{
+			return;
+		}
+		if (!TryEnsureRdvTaskForEntity("client-late-join-local", local.entity,
+			configured_local))
+		{
+			local_entity.WriteTransform(old_transform);
+			return;
+		}
+		// The configurator raises an on-foot root by 0.183. The peer's settled
+		// vehicle root already includes that adjustment, so seed it afterwards.
+		if (!local_entity.WriteTransform(entry_transform))
+		{
+			local_entity.WriteTransform(old_transform);
+			return;
+		}
+		const bool accepted = retail::ControllerView(local.controller).
+			SelectMode(kAbrModeId);
+		const std::uint32_t selected_mode = GetModeId(player1_controller);
+		if (selected_mode == kAbrModeId)
+			m_client_peer_abr_entry_completed = true;
+		else
+			local_entity.WriteTransform(old_transform);
+		CoopRuntime::Instance().Log(
+			"[client-role] late-join ABR requested peer_seq=%u selected=0x%08X accepted=%u\r\n",
+			peer_sequence, selected_mode, accepted ? 1u : 0u);
+	}
+
 	bool Player2Module::TryEnsureRdvTaskForEntity(const char* source,
 		retail::EntityRef entity, retail::EntityRef& configured_entity)
 	{
@@ -772,10 +916,9 @@ namespace coop
 		if (!entity || !m_spawn_context)
 			return false;
 
-		// The stock configurator is valid only while the spawn context and both
-		// process-global active pointers name the current local P1. Keep the target
-		// entity explicit so a Black Pig returned from local ownership can safely
-		// reuse its already-created native task as the remote presentation.
+		// After a verified client role swap the native spawn context still names
+		// Darwin. Its flags remain valid for the explicit target handler; do not
+		// rewrite that context or reject it merely because Black Pig is now local.
 		retail::EntitySlotRepository players;
 		const retail::EntityRef local_player = players.GetSelectable(
 			retail::EntitySlot::LocalP1);
@@ -788,7 +931,7 @@ namespace coop
 			retail::SpawnContextView(m_spawn_context).ActiveEntity(context_entity) &&
 			retail::ActiveEntityStore().Read(active_a, active_b) &&
 			(context_flags & kGPigSpawnContextRdvFlag) != 0 &&
-			context_entity == local_player && active_a == local_player &&
+			IsRdvSpawnOwnerValid(context_entity, local_player) && active_a == local_player &&
 			active_b == local_player;
 		if (!context_ready)
 			return false;
@@ -914,10 +1057,8 @@ namespace coop
 		if (!controller)
 			return false;
 		const std::uint32_t current_mode = GetModeId(controller);
-		if (current_mode == kAbrModeId)
-			return true;
 		// Never override Death, Ledge, cutscene or other native transitions.
-		if (current_mode != kDefaultModeId)
+		if (current_mode != kDefaultModeId && current_mode != kAbrModeId)
 			return false;
 
 		const retail::ControllerRef controller_ref = {
@@ -946,6 +1087,10 @@ namespace coop
 			}
 			return false;
 		}
+		// Darwin can already be in ABR when the client promotes Black Pig. It
+		// still needs the remote conflict mask before the new local owner enters.
+		if (current_mode == kAbrModeId)
+			return true;
 
 		const bool accepted = controller_view.SelectMode(kAbrModeId);
 		const std::uint32_t selected_mode = GetModeId(controller);
@@ -994,7 +1139,8 @@ namespace coop
 			retail::SpawnContextView(context).Flags(context_flags) &&
 			retail::SpawnContextView(context).ActiveEntity(context_entity) &&
 			retail::ActiveEntityStore().Read(active_a, active_b) &&
-			context_entity == player1 && active_a == player1 && active_b == player1 &&
+			IsRdvSpawnOwnerValid(context_entity, player1) &&
+			active_a == player1 && active_b == player1 &&
 			(context_flags & kGPigSpawnContextRdvFlag) != 0 &&
 			retail::MotorTaskView(task).VTable(task_vtable) &&
 			task_vtable == kGPigRdvTaskVtable;
@@ -1090,8 +1236,7 @@ namespace coop
 		if (!task.RdvSpeed(current_speed, target_speed))
 			return false;
 
-		const int requested_direction = direction > 0.05f ? 1 :
-			(direction < -0.05f ? -1 : 0);
+		const int requested_direction = direction > 0.05f ? 1 : 0;
 		const float target_magnitude = fabsf(target_speed);
 		const float current_magnitude = fabsf(current_speed);
 		if (!m_local_abr_propulsion_locked)
@@ -1124,13 +1269,12 @@ namespace coop
 			return true;
 		}
 
-		const float signed_speed = m_local_abr_saved_target_speed *
-			static_cast<float>(requested_direction);
 		if (m_local_abr_propulsion_locked || direction_changed)
 		{
-			// Set current and target together on a direction edge. This avoids making
-			// the retail acceleration integrator cross zero with a stale sign.
-			if (!task.SetRdvSpeed(signed_speed, signed_speed))
+			// Restore only the positive native speed. The track motor rejects
+			// backward steering and cannot safely run with a negative speed.
+			if (!task.SetRdvSpeed(m_local_abr_saved_target_speed,
+				m_local_abr_saved_target_speed))
 				return false;
 		}
 		m_local_abr_propulsion_locked = false;
@@ -1138,8 +1282,8 @@ namespace coop
 		if (direction_changed)
 		{
 			CoopRuntime::Instance().Log(
-				"[abr-drive] propulsion direction=%d target=%.3f\r\n",
-				requested_direction, signed_speed);
+				"[abr-drive] forward propulsion target=%.3f\r\n",
+				m_local_abr_saved_target_speed);
 		}
 		return true;
 	}
@@ -1188,6 +1332,7 @@ namespace coop
 					player1_controller);
 			}
 		}
+		SyncClientLocalAbrMode(player1_controller);
 		if (m_client_black_pig_promoted)
 		{
 			const LONG now = static_cast<LONG>(GetTickCount());
@@ -1350,6 +1495,30 @@ namespace coop
 			reason, sequence, "remote P2");
 	}
 
+	bool Player2Module::IsProgressionRallyObsoleteForAbr()
+	{
+		CoopNetGame& netgame = CoopNetGame::Instance();
+		std::uint32_t peer_sequence = 0;
+		std::uint32_t peer_mode = 0;
+		if (netgame.GetRemotePlayerModeSnapshot(peer_sequence, peer_mode) &&
+			peer_sequence != 0 && peer_mode == kAbrModeId)
+		{
+			return true;
+		}
+		retail::EntitySlotRepository players;
+		for (const retail::EntitySlot slot : {
+			retail::EntitySlot::LocalP1, retail::EntitySlot::RemoteP2 })
+		{
+			retail::EntitySlotBinding binding = {};
+			if (players.GetBinding(slot, binding) &&
+				GetModeId(retail::ToPointer(binding.controller.value)) == kAbrModeId)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	bool Player2Module::ApplyProgressionRallyToPeerPlayers(
 		const retail::Transform& transform,
 		protocol::ProgressionRallyReason reason, std::uint32_t sequence)
@@ -1358,6 +1527,15 @@ namespace coop
 			(reason != protocol::ProgressionRallyReason::Cutscene &&
 				reason != protocol::ProgressionRallyReason::Checkpoint) ||
 			!IsFiniteProgressionTransform(transform))
+		{
+			return false;
+		}
+		std::uint32_t peer_sequence = 0;
+		std::uint32_t peer_mode = 0;
+		if (IsProgressionRallyObsoleteForAbr() ||
+			!CoopNetGame::Instance().GetRemotePlayerModeSnapshot(
+				peer_sequence, peer_mode) || peer_sequence == 0 ||
+			peer_mode != kDefaultModeId)
 		{
 			return false;
 		}
@@ -1376,9 +1554,10 @@ namespace coop
 			retail::ToPointer(local.controller.value);
 		void* const remote_controller =
 			retail::ToPointer(remote.controller.value);
-		// Never write an on-foot rally into either active ABR vehicle.
-		if ((local_controller && GetModeId(local_controller) == kAbrModeId) ||
-			(remote_controller && GetModeId(remote_controller) == kAbrModeId))
+		// Missing ABR alone is not readiness: native cutscene/death transitions
+		// must finish before an on-foot root can be moved.
+		if (GetModeId(local_controller) != kDefaultModeId ||
+			GetModeId(remote_controller) != kDefaultModeId)
 		{
 			return false;
 		}
@@ -1431,9 +1610,12 @@ namespace coop
 		if (!players.GetBinding(slot, binding) || !binding.entity)
 			return false;
 		void* const controller = retail::ToPointer(binding.controller.value);
-		// A vehicle owns its own root and attached presentation.  Keep the rally
-		// pending rather than writing an on-foot correction into ABR.
-		if (controller && GetModeId(controller) == kAbrModeId)
+		const retail::EntityRef local_player = players.GetSelectable(
+			retail::EntitySlot::LocalP1);
+		if (IsProgressionRallyObsoleteForAbr() ||
+			GetModeId(controller) != kDefaultModeId ||
+			GetModeId(GetController(retail::ToPointer(local_player.value))) !=
+				kDefaultModeId)
 			return false;
 
 		const retail::EntityView entity(binding.entity);
@@ -1938,41 +2120,34 @@ namespace coop
 				remote_mode_known && remote_peer_mode == kAbrModeId &&
 				netgame.HasRemotePeer() &&
 				TryEnsurePlayer2RdvTask("network-ABR");
-			SharedCameraCoordinator::AimState saved_abr_camera_state = {};
-			const bool restore_abr_camera =
-				m_camera.SaveAimState(saved_abr_camera_state);
+			SharedCameraCoordinator::AbrState saved_abr_camera_state = {};
 			retail::EntityRef active_a = {};
 			retail::EntityRef active_b = {};
-			const bool restore_local_active =
-				retail::ActiveEntityStore().Read(active_a, active_b);
-			if (abr_task_ready && !remote_player_is_abr)
-				TryEnterPlayer2AbrMode(controller);
-			// P2 never owns the local physical movement input. Explicitly clear
-			// the retail drive latch every tick, including after the one-shot
-			// remote Fire fallback below.
-			SetAbrDriveGate(player2, false);
-			// The native RDV task positions attached vehicle parts from the owner
-			// root it reads at the start of this tick. Seed it from the peer's
-			// settled transform, then restore that root after the stock motor step.
-			netgame.ApplyRemoteAbrTransform(player2);
-			bool stock_update_completed = false;
+			if (!m_camera.SaveAbrState(saved_abr_camera_state) ||
+				!retail::ActiveEntityStore().Read(active_a, active_b))
+			{
+				return;
+			}
 			{
 				RemoteAbrFireInputScope remote_fire_input(netgame);
-				stock_update_completed = RunStockControllerUpdate(controller,
+				// Activation seeds native heading from this root. One scoped packet
+				// must supply activation, the motor step and root restoration alike.
+				netgame.ApplyRemoteAbrTransform(player2);
+				if (abr_task_ready)
+					TryEnterPlayer2AbrMode(controller);
+				// P2 never owns physical movement input. Clear the one-shot lane
+				// latch before the vehicle tick and after the remote Fire fallback.
+				SetAbrDriveGate(player2, false);
+				const bool stock_update_completed = RunStockControllerUpdate(controller,
 					local_player_is_abr ? "remote-player2-ABR-shared" :
 						"remote-player2-ABR-only");
 				netgame.RunRemoteAbrFireFallback(controller);
+				if (stock_update_completed)
+					netgame.ApplyRemoteAbrTransform(player2);
+				SetAbrDriveGate(player2, false);
 			}
-			// P1 has already published its post-vehicle-tick root into CoopInput.
-			// Apply only that settled root to the remote ABR copy: the native RDV
-			// task keeps its own motor and attached-part state.
-			if (stock_update_completed)
-				netgame.ApplyRemoteAbrTransform(player2);
-			SetAbrDriveGate(player2, false);
-			if (restore_abr_camera)
-				m_camera.RestoreAimState(saved_abr_camera_state);
-			if (restore_local_active)
-				retail::ActiveEntityStore().Restore(active_a, active_b);
+			m_camera.RestoreAbrState(saved_abr_camera_state);
+			retail::ActiveEntityStore().Restore(active_a, active_b);
 
 			return;
 		}

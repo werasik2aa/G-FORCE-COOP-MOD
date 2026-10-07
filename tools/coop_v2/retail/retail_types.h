@@ -415,6 +415,13 @@ namespace retail
         std::uint8_t value[gforce::kCameraFlyTransientBytes];
     };
 
+    // RDV writes additional direction/axis fields below Fly's snapshot window.
+    // Keep this local to a native remote ABR tick; it never travels on the wire.
+    struct CameraAbrTransientState final
+    {
+        std::uint8_t value[gforce::kCameraAbrTransientBytes];
+    };
+
     static_assert(sizeof(CameraAimAssistState) == 2 * sizeof(float),
         "Camera aim-assist snapshot must preserve two retail floats");
     static_assert(sizeof(CameraAimYawState) == 6 * sizeof(float),
@@ -422,6 +429,9 @@ namespace retail
     static_assert(sizeof(CameraFlyTransientState) ==
         gforce::kCameraFlyTransientBytes,
         "Fly camera snapshot must preserve the exact retail byte window");
+    static_assert(sizeof(CameraAbrTransientState) ==
+        gforce::kCameraAbrTransientBytes,
+        "ABR camera snapshot must preserve the exact retail byte window");
 
     struct TriggerIdentity final
     {

@@ -1594,9 +1594,8 @@ namespace coop
 			// ABR's 0x10000000 query is a one-shot vehicle action, not the
 			// continuous WASD state (Space happened to satisfy it in the live test).
 			// The native RDV update consumes logical movement axes 0/1, so use those
-			// same binding-aware values to choose propulsion. Retail turns axis 1
-			// into its forward component as -axis_y: W/up is negative, while S/down
-			// is positive. Pure lateral input retains the game's forward propulsion.
+			// same binding-aware values to gate forward propulsion. W/up is negative;
+			// S/down is ignored. Lateral input retains native forward propulsion.
 			const float axis_x = m_original_input_axis_query(
 				retail::ToPointer(input_manager.value), device, 0u, 1u);
 			const float axis_y = m_original_input_axis_query(
@@ -1604,12 +1603,8 @@ namespace coop
 			if (!_finite(axis_x) || !_finite(axis_y))
 				return false;
 			CaptureLocalAnalogAxis(0u, axis_x);
-			CaptureLocalAnalogAxis(1u, axis_y);
-			if (axis_y < -0.05f)
-				direction = 1.0f;
-			else if (axis_y > 0.05f)
-				direction = -1.0f;
-			else if (fabsf(axis_x) > 0.05f)
+			CaptureLocalAnalogAxis(1u, axis_y > 0.0f ? 0.0f : axis_y);
+			if (axis_y < -0.05f || fabsf(axis_x) > 0.05f)
 				direction = 1.0f;
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
@@ -3014,6 +3009,20 @@ namespace coop
 		return true;
 	}
 
+	bool CoopNetGame::GetRemoteAbrEntrySnapshot(retail::Transform& transform,
+		std::uint32_t& transform_sequence) const
+	{
+		CoopInput remote = {};
+		if (!GetRemoteInput(remote) || remote.transform_sequence == 0 ||
+			remote.player_mode != kAbrModeId ||
+			!DecodeFiniteWireTransform(remote.position, remote.rotation, transform))
+		{
+			return false;
+		}
+		transform_sequence = remote.transform_sequence;
+		return true;
+	}
+
 	bool CoopNetGame::GetRemoteAimRaySnapshot(float origin[3],
 		float direction[3], std::uint32_t& transform_sequence) const
 	{
@@ -3258,12 +3267,13 @@ namespace coop
 
 	bool CoopNetGame::ApplyRemoteAbrTransform(void* player2)
 	{
-		if (!player2)
+		if (!player2 || !IsRemoteInputActiveOnThisThread())
 			return false;
 
-		CoopInput remote = {};
-		if (!GetRemoteInput(remote) || remote.player_mode != kAbrModeId ||
-			remote.transform_sequence == 0)
+		// Use the same accepted packet for native activation, the motor tick and
+		// root restoration. Network ingress can update m_remote_input meanwhile.
+		const CoopInput& remote = m_active_remote_input;
+		if (remote.player_mode != kAbrModeId || remote.transform_sequence == 0)
 		{
 			return false;
 		}
@@ -5129,8 +5139,30 @@ namespace coop
 			return GetRemoteAnalogAxis(axis);
 		}
 
-		const float value = m_original_input_axis_query(input_manager, device,
+		float value = m_original_input_axis_query(input_manager, device,
 			axis, flags);
+		if (!remote_input_active && axis == 1u && flags == 1u && value > 0.0f &&
+			!IsLocalFlyControlled())
+		{
+			// Suppress the bound backward movement component before the native RDV
+			// steering calculation. Mouse-look (flags=2), Fly and on-foot input stay
+			// in their own domains; no physical S binding is assumed.
+			retail::EntitySlotBinding local = {};
+			retail::GamePadRef primary_pad = {};
+			std::uint32_t local_device = 0;
+			std::uint32_t mode = 0;
+			if (retail::EntitySlotRepository().GetBinding(
+				retail::EntitySlot::LocalP1, local) &&
+				retail::ControllerView(local.controller).CurrentMode(mode) &&
+				mode == kAbrModeId &&
+				retail::PrimaryGamePadStore().Read(primary_pad) &&
+				primary_pad.value == retail::ToAddress(input_manager) &&
+				retail::GamePointerStore().InputDevice(local_device) &&
+				device == local_device)
+			{
+				value = 0.0f;
+			}
+		}
 		// Device zero is the normal P1 capture route.  Fly_Active may ask its
 		// registered device instead, so local Fly ownership deliberately captures
 		// all four returned axes regardless of that device selector.

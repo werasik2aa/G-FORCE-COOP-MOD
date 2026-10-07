@@ -61,8 +61,8 @@ namespace coop
 		// If the P2 dispatcher skipped its registered outer ABR update, run that
 		// exact native mode once for a fresh remote Fire edge.
 		bool RunRemoteAbrFireFallback(void* controller);
-		// Poll the retail movement axes through the current binding. The signed
-		// result is +1 for forward propulsion, -1 for reverse and 0 for stop.
+		// Poll the retail movement axes through the current binding: forward/turn
+		// input enables propulsion; backward input has no ABR action.
 		bool PollLocalAbrPropulsionDirection(float& direction);
 		void ResetForWorldLoad();
 
@@ -144,8 +144,8 @@ namespace coop
 		// second interpolation step in the same rendered frame.
 		bool ReapplyRemotePlayerFrameTransform(void* player2);
 		// ABR/RDV still publishes P1's settled root transform through the ordinary
-		// input snapshot. The receiver applies that complete root after its own
-		// stock vehicle tick, without borrowing on-foot input, camera or weapon code.
+		// input snapshot. During the ABR fire scope, one accepted complete root is
+		// used before/after the stock tick so its attached parts see the same frame.
 		bool ApplyRemoteAbrTransform(void* player2);
 		// Valid only during a scoped remote P2 controller tick. This exposes the
 		// finite peer target to the Ledge recovery gate without copying its private
@@ -189,6 +189,9 @@ namespace coop
 		// locally divergent P2 may leave a native death state.
 		bool GetRemotePlayerModeSnapshot(std::uint32_t& transform_sequence,
 			std::uint32_t& player_mode) const;
+		// Finite complete owner root for native client RDV activation only.
+		bool GetRemoteAbrEntrySnapshot(retail::Transform& transform,
+			std::uint32_t& transform_sequence) const;
 		bool __fastcall HandleInputActionQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags, std::uintptr_t caller_return_address);
 		bool __fastcall HandleInputActionUpQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, std::uint32_t flags);
 		bool __fastcall HandleInputThresholdQuery(void* input_manager, void*, std::uint32_t device, std::uint32_t action, float threshold, std::uint32_t flags);

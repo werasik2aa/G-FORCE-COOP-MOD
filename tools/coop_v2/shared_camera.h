@@ -23,10 +23,21 @@ namespace coop
 			bool has_follow_turn;
 		};
 
+		struct AbrState final
+		{
+			retail::CameraHandlerRef handler;
+			retail::CameraAbrTransientState transient;
+			retail::CameraAimAssistState assist;
+			float follow_turn;
+			bool has_follow_turn;
+		};
+
 		bool RefreshForController(void* controller) const;
 		bool ReadLocalYaw(float& yaw) const;
 		bool SaveAimState(AimState& saved) const;
 		void RestoreAimState(const AimState& saved) const;
+		bool SaveAbrState(AbrState& saved) const;
+		bool RestoreAbrState(const AbrState& saved) const;
 
 	private:
 		retail::CameraHandlerRef CameraHandler() const;

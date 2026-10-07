@@ -779,6 +779,18 @@ namespace retail
                 gforce::kCameraFlyTransientOffset), value);
         }
 
+        bool ReadAbrTransientState(CameraAbrTransientState& out) const
+        {
+            return handler_ && TryRead(AddOffset(handler_.value,
+                gforce::kCameraAbrTransientOffset), out);
+        }
+
+        bool WriteAbrTransientState(const CameraAbrTransientState& value) const
+        {
+            return handler_ && TryWrite(AddOffset(handler_.value,
+                gforce::kCameraAbrTransientOffset), value);
+        }
+
         CameraHandlerRef ref() const { return handler_; }
 
     private:
